@@ -75,9 +75,9 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) todo el f
 
 <div align="center">
 
-| <img src="docs/assets/flsun-t1-pro.png" alt="FLSUN T1 Pro" height="130" /> | <img src="docs/assets/flsun-v400.png" alt="FLSUN V400" height="130" /> | <img src="docs/assets/flashforge-creator5-pro.jpg" alt="FlashForge Creator 5 Pro" height="130" /> |
-| :---: | :---: | :---: |
-| **FLSUN T1 Pro (#1 / #2)**<br />Delta Klipper · `Ø260×330 mm` · `48 mm³/s` | **FLSUN V400**<br />Delta Klipper · `Ø300×410 mm` · `37 mm³/s` | **FlashForge Creator 5 Pro**<br />CoreXY 4-Tool (`T0–T3`) · `256³ mm` |
+| <img src="docs/assets/flsun-t1-pro.png" alt="FLSUN T1 Pro" height="120" /> | <img src="docs/assets/flsun-v400.png" alt="FLSUN V400" height="120" /> | <img src="docs/assets/flashforge-creator5-pro.jpg" alt="FlashForge Creator 5 Pro" height="120" /> | <img src="docs/assets/flsun-super-racer.png" alt="FLSUN Super Racer" height="120" /> | <img src="docs/assets/creality-ender3-s1-pro.jpg" alt="Creality Ender 3 S1 Pro" height="120" /> |
+| :---: | :---: | :---: | :---: | :---: |
+| **FLSUN T1 Pro (#1/#2)**<br />Delta Klipper · `Ø260×330` | **FLSUN V400**<br />Delta Klipper · `Ø300×410` | **Creator 5 Pro**<br />CoreXY 4-Tool (`T0–T3`) | **FLSUN Super Racer**<br />Delta · `Ø260×330` · `15 mm³/s` | **Ender 3 S1 Pro**<br />Marlin 2 · `220×220×270` |
 
 </div>
 
