@@ -142,10 +142,16 @@ MaoSlicer/
 
 ## Instalación en Otro Mac (Apple Silicon M1/M2/M3/M4 e Intel)
 
-> **Requisitos previos en el Mac destino:**
-> 1. **Python 3.10+** (`brew install python@3.11`).
-> 2. **Flash Studio** (`/Applications/Flash Studio.app`) para el motor CLI headless de laminado.
-> 3. **Google Chrome** (o `pywebview` opcional en `.venv`) para la ventana de escritorio dedicada.
+> **Requisitos previos en el Mac destino (Laminadores y Herramientas):**
+>
+> Nikk Slicer actúa como orquestador unificado, visor 3D, copiloto IA y controlador de granja; **no incluye los binarios pesados de los laminadores dentro del `.dmg`**, por lo que debes tener instalados previamente los motores en `/Applications/`:
+>
+> 1. **Laminadores CLI requeridos en `/Applications/`:**
+>    - **Flash Studio** (`/Applications/Flash Studio.app`) — **Motor CLI primario obligatorio** (utilizado para laminar modelos de FlashForge Creator 5 Pro, FLSUN T1 Pro / V400 / SR y Ender 3 S1 Pro).
+>    - **OrcaSlicer** (`/Applications/OrcaSlicer.app`) — *Recomendado como motor CLI alternativo/respaldo* (si lo instalas o prefieres cambiar la ruta, puedes definir `FLASH_STUDIO_CLI` en `backend/.env`).
+>    - **FLSUN Slicer** (`/Applications/FlsunSlicer.app`) — *Opcional* (referencia de perfiles FLSUN).
+> 2. **Python 3.10+** (`brew install python@3.11`).
+> 3. **Google Chrome** (`/Applications/Google Chrome.app`, o `pywebview` opcional en `.venv`) para abrir la ventana de escritorio dedicada.
 
 ### Método A: Instalación en un clic con `NikkSlicer_macOS_Installer.dmg`
 1. Descarga **`NikkSlicer_macOS_Installer.dmg`** desde [GitHub Releases](https://github.com/alzheimeer/nikk-slicer/releases/latest) y ábrelo con doble clic.
