@@ -53,6 +53,18 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) todo el f
 | :---: | :---: |
 | ![Capas G-code e IA](docs/screenshots/06-visor-capas-gcode-ia.jpg) | ![Gestión Multi-Impresora](docs/screenshots/05-gestion-impresoras-ia.png) |
 
+| Granja en Vivo (Moonraker + FlashForge LAN) | Granja en Vivo (V400 + USB Serial Marlin) |
+| :---: | :---: |
+| ![Granja Monitor Red](docs/screenshots/07-granja-monitor-red.jpg) | ![Granja Monitor V400 y USB](docs/screenshots/08-granja-v400-usb.jpg) |
+
+| Parámetros Térmicos por Carrete | Perfiles Dinámicos (`Arachne + Gyroid`) |
+| :---: | :---: |
+| ![Material y Parámetros](docs/screenshots/10-material-parametros.png) | ![Perfiles Dinámicos](docs/screenshots/11-perfiles-dinamicos.png) |
+
+| Laminado Listo, Costos y Envío | Compendio Final IA (`DeepSeek API`) |
+| :---: | :---: |
+| ![Laminado y Costos](docs/screenshots/12-laminado-costos-envio.jpg) | ![Compendio Final IA](docs/screenshots/09-compendio-final-ia.jpg) |
+
 ---
 
 ## Características Principales
@@ -72,7 +84,9 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) todo el f
   - <img src="docs/assets/deepseek-logo.png" alt="DeepSeek" width="16" align="absmiddle" /> **Grabador continuo (`0% → 100%`)** en segundo plano: guarda muestras cada 20 s y en hitos de progreso (`backend/temp/telemetry_sessions/`).
   - Al finalizar la impresión (o bajo demanda a mitad de corrida), genera un **Compendio Final IA** por fases (`0–5%`, `5–85%`, `85–100%`) con calificación (`EXCELENTE`, `BUENA_CON_MEJORAS`, `REQUIERE_AJUSTE`) y mejoras concretas para el siguiente laminado.
   - **Aprendizaje real acumulado (`GET /api/telemetry/learnings`):** el historial completado (`completed_compendiums.json`) retroalimenta automáticamente a DeepSeek en el Paso 3 del Laminador según máquina y material.
-  - Control aislado de **Luz LED**, gestor de **archivos remotos** (subir sin imprimir, subir e imprimir con/sin nivelación), reproductor/descarga de **Timelapses `.mp4`** y cancelación real (`END_PRINT` en Moonraker / FlashForge LAN).
+  - Control aislado de **Luz LED**, gestor de **archivos remotos** (subir sin imprimir, subir e imprimir con/sin nivelación y **borrado masivo** de G-codes), reproductor/descarga de **Timelapses `.mp4`** y cancelación real (`END_PRINT` en Moonraker / FlashForge LAN).
+- **Cálculo de Costos de Producción en Tiempo Real:**
+  - Estimación automática del costo de **filamento**, **consumo eléctrico por hora** y **costo total de la pieza** junto con el tiempo de impresión, gramos y metros antes de enviar o descargar el `.gcode`.
 
 ---
 
