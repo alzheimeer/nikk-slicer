@@ -153,8 +153,42 @@ def wait_for_backend(timeout_sec: float = 25.0) -> bool:
     return False
 
 
+def _configure_macos_app_identity(logger: logging.Logger) -> None:
+    """Sobrescribe el nombre de la app ('Python' -> 'Nikk Slicer') y el icono del Dock en macOS."""
+    try:
+        from Foundation import NSBundle, NSProcessInfo  # type: ignore[import-not-found]
+
+        info = NSBundle.mainBundle().infoDictionary()
+        if info is not None:
+            info["CFBundleName"] = "Nikk Slicer"
+            info["CFBundleDisplayName"] = "Nikk Slicer"
+        NSProcessInfo.processInfo().setProcessName_("Nikk Slicer")
+    except Exception as exc:
+        logger.debug("No se pudo personalizar NSBundle/NSProcessInfo: %s", exc)
+
+
+def _set_macos_dock_icon(logger: logging.Logger) -> None:
+    """Asigna el icono de Nikk Slicer al Dock de macOS."""
+    try:
+        from AppKit import NSApplication, NSImage  # type: ignore[import-not-found]
+
+        app = NSApplication.sharedApplication()
+        for icon_path in (
+            PROJECT_ROOT / "Nikk Slicer.app" / "Contents" / "Resources" / "NikkSlicer.icns",
+            PROJECT_ROOT / "frontend" / "public" / "nikk-logo.jpg",
+        ):
+            if icon_path.is_file():
+                img = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+                if img is not None:
+                    app.setApplicationIconImage_(img)
+                    break
+    except Exception as exc:
+        logger.debug("No se pudo asignar icono del Dock: %s", exc)
+
+
 def open_desktop_window(logger: logging.Logger) -> None:
     try:
+        _configure_macos_app_identity(logger)
         import webview  # type: ignore[import-not-found]
 
         logger.info("Abriendo ventana nativa con pywebview...")
@@ -165,6 +199,7 @@ def open_desktop_window(logger: logging.Logger) -> None:
             height=920,
             min_size=(1100, 720),
         )
+        _set_macos_dock_icon(logger)
         webview.start()
         return
     except ImportError:
