@@ -1,0 +1,160 @@
+{
+  "type": "machine",
+  "name": "SlicerHub Creality Ender 3 S1 Pro 0.4 nozzle",
+  "from": "system",
+  "instantiation": "true",
+  "auxiliary_fan": "0",
+  "bed_exclude_area": [
+    "0x0"
+  ],
+  "family": "re3D",
+  "gcode_flavor": "marlin2",
+  "emit_machine_limits_to_gcode": "1",
+  "scan_first_layer": "0",
+  "machine_max_acceleration_e": [
+    "5000",
+    "5000"
+  ],
+  "machine_max_acceleration_extruding": [
+    "2000",
+    "1500"
+  ],
+  "machine_max_acceleration_retracting": [
+    "1000",
+    "1000"
+  ],
+  "machine_max_acceleration_travel": [
+    "2000",
+    "2000"
+  ],
+  "machine_max_acceleration_x": [
+    "3000",
+    "2000"
+  ],
+  "machine_max_acceleration_y": [
+    "2000",
+    "2000"
+  ],
+  "machine_max_acceleration_z": [
+    "100",
+    "100"
+  ],
+  "machine_max_speed_e": [
+    "60",
+    "60"
+  ],
+  "machine_max_speed_x": [
+    "150",
+    "150"
+  ],
+  "machine_max_speed_y": [
+    "150",
+    "150"
+  ],
+  "machine_max_speed_z": [
+    "10",
+    "10"
+  ],
+  "machine_max_jerk_e": [
+    "5",
+    "5"
+  ],
+  "machine_max_jerk_x": [
+    "8",
+    "8"
+  ],
+  "machine_max_jerk_y": [
+    "8",
+    "8"
+  ],
+  "machine_max_jerk_z": [
+    "0.4",
+    "0.4"
+  ],
+  "machine_min_extruding_rate": [
+    "0",
+    "0"
+  ],
+  "machine_min_travel_rate": [
+    "0",
+    "0"
+  ],
+  "max_layer_height": [
+    "0.36"
+  ],
+  "min_layer_height": [
+    "0.08"
+  ],
+  "printable_height": "270",
+  "extruder_clearance_radius": "47",
+  "extruder_clearance_height_to_rod": "34",
+  "extruder_clearance_height_to_lid": "34",
+  "printer_settings_id": "SlicerHub Creality Ender 3 S1 Pro 0.4 nozzle",
+  "printer_technology": "FFF",
+  "printer_variant": "0.4",
+  "retraction_minimum_travel": [
+    "1"
+  ],
+  "retract_before_wipe": [
+    "0%"
+  ],
+  "retract_when_changing_layer": [
+    "1"
+  ],
+  "retraction_length": [
+    "1.2"
+  ],
+  "retract_length_toolchange": [
+    "1"
+  ],
+  "z_hop": [
+    "0.2"
+  ],
+  "retract_restart_extra": [
+    "0"
+  ],
+  "retract_restart_extra_toolchange": [
+    "0"
+  ],
+  "retraction_speed": [
+    "40"
+  ],
+  "deretraction_speed": [
+    "40"
+  ],
+  "single_extruder_multi_material": "1",
+  "change_filament_gcode": "M600",
+  "machine_pause_gcode": "M25",
+  "wipe": [
+    "1"
+  ],
+  "default_filament_profile": [
+    "SlicerHub PLA Master"
+  ],
+  "default_print_profile": "SlicerHub Estandar 0.20mm",
+  "machine_start_gcode": "; SlicerHub START G-CODE Creality Ender 3 S1 Pro (Marlin 2 + Sprite)\nG21\nG90\nM82\nM107\nM140 S[bed_temperature_initial_layer_single]\nM104 S140 ; Precalentamiento anti-ooze CR Touch\nG28\nM420 S1 Z10 ; Cargar malla ABL Marlin 2\nM190 S[bed_temperature_initial_layer_single]\nM109 S[nozzle_temperature_initial_layer]\nG92 E0\nG1 Z2.0 F3000\nG1 X2.1 Y20 Z0.28 F5000.0\nG1 X2.1 Y200.0 Z0.28 F1500.0 E15\nG1 X2.4 Y200.0 Z0.28 F5000.0\nG1 X2.4 Y20 Z0.28 F1500.0 E30\nG92 E0\nG1 Z2.0 F3000",
+  "machine_end_gcode": "; SlicerHub END G-CODE Creality Ender 3 S1 Pro\nM140 S0\nM104 S0\nM106 S0\nG91\nG1 E-1.2 F2400\nG1 Z5 F3000\nG90\nG1 X0 Y220 F3000 ; Limite seguro eje Y bed-slinger\nM84",
+  "layer_change_gcode": ";AFTER_LAYER_CHANGE\n;[layer_z]\n",
+  "nozzle_type": "brass",
+  "setting_id": "QW6vWxP2VA6kipYu",
+  "printer_model": "Creality Ender-3 S1 Pro",
+  "printer_structure": "i3",
+  "nozzle_diameter": [
+    "0.4"
+  ],
+  "printable_area": [
+    "0x0",
+    "220x0",
+    "220x220",
+    "0x220"
+  ],
+  "machine_max_junction_deviation": [
+    "0.013",
+    "0"
+  ],
+  "z_hop_types": [
+    "Normal Lift"
+  ],
+  "use_relative_e_distances": "0",
+  "before_layer_change_gcode": ";BEFORE_LAYER_CHANGE\n;[layer_z]\n"
+}

@@ -1,0 +1,188 @@
+{
+  "cli_runtime": {
+    "primary_cli_binary": "/Applications/Flash Studio.app/Contents/MacOS/Flash Studio",
+    "primary_cli_engine": "Orca-Flashforge 2.4.2 (arm64, compatible OrcaSlicer/FLSUN/Marlin2)",
+    "secondary_flsun_binary": "/Applications/FlsunSlicer.app/Contents/MacOS/FlsunSlicer",
+    "secondary_flsun_note": "FlsunSlicer 3.0.0.13 (x86_64 Rosetta) valida JSONs y compatibilidad en CLI, pero presenta SIGSEGV 0x6f8 en PartPlateList::generate_print_polygon por wxGetApp().plater() == nullptr; Flash Studio actúa como motor CLI primario unificado en macOS."
+  },
+  "machines": {
+    "flsun_v400": {
+      "cli_engine": "flash_studio_unified",
+      "binary_path": "/Applications/Flash Studio.app/Contents/MacOS/Flash Studio",
+      "reference_flsun_binary": "/Applications/FlsunSlicer.app/Contents/MacOS/FlsunSlicer",
+      "kinematics": "delta",
+      "origin": "center",
+      "diameter_mm": 300,
+      "height_mm": 410,
+      "safe_square_xy_mm": 205,
+      "usable_edge_z_mm": 390,
+      "max_volumetric_flow_mm3_s": 37.0,
+      "recommended_outer_wall_accel": 2500,
+      "recommended_travel_accel": 9000
+    },
+    "flsun_t1_pro": {
+      "cli_engine": "flash_studio_unified",
+      "binary_path": "/Applications/Flash Studio.app/Contents/MacOS/Flash Studio",
+      "reference_flsun_binary": "/Applications/FlsunSlicer.app/Contents/MacOS/FlsunSlicer",
+      "kinematics": "delta",
+      "origin": "center",
+      "diameter_mm": 260,
+      "height_mm": 330,
+      "usable_edge_z_mm": 285,
+      "max_volumetric_flow_mm3_s": 48.0,
+      "physical_limit_flow_mm3_s": 52.0,
+      "cpap_cooling": true,
+      "adaptive_bed_mesh": "circular"
+    },
+    "flsun_sr": {
+      "cli_engine": "flash_studio_unified",
+      "binary_path": "/Applications/Flash Studio.app/Contents/MacOS/Flash Studio",
+      "reference_flsun_binary": "/Applications/FlsunSlicer.app/Contents/MacOS/FlsunSlicer",
+      "kinematics": "delta",
+      "origin": "center",
+      "diameter_mm": 260,
+      "height_mm": 330,
+      "extruder_drive": "bowden_bmg_3_1",
+      "max_volumetric_flow_mm3_s": 15.0
+    },
+    "creator5_pro": {
+      "cli_engine": "flash_studio",
+      "binary_path": "/Applications/Flash Studio.app/Contents/MacOS/Flash Studio",
+      "kinematics": "corexy_toolchanger_4x",
+      "origin": "bottom_left",
+      "bed_mm": [
+        256,
+        256,
+        256
+      ],
+      "max_volumetric_flow_mm3_s": 32.0,
+      "idle_standby_temp_c": 170,
+      "chamber_max_temp_c": 65,
+      "toolchange_retract_mm": 10.0
+    },
+    "ender3_s1_pro": {
+      "cli_engine": "orcaslicer_compat",
+      "binary_path": "/Applications/Flash Studio.app/Contents/MacOS/Flash Studio",
+      "kinematics": "cartesian_bedslinger",
+      "origin": "bottom_left",
+      "bed_mm": [
+        220,
+        220,
+        270
+      ],
+      "max_volumetric_flow_mm3_s": 14.0,
+      "y_axis_max_accel_mm_s2": 2000,
+      "y_axis_physical_endstop_max_mm": 235,
+      "serial_baud": 115200
+    }
+  },
+  "volumetric_limits_mm3_s": {
+    "pla_master": {
+      "flsun_t1_pro": 48.0,
+      "flsun_v400": 37.0,
+      "creator5_pro": 32.0,
+      "flsun_sr": 15.0,
+      "ender3_s1_pro": 14.0
+    },
+    "petg_master": {
+      "flsun_t1_pro": 20.0,
+      "flsun_v400": 20.0,
+      "creator5_pro": 18.0,
+      "flsun_sr": 12.0,
+      "ender3_s1_pro": 10.0
+    },
+    "abs_master": {
+      "flsun_t1_pro": 32.0,
+      "flsun_v400": 24.0,
+      "creator5_pro": 24.0,
+      "flsun_sr": 12.0,
+      "ender3_s1_pro": 11.0
+    },
+    "tpu_master": {
+      "flsun_t1_pro": 12.0,
+      "flsun_v400": 10.0,
+      "creator5_pro": 10.0,
+      "flsun_sr": 6.0,
+      "ender3_s1_pro": 8.0
+    }
+  },
+  "petg_support_overrides": {
+    "support_top_z_distance": "0.30",
+    "support_bottom_z_distance": "0.30",
+    "support_object_xy_distance": "0.60",
+    "support_interface_top_layers": "2",
+    "support_interface_spacing": "0.25"
+  },
+  "default_support_z_distance": {
+    "pla": 0.20,
+    "petg": 0.30,
+    "abs": 0.24,
+    "tpu": 0.28
+  },
+  "default_support_xy_distance": {
+    "pla": 0.50,
+    "petg": 0.60,
+    "abs": 0.55,
+    "tpu": 0.60
+  },
+  "high_speed_volumetric_limits_mm3_s": {
+    "pla_master": {
+      "flsun_t1_pro": 52.0,
+      "flsun_v400": 42.0,
+      "creator5_pro": 38.0,
+      "flsun_sr": 20.0,
+      "ender3_s1_pro": 18.0
+    },
+    "petg_master": {
+      "flsun_t1_pro": 28.0,
+      "flsun_v400": 26.0,
+      "creator5_pro": 24.0,
+      "flsun_sr": 15.0,
+      "ender3_s1_pro": 14.0
+    },
+    "abs_master": {
+      "flsun_t1_pro": 38.0,
+      "flsun_v400": 30.0,
+      "creator5_pro": 30.0,
+      "flsun_sr": 16.0,
+      "ender3_s1_pro": 14.0
+    },
+    "tpu_master": {
+      "flsun_t1_pro": 15.0,
+      "flsun_v400": 13.0,
+      "creator5_pro": 13.0,
+      "flsun_sr": 8.0,
+      "ender3_s1_pro": 10.0
+    }
+  },
+  "material_temp_ranges": {
+    "pla": {
+      "recommended_min": 190,
+      "recommended_max": 225,
+      "default_initial": 220,
+      "default_normal": 210,
+      "default_bed": 60
+    },
+    "petg": {
+      "recommended_min": 230,
+      "recommended_max": 255,
+      "default_initial": 250,
+      "default_normal": 242,
+      "default_bed": 75
+    },
+    "abs": {
+      "recommended_min": 240,
+      "recommended_max": 270,
+      "default_initial": 260,
+      "default_normal": 255,
+      "default_bed": 100
+    },
+    "tpu": {
+      "recommended_min": 210,
+      "recommended_max": 235,
+      "default_initial": 228,
+      "default_normal": 222,
+      "default_bed": 50
+    }
+  }
+}

@@ -1,0 +1,23 @@
+# Entornos y dependencias
+.venv/
+**/.venv/
+**/__pycache__/
+*.py[cod]
+frontend/node_modules/
+
+# Archivos temporales y secretos locales
+backend/temp/
+backend/.env
+.env
+*.env.local
+
+# Bundles compilados y artefactos de distribución local
+Nikk Slicer.app/
+SlicerHub.app/
+dist_release/
+
+# Sistema macOS, repos de referencia externos y modelos pesados de prueba
+.DS_Store
+repos_referencia/
+modelosTest/*.stl
+modelosTest/*.3mf

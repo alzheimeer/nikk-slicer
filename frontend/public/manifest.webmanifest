@@ -1,0 +1,17 @@
+{
+  "name": "Nikk Slider — Laminador Unificado 3D",
+  "short_name": "Nikk Slider",
+  "description": "Wizard de laminado rápido y visor 3D para granja FDM heterogénea en macOS",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#06b6d4",
+  "icons": [
+    {
+      "src": "/nikk-logo.jpg",
+      "sizes": "1024x1024",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}

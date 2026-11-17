@@ -1,0 +1,237 @@
+{
+  "type": "machine",
+  "name": "SlicerHub FLSUN V400 0.4 nozzle",
+  "from": "system",
+  "instantiation": "true",
+  "gcode_flavor": "klipper",
+  "machine_start_gcode": "; SlicerHub START_PRINT FLSUN V400 (Klipper)\nG21\nG90\nM82\nM104 S150\nM140 S[bed_temperature_initial_layer_single]\nG28\nBED_MESH_PROFILE LOAD=default\nG1 Z50 F3000\nG1 X-150 Y0 F3000\nM190 S[bed_temperature_initial_layer_single]\nM109 S[nozzle_temperature_initial_layer]\nG1 Z0.4 F3000\nG92 E0\nG3 X0 Y-130 I150 J1 Z0.3 E30 F2000\nG92 E0\nG1 E-0.8 F2100\nG92 E0",
+  "machine_end_gcode": "; SlicerHub END_PRINT FLSUN V400\nM400\nG91\nG1 E-2 F2700\nG1 Z10 F3000\nG90\nG28\nM104 S0\nM140 S0\nM106 S0\nM84",
+  "extruder_colour": [
+    "#018001"
+  ],
+  "extruder_offset": [
+    "0x0"
+  ],
+  "machine_max_acceleration_e": [
+    "5000",
+    "5000"
+  ],
+  "machine_max_acceleration_extruding": [
+    "9000",
+    "9000"
+  ],
+  "machine_max_acceleration_retracting": [
+    "5000",
+    "5000"
+  ],
+  "machine_max_acceleration_travel": [
+    "9000",
+    "9000"
+  ],
+  "machine_max_acceleration_x": [
+    "9000",
+    "9000"
+  ],
+  "machine_max_acceleration_y": [
+    "9000",
+    "9000"
+  ],
+  "machine_max_acceleration_z": [
+    "500",
+    "500"
+  ],
+  "machine_max_speed_e": [
+    "60",
+    "60"
+  ],
+  "machine_max_speed_x": [
+    "400",
+    "400"
+  ],
+  "machine_max_speed_y": [
+    "400",
+    "400"
+  ],
+  "machine_max_speed_z": [
+    "20",
+    "20"
+  ],
+  "machine_max_jerk_e": [
+    "2.5",
+    "2.5"
+  ],
+  "machine_max_jerk_x": [
+    "9",
+    "9"
+  ],
+  "machine_max_jerk_y": [
+    "9",
+    "9"
+  ],
+  "machine_max_jerk_z": [
+    "0.4",
+    "0.4"
+  ],
+  "machine_min_extruding_rate": [
+    "0",
+    "0"
+  ],
+  "machine_min_travel_rate": [
+    "0",
+    "0"
+  ],
+  "max_layer_height": [
+    "0.3"
+  ],
+  "min_layer_height": [
+    "0.08"
+  ],
+  "printable_height": "410",
+  "extruder_clearance_radius": "65",
+  "extruder_clearance_height_to_rod": "36",
+  "extruder_clearance_height_to_lid": "140",
+  "nozzle_diameter": [
+    "0.4"
+  ],
+  "printer_settings_id": "SlicerHub FLSUN V400 0.4 nozzle",
+  "printer_structure": "delta",
+  "printer_technology": "FFF",
+  "printer_variant": "0.4",
+  "retraction_minimum_travel": [
+    "1"
+  ],
+  "retract_before_wipe": [
+    "70%"
+  ],
+  "retract_when_changing_layer": [
+    "1"
+  ],
+  "retraction_length": [
+    "0.8"
+  ],
+  "retract_length_toolchange": [
+    "2"
+  ],
+  "z_hop": [
+    "0.4"
+  ],
+  "retract_restart_extra": [
+    "0"
+  ],
+  "retract_restart_extra_toolchange": [
+    "0"
+  ],
+  "retraction_speed": [
+    "45"
+  ],
+  "deretraction_speed": [
+    "45"
+  ],
+  "silent_mode": "0",
+  "single_extruder_multi_material": "1",
+  "change_filament_gcode": "",
+  "thumbnail_size": "48x48, 300x300",
+  "thumbnails_format": "PNG",
+  "before_layer_change_gcode": ";BEFORE_LAYER_CHANGE\n;[layer_z]\n",
+  "layer_change_gcode": ";AFTER_LAYER_CHANGE\n;[layer_z]\n",
+  "machine_pause_gcode": "PAUSE",
+  "wipe": [
+    "1"
+  ],
+  "z_hop_types": [
+    "Slope Lift"
+  ],
+  "setting_id": "GM003",
+  "printer_model": "FLSun V400",
+  "default_print_profile": "SlicerHub Estandar 0.20mm",
+  "bed_exclude_area": [
+    "0x0"
+  ],
+  "printable_area": [
+    "149.4292x13.0734",
+    "147.7212x26.0472",
+    "144.8889x38.8229",
+    "140.9539x51.303",
+    "135.9462x63.3927",
+    "129.9038x75.0",
+    "122.8728x86.0365",
+    "114.9067x96.4181",
+    "106.066x106.066",
+    "96.4181x114.9067",
+    "86.0365x122.8728",
+    "75.0x129.9038",
+    "63.3927x135.9462",
+    "51.303x140.9539",
+    "38.8229x144.8889",
+    "26.0472x147.7212",
+    "13.0734x149.4292",
+    "0.0x150.0",
+    "-13.0734x149.4292",
+    "-26.0472x147.7212",
+    "-38.8229x144.8889",
+    "-51.303x140.9539",
+    "-63.3927x135.9462",
+    "-75.0x129.9038",
+    "-86.0365x122.8728",
+    "-96.4181x114.9067",
+    "-106.066x106.066",
+    "-114.9067x96.4181",
+    "-122.8728x86.0365",
+    "-129.9038x75.0",
+    "-135.9462x63.3927",
+    "-140.9539x51.303",
+    "-144.8889x38.8229",
+    "-147.7212x26.0472",
+    "-149.4292x13.0734",
+    "-150.0x0.0",
+    "-149.4292x-13.0734",
+    "-147.7212x-26.0472",
+    "-144.8889x-38.8229",
+    "-140.9539x-51.303",
+    "-135.9462x-63.3927",
+    "-129.9038x-75.0",
+    "-122.8728x-86.0365",
+    "-114.9067x-96.4181",
+    "-106.066x-106.066",
+    "-96.4181x-114.9067",
+    "-86.0365x-122.8728",
+    "-75.0x-129.9038",
+    "-63.3927x-135.9462",
+    "-51.303x-140.9539",
+    "-38.8229x-144.8889",
+    "-26.0472x-147.7212",
+    "-13.0734x-149.4292",
+    "-0.0x-150.0",
+    "13.0734x-149.4292",
+    "26.0472x-147.7212",
+    "38.8229x-144.8889",
+    "51.303x-140.9539",
+    "63.3927x-135.9462",
+    "75.0x-129.9038",
+    "86.0365x-122.8728",
+    "96.4181x-114.9067",
+    "106.066x-106.066",
+    "114.9067x-96.4181",
+    "122.8728x-86.0365",
+    "129.9038x-75.0",
+    "135.9462x-63.3927",
+    "140.9539x-51.303",
+    "144.8889x-38.8229",
+    "147.7212x-26.0472",
+    "149.4292x-13.0734",
+    "150.0x-0.0"
+  ],
+  "hot_bed_model": "flsun_v400_buildplate_model.stl",
+  "scan_first_layer": "0",
+  "nozzle_type": "brass",
+  "auxiliary_fan": "0",
+  "travel_slope": [
+    "3"
+  ],
+  "adaptive_bed_mesh_margin": "0",
+  "emit_machine_limits_to_gcode": "1",
+  "use_relative_e_distances": "0",
+  "default_filament_profile": [
+    "SlicerHub PLA Master"
+  ]
+}

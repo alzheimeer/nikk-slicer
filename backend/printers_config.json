@@ -1,0 +1,113 @@
+{
+  "flsun_t1_pro_1": {
+    "id": "flsun_t1_pro_1",
+    "name": "FLSUN T1 Pro ARRIBA",
+    "profile_id": "flsun_t1_pro",
+    "protocol": "moonraker",
+    "ip": "192.168.40.39",
+    "fallback_ips": [
+      "192.168.40.39"
+    ],
+    "port": 7125,
+    "http_port": 8080,
+    "access_code": "",
+    "serial_number": "",
+    "serial_port": "",
+    "baudrate": 115200,
+    "sd_volume_path": "",
+    "camera_url": "http://192.168.40.39/webcam/?action=stream",
+    "enabled": true
+  },
+  "flsun_t1_pro_2": {
+    "id": "flsun_t1_pro_2",
+    "name": "FLSUN T1 Pro ABAJO",
+    "profile_id": "flsun_t1_pro",
+    "protocol": "moonraker",
+    "ip": "192.168.40.40",
+    "fallback_ips": [
+      "192.168.40.40"
+    ],
+    "port": 80,
+    "http_port": 8080,
+    "access_code": "",
+    "serial_number": "",
+    "serial_port": "",
+    "baudrate": 115200,
+    "sd_volume_path": "",
+    "camera_url": "http://192.168.40.40/webcam/?action=stream",
+    "enabled": true
+  },
+  "creator5_pro_1": {
+    "id": "creator5_pro_1",
+    "name": "FlashForge Creator 5 Pro",
+    "profile_id": "creator5_pro",
+    "protocol": "flashforge_lan",
+    "ip": "192.168.40.202",
+    "fallback_ips": [
+      "192.168.40.41",
+      "192.168.40.202"
+    ],
+    "port": 8899,
+    "http_port": 8080,
+    "access_code": "97lu7sgv",
+    "serial_number": "SNMVMF9706239",
+    "serial_port": "",
+    "baudrate": 115200,
+    "sd_volume_path": "",
+    "camera_url": "http://192.168.40.202:8080/?action=stream",
+    "enabled": true
+  },
+  "flsun_v400_1": {
+    "id": "flsun_v400_1",
+    "name": "FLSUN V400",
+    "profile_id": "flsun_v400",
+    "protocol": "moonraker",
+    "ip": "192.168.40.42",
+    "fallback_ips": [
+      "192.168.40.42"
+    ],
+    "port": 80,
+    "http_port": 8080,
+    "access_code": "",
+    "serial_number": "",
+    "serial_port": "",
+    "baudrate": 115200,
+    "sd_volume_path": "",
+    "camera_url": "http://192.168.40.42/webcam/?action=stream",
+    "enabled": true
+  },
+  "flsun_sr_1": {
+    "id": "flsun_sr_1",
+    "name": "FLSUN Super Racer",
+    "profile_id": "flsun_sr",
+    "protocol": "marlin_serial",
+    "ip": "",
+    "fallback_ips": [],
+    "port": 7125,
+    "http_port": 8080,
+    "access_code": "",
+    "serial_number": "",
+    "serial_port": "/dev/cu.usbserial-1420",
+    "baudrate": 115200,
+    "sd_volume_path": "",
+    "camera_url": "",
+    "enabled": true
+  },
+  "ender3_s1_pro_1": {
+    "id": "ender3_s1_pro_1",
+    "name": "Creality Ender 3 S1 Pro",
+    "profile_id": "ender3_s1_pro",
+    "protocol": "marlin_serial",
+    "ip": "",
+    "fallback_ips": [],
+    "port": 7125,
+    "http_port": 8080,
+    "access_code": "",
+    "serial_number": "",
+    "serial_port": "/dev/cu.usbserial-1410",
+    "baudrate": 115200,
+    "sd_volume_path": "",
+    "camera_url": "",
+    "enabled": true
+  }
+}
