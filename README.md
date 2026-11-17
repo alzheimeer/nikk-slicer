@@ -152,7 +152,7 @@ MaoSlicer/
 >    - **OrcaSlicer** (`/Applications/OrcaSlicer.app`) — *Recomendado como motor CLI alternativo/respaldo* (si lo instalas o prefieres cambiar la ruta, puedes definir `FLASH_STUDIO_CLI` en `backend/.env`).
 >    - **FLSUN Slicer** (`/Applications/FlsunSlicer.app`) — *Opcional* (referencia de perfiles FLSUN).
 > 2. **Python 3.10+** (`brew install python@3.11`).
-> 3. **Google Chrome** (`/Applications/Google Chrome.app`, o `pywebview` opcional en `.venv`) para abrir la ventana de escritorio dedicada.
+> 3. **Ventana nativa macOS:** `pywebview` viene incluido en `requirements.txt` para abrir una ventana nativa Cocoa/WebKit (sin abrir el navegador); admite fallback automático a **Google Chrome** en modo app si es necesario.
 
 ### Método A: Instalación en un clic con `NikkSlicer_macOS_Installer.dmg`
 1. Descarga **`NikkSlicer_macOS_Installer.dmg`** desde [GitHub Releases](https://github.com/alzheimeer/nikk-slicer/releases/latest) y ábrelo con doble clic.
