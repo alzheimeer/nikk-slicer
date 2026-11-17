@@ -48,6 +48,10 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) todo el f
 | :---: | :---: |
 | ![Modo Litofanía](docs/screenshots/03-modo-litofania.png) | ![Monitor en Vivo](docs/screenshots/04-monitor-en-vivo.png) |
 
+| Capas G-code 3D & Soporte con IA Real | Gestión Multi-Impresora, USB/SD y Claves IA |
+| :---: | :---: |
+| ![Capas G-code e IA](docs/screenshots/06-visor-capas-gcode-ia.jpg) | ![Gestión Multi-Impresora](docs/screenshots/05-gestion-impresoras-ia.png) |
+
 ---
 
 ## Características Principales
