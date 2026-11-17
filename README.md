@@ -207,7 +207,11 @@ http://<IP_DEL_MAC_PRINCIPAL>:8000
 
 ## Apoya el Proyecto (Opcional)
 
-**Nikk Slicer** es **100% gratuito y de código abierto (MIT)**. Si esta herramienta te ahorra tiempo en tu taller o granja de impresión 3D, puedes contribuir voluntariamente con un rollo de filamento o un café en **[paypal.me/niklaussMauricio](https://paypal.me/niklaussMauricio)** para seguir financiando pruebas reales y nuevas mejoras.
+**Nikk Slicer** es **100% gratuito y de código abierto (MIT)**. Si esta herramienta te ahorra tiempo en tu taller o granja de impresión 3D, puedes apoyar voluntariamente su desarrollo y pruebas reales mediante cualquiera de estas opciones:
+
+- **Internacional (PayPal):** [paypal.me/niklaussMauricio](https://paypal.me/niklaussMauricio)
+- **Colombia — Llave Bre-B (transferencia inmediata sin comisión):** `@NIKLAUSS`
+- **Colombia — Nequi:** `319 377 9313`
 
 ---
 
