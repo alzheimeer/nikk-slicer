@@ -1333,6 +1333,72 @@ async def delete_stored_file_endpoint(
         raise HTTPException(status_code=500, detail=err_detail) from exc
 
 
+@app.delete("/api/printers/{printer_id}/files/all")
+async def delete_all_stored_files_endpoint(printer_id: PrinterId) -> dict[str, Any]:
+    """Elimina todos los archivos G-code/3MF de la memoria interna de `printer_id`."""
+    try:
+        resolved_pid, cfg = get_printer_instance(printer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    protocol = str(cfg.get("protocol", ""))
+    if protocol not in ("moonraker", "flashforge_lan"):
+        raise HTTPException(
+            status_code=400,
+            detail="Borrado remoto masivo no soportado en USB Marlin.",
+        )
+
+    try:
+        files = (
+            await list_moonraker_files(cfg)
+            if protocol == "moonraker"
+            else await list_flashforge_files(cfg)
+        )
+        if not files:
+            return {
+                "status": "ok",
+                "printer_id": resolved_pid,
+                "deleted_count": 0,
+                "failed_count": 0,
+                "message": "No había archivos en memoria para eliminar.",
+            }
+
+        delete_fn = delete_moonraker_file if protocol == "moonraker" else delete_flashforge_file
+        deleted_count = 0
+        failed_count = 0
+        last_error = ""
+        for entry in files:
+            try:
+                await delete_fn(cfg, entry.filename)
+                deleted_count += 1
+            except Exception as exc:
+                failed_count += 1
+                last_error = str(exc) or type(exc).__name__
+
+        if deleted_count == 0 and failed_count > 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"No se pudo eliminar ningún archivo ({failed_count} error(es)): {last_error}",
+            )
+
+        summary = f"Se eliminaron {deleted_count} archivo(s) de la memoria."
+        if failed_count > 0:
+            summary += f" ({failed_count} omitido(s): {last_error})"
+
+        return {
+            "status": "ok",
+            "printer_id": resolved_pid,
+            "deleted_count": deleted_count,
+            "failed_count": failed_count,
+            "message": summary,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        err_detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        raise HTTPException(status_code=500, detail=err_detail) from exc
+
+
 @app.get("/api/printers/{printer_id}/timelapses", response_model=PrinterTimelapsesResponse)
 async def list_printer_timelapses_endpoint(
     printer_id: PrinterId,

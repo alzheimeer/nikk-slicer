@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import {
   controlPrinter,
+  deleteAllStoredFiles,
   deleteStoredFile,
   fetchPrinterFiles,
   fetchPrinterTelemetrySession,
@@ -131,6 +132,7 @@ export function FarmDashboard() {
   const [filesOpenById, setFilesOpenById] = useState<Record<string, boolean>>({});
   const [filesById, setFilesById] = useState<Record<string, PrinterStoredFile[]>>({});
   const [confirmDeleteById, setConfirmDeleteById] = useState<Record<string, string | null>>({});
+  const [confirmDeleteAllById, setConfirmDeleteAllById] = useState<Record<string, boolean>>({});
   const [confirmPrintById, setConfirmPrintById] = useState<Record<string, string | null>>({});
   const [enableTimelapseForFile, setEnableTimelapseForFile] = useState<boolean>(() => {
     try {
@@ -352,6 +354,25 @@ export function FarmDashboard() {
     }
   };
 
+  const handleDeleteAllStoredFiles = async (printerId: PrinterId) => {
+    setPrinterActionBusy(printerId, 'delete_all');
+    setPrinterFeedback(printerId, null);
+    try {
+      const res = await deleteAllStoredFiles(printerId);
+      setConfirmDeleteAllById((prev) => ({ ...prev, [printerId]: false }));
+      setConfirmDeleteById((prev) => ({ ...prev, [printerId]: null }));
+      setPrinterFeedback(printerId, res.message);
+      await loadFilesForPrinter(printerId);
+    } catch (err: unknown) {
+      setPrinterFeedback(
+        printerId,
+        err instanceof Error ? err.message : 'Error eliminando todos los archivos.',
+      );
+    } finally {
+      setPrinterActionBusy(printerId, null);
+    }
+  };
+
   const loadTimelapsesForPrinter = async (printerId: PrinterId) => {
     setPrinterActionBusy(printerId, 'timelapses');
     try {
@@ -463,6 +484,7 @@ export function FarmDashboard() {
             const filesOpen = Boolean(filesOpenById[pid]);
             const filesList = filesById[pid] ?? [];
             const confirmDeleteName = confirmDeleteById[pid] ?? null;
+            const isConfirmingDeleteAll = Boolean(confirmDeleteAllById[pid]);
             const confirmPrintName = confirmPrintById[pid] ?? null;
             const timelapseOpen = Boolean(timelapseOpenById[pid]);
             const timelapseInfo = timelapsesById[pid];
@@ -929,19 +951,66 @@ export function FarmDashboard() {
 
                       {filesOpen && (
                         <div className="space-y-1.5 border-t border-slate-800 px-2.5 py-2">
-                          <div className="flex items-center justify-between text-[10px] text-slate-400">
+                          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-slate-400">
                             <span>Almacenamiento de {st.display_name}</span>
-                            <button
-                              type="button"
-                              disabled={cardBusy}
-                              onClick={() => void loadFilesForPrinter(pid)}
-                              className="flex items-center gap-1 text-cyan-300 hover:underline disabled:opacity-40"
-                            >
-                              <RefreshCw
-                                className={`h-3 w-3 ${busyAction === 'files_list' ? 'animate-spin' : ''}`}
-                              />
-                              Recargar
-                            </button>
+                            <div className="flex items-center gap-2">
+                              {filesList.length > 0 &&
+                                (isConfirmingDeleteAll ? (
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      disabled={cardBusy}
+                                      onClick={() => void handleDeleteAllStoredFiles(pid)}
+                                      className="flex items-center gap-1 rounded border border-rose-500 bg-rose-500/30 px-1.5 py-0.5 font-bold text-rose-100 hover:bg-rose-500/45 disabled:opacity-40"
+                                    >
+                                      {busyAction === 'delete_all' ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                      ) : null}
+                                      Confirmar borrar ({filesList.length})
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={cardBusy}
+                                      onClick={() =>
+                                        setConfirmDeleteAllById((prev) => ({
+                                          ...prev,
+                                          [pid]: false,
+                                        }))
+                                      }
+                                      className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-slate-300 hover:bg-slate-700"
+                                    >
+                                      No
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={cardBusy}
+                                    onClick={() =>
+                                      setConfirmDeleteAllById((prev) => ({
+                                        ...prev,
+                                        [pid]: true,
+                                      }))
+                                    }
+                                    className="flex items-center gap-1 rounded border border-rose-500/35 bg-rose-500/10 px-1.5 py-0.5 font-medium text-rose-300 hover:bg-rose-500/25 disabled:opacity-40"
+                                    title="Eliminar todos los G-code de la memoria"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                    Borrar todos
+                                  </button>
+                                ))}
+                              <button
+                                type="button"
+                                disabled={cardBusy}
+                                onClick={() => void loadFilesForPrinter(pid)}
+                                className="flex items-center gap-1 text-cyan-300 hover:underline disabled:opacity-40"
+                              >
+                                <RefreshCw
+                                  className={`h-3 w-3 ${busyAction === 'files_list' ? 'animate-spin' : ''}`}
+                                />
+                                Recargar
+                              </button>
+                            </div>
                           </div>
 
                           {filesList.length === 0 ? (

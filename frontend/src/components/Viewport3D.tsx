@@ -25,6 +25,7 @@ import {
   Scaling,
   Scissors,
   Trash2,
+  X,
 } from 'lucide-react';
 import type {
   LayOnFaceCandidate,
@@ -1314,8 +1315,10 @@ export function Viewport3D({
 
   return (
     <div className="relative h-full w-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl">
-      {/* Barra superior HUD */}
-      <div className="pointer-events-none absolute inset-x-4 top-4 z-20 flex flex-wrap items-center justify-between gap-2">
+      {/* Contenedor superior HUD + Submenú CAD (flujo vertical para evitar solapamientos) */}
+      <div className="pointer-events-none absolute inset-x-4 top-4 z-20 flex flex-col items-start gap-2.5">
+        {/* Barra superior HUD */}
+        <div className="flex w-full flex-wrap items-center justify-between gap-2">
         <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-slate-800/90 bg-slate-900/90 px-3 py-1.5 backdrop-blur">
           <span className="h-2 w-2 rounded-full bg-cyan-400" />
           <span className="text-xs font-medium text-slate-200">
@@ -1435,9 +1438,24 @@ export function Viewport3D({
         )}
       </div>
 
-      {/* Submenú flotante CAD activo (Vista STL / 3MF) */}
-      {stlFile && viewMode === 'stl' && activeCadTool && (
-        <div className="pointer-events-auto absolute left-4 top-16 z-20 w-72 space-y-2 rounded-2xl border border-slate-800/95 bg-slate-900/92 p-3 text-xs shadow-2xl backdrop-blur">
+        {/* Submenú flotante CAD activo (Vista STL / 3MF) */}
+        {stlFile && viewMode === 'stl' && activeCadTool && (
+          <div className="pointer-events-auto max-h-[60vh] w-72 space-y-2 overflow-y-auto rounded-2xl border border-slate-800/95 bg-slate-900/92 p-3 text-xs shadow-2xl backdrop-blur">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Herramienta CAD
+              </span>
+              <button
+                type="button"
+                onClick={() => setActiveCadTool(null)}
+                title="Cerrar panel de herramienta"
+                aria-label="Cerrar panel de herramienta"
+                className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
+              >
+                <span>Cerrar</span>
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
           {activeCadTool === 'select' && (
             <>
               <div className="flex items-center justify-between">
@@ -1956,6 +1974,7 @@ export function Viewport3D({
           )}
         </div>
       )}
+      </div>
 
       {/* Barra inferior compacta cuando está en Vista STL */}
       {stlFile && viewMode === 'stl' && (

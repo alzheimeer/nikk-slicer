@@ -1128,6 +1128,30 @@ export async function deleteStoredFile(
   return res.json() as Promise<{ status: string; printer_id: string; message: string }>;
 }
 
+export async function deleteAllStoredFiles(
+  printerId: PrinterId,
+): Promise<{
+  status: string;
+  printer_id: string;
+  deleted_count: number;
+  failed_count: number;
+  message: string;
+}> {
+  const res = await fetch(`${API_BASE_URL}/printers/${printerId}/files/all`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<{
+    status: string;
+    printer_id: string;
+    deleted_count: number;
+    failed_count: number;
+    message: string;
+  }>;
+}
+
 export async function fetchPrinterTimelapses(
   printerId: PrinterId,
 ): Promise<PrinterTimelapsesResponse> {
