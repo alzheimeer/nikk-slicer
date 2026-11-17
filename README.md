@@ -1,6 +1,18 @@
 # Nikk Slicer
 
+[![macOS Apple Silicon & Intel](https://img.shields.io/badge/macOS-Apple%20Silicon%20%7C%20Intel-000000?logo=apple&logoColor=white)](https://github.com/alzheimeer/nikk-slicer/releases/latest)
+[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![React + Three.js](https://img.shields.io/badge/Frontend-React%20%2B%20Three.js-61DAFB?logo=react&logoColor=000000)](https://react.dev/)
+[![DeepSeek AI](https://img.shields.io/badge/AI%20Copilot-DeepSeek%20API-4D6BFE)](https://www.deepseek.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Download macOS DMG](https://img.shields.io/badge/Download-NikkSlicer%20v1.3.0%20(.dmg)-22c55e?logo=apple&logoColor=white)](https://github.com/alzheimeer/nikk-slicer/releases/latest)
+
+> **Unified 3D Slicer & Multi-Printer Farm Monitor for macOS — FLSUN Klipper/Moonraker + FlashForge LAN**  
+> Native desktop app (`Nikk Slicer.app`) with multi-extruder `T0–T3` support, triangle-painted `.3mf` WebGL preview, Lithophane mode, automated AI support optimization, and continuous `0% → 100%` telemetry recording with DeepSeek AI post-print compendiums.
+
 **Laminador 3D unificado, visor WebGL multicolor y centro de control de granja FDM con Copiloto IA (DeepSeek API) para macOS.**
+
+📥 **Descarga directa para macOS (Apple Silicon M1–M4 e Intel):** [**NikkSlicer_macOS_Installer.dmg (v1.3.0)**](https://github.com/alzheimeer/nikk-slicer/releases/latest)
 
 Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) un flujo de trabajo completo desde el análisis geométrico de archivos `.STL` y `.3MF` hasta el laminado headless con **Flash Studio / OrcaSlicer**, envío directo por red/USB/SD y monitoreo continuo en tiempo real con aprendizaje automático tras cada impresión.
 
