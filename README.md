@@ -1,4 +1,11 @@
+<div align="center">
+
+<img src="frontend/public/nikk-logo.jpg" alt="Nikk Slicer Logo" width="112" style="border-radius: 22px;" />
+
 # Nikk Slicer
+
+**Unified 3D Slicer & Multi-Printer Farm Monitor for macOS — FLSUN Klipper/Moonraker + FlashForge LAN**  
+*Laminador 3D unificado, visor WebGL multicolor y centro de control de granja FDM con Copiloto IA para macOS.*
 
 [![macOS Apple Silicon & Intel](https://img.shields.io/badge/macOS-Apple%20Silicon%20%7C%20Intel-000000?logo=apple&logoColor=white)](https://github.com/alzheimeer/nikk-slicer/releases/latest)
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -7,14 +14,27 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Download macOS DMG](https://img.shields.io/badge/Download-NikkSlicer%20v1.3.0%20(.dmg)-22c55e?logo=apple&logoColor=white)](https://github.com/alzheimeer/nikk-slicer/releases/latest)
 
-> **Unified 3D Slicer & Multi-Printer Farm Monitor for macOS — FLSUN Klipper/Moonraker + FlashForge LAN**  
-> Native desktop app (`Nikk Slicer.app`) with multi-extruder `T0–T3` support, triangle-painted `.3mf` WebGL preview, Lithophane mode, automated AI support optimization, and continuous `0% → 100%` telemetry recording with DeepSeek AI post-print compendiums.
+[Características](#-características-principales) • [Ecosistema & Hardware](#-ecosistema-e-impresoras-soportadas) • [Galería](#-galería-de-interfaces) • [Arquitectura](#-arquitectura-del-sistema) • [Instalación](#-instalación-en-otro-mac-apple-silicon-m1m2m3m4-e-intel) • [API](#-endpoints-rest-principales)
 
-**Laminador 3D unificado, visor WebGL multicolor y centro de control de granja FDM con Copiloto IA (DeepSeek API) para macOS.**
+<br />
 
 📥 **Descarga directa para macOS (Apple Silicon M1–M4 e Intel):** [**NikkSlicer_macOS_Installer.dmg (v1.3.0)**](https://github.com/alzheimeer/nikk-slicer/releases/latest)
 
-Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) un flujo de trabajo completo desde el análisis geométrico de archivos `.STL` y `.3MF` hasta el laminado headless con **Flash Studio / OrcaSlicer**, envío directo por red/USB/SD y monitoreo continuo en tiempo real con aprendizaje automático tras cada impresión.
+</div>
+
+---
+
+## Ecosistema Integrado
+
+<div align="center">
+
+| <img src="docs/assets/deepseek-logo.png" alt="DeepSeek AI" height="44" /> | <img src="docs/assets/klipper-logo.png" alt="Klipper" height="44" /> | <img src="docs/assets/flashforge-logo.png" alt="FlashForge" height="36" /> | <img src="docs/assets/creality-logo.png" alt="Creality" height="36" /> |
+| :---: | :---: | :---: | :---: |
+| **DeepSeek AI Copilot** | **Klipper / Moonraker** | **FlashForge LAN & Studio** | **Creality Marlin 2** |
+
+</div>
+
+Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) todo el flujo de producción FDM: análisis geométrico de `.STL` y `.3MF`, optimización automática impulsada por **DeepSeek API**, laminado headless con **Flash Studio / OrcaSlicer**, envío directo a impresoras en red/USB/SD y grabación continua de telemetría (`0% → 100%`) con aprendizaje automático entre corridas.
 
 ---
 
@@ -44,14 +64,22 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) un flujo 
 - **Modo Litofanía (Alta Definición a Contraluz):**
   - Bloqueo automático a **PLA / PLA HS**, capa fina (`0.12 mm`), relleno **`99%` rectilíneo**, 6 perímetros (`Arachne`), costura trasera, brim exterior de `8 mm`, desactivación de soportes sobre la cara de imagen y velocidades/aceleraciones anti-ringing por cinemática.
 - **Monitor en Vivo y Aprendizaje Continuo con DeepSeek API:**
-  - **Grabador continuo (`0% → 100%`)** en segundo plano: guarda muestras cada 20 s y en hitos de progreso (`backend/temp/telemetry_sessions/`).
+  - <img src="docs/assets/deepseek-logo.png" alt="DeepSeek" width="16" align="absmiddle" /> **Grabador continuo (`0% → 100%`)** en segundo plano: guarda muestras cada 20 s y en hitos de progreso (`backend/temp/telemetry_sessions/`).
   - Al finalizar la impresión (o bajo demanda a mitad de corrida), genera un **Compendio Final IA** por fases (`0–5%`, `5–85%`, `85–100%`) con calificación (`EXCELENTE`, `BUENA_CON_MEJORAS`, `REQUIERE_AJUSTE`) y mejoras concretas para el siguiente laminado.
   - **Aprendizaje real acumulado (`GET /api/telemetry/learnings`):** el historial completado (`completed_compendiums.json`) retroalimenta automáticamente a DeepSeek en el Paso 3 del Laminador según máquina y material.
   - Control aislado de **Luz LED**, gestor de **archivos remotos** (subir sin imprimir, subir e imprimir con/sin nivelación), reproductor/descarga de **Timelapses `.mp4`** y cancelación real (`END_PRINT` en Moonraker / FlashForge LAN).
 
 ---
 
-## Impresoras Soportadas y Protocolos
+## Ecosistema e Impresoras Soportadas
+
+<div align="center">
+
+| <img src="docs/assets/flsun-t1-pro.png" alt="FLSUN T1 Pro" height="130" /> | <img src="docs/assets/flsun-v400.png" alt="FLSUN V400" height="130" /> | <img src="docs/assets/flashforge-creator5-pro.jpg" alt="FlashForge Creator 5 Pro" height="130" /> |
+| :---: | :---: | :---: |
+| **FLSUN T1 Pro (#1 / #2)**<br />Delta Klipper · `Ø260×330 mm` · `48 mm³/s` | **FLSUN V400**<br />Delta Klipper · `Ø300×410 mm` · `37 mm³/s` | **FlashForge Creator 5 Pro**<br />CoreXY 4-Tool (`T0–T3`) · `256³ mm` |
+
+</div>
 
 | Impresora | Perfil Base | Cinemática | Volumen | Protocolo |
 | :--- | :--- | :--- | :--- | :--- |
@@ -63,7 +91,18 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) un flujo 
 
 ---
 
-## Arquitectura del Proyecto
+## Arquitectura del Sistema
+
+```mermaid
+flowchart LR
+    UI["Nikk Slicer.app<br/>React 19 + Three.js WebGL"] <-->|REST / SPA :8000| API["FastAPI Backend<br/>desktop_launcher.py"]
+    API --> MESH["mesh_analyzer.py<br/>Trimesh + 3MF Paint T0-T3"]
+    API --> PATCH["json_patcher.py + slicer_router.py<br/>Flash Studio / OrcaSlicer CLI"]
+    API <--> AI["ai_copilot.py<br/>DeepSeek API + Heurística FDM"]
+    API <--> REC["print_telemetry_recorder.py<br/>Sesiones 0-100% + Aprendizajes"]
+    REC --> AI
+    API <--> HW["Conectores de Granja<br/>Moonraker · FlashForge LAN · USB Serial"]
+```
 
 ```text
 MaoSlicer/
@@ -84,11 +123,14 @@ MaoSlicer/
 │   ├── src/services/api.ts
 │   ├── src/utils/threeMfPaint.ts        # Decodificador 3MF pintado por triángulo (WebGL)
 │   └── dist/                            # Build React/Vite listo para servir desde FastAPI
-├── docs/screenshots/                    # Capturas reales de la aplicación
+├── docs/
+│   ├── assets/                          # Logos DeepSeek/Klipper/FlashForge/Creality y fotos reales
+│   └── screenshots/                     # Capturas reales de la aplicación
 ├── desktop_launcher.py                  # Lanzador nativo macOS (puerto 8000 + ventana dedicada)
 ├── build_macos_app.sh                   # Empaquetador de Nikk Slicer.app + NikkSlicer.icns
 ├── install_on_mac.sh                    # Instalador automático (.venv + .env + Nikk Slicer.app)
 ├── package_release.sh                   # Generador de DMG y ZIP distribuibles
+├── LICENSE                              # Licencia MIT
 └── README.md
 ```
 
@@ -102,7 +144,7 @@ MaoSlicer/
 > 3. **Google Chrome** (o `pywebview` opcional en `.venv`) para la ventana de escritorio dedicada.
 
 ### Método A: Instalación en un clic con `NikkSlicer_macOS_Installer.dmg`
-1. Descarga **`NikkSlicer_macOS_Installer.dmg`** desde [GitHub Releases](https://github.com/alzheimeer/nikk-slicer/releases/latest) (o usa `dist_release/NikkSlicer_macOS_Installer.dmg`) y ábrelo con doble clic.
+1. Descarga **`NikkSlicer_macOS_Installer.dmg`** desde [GitHub Releases](https://github.com/alzheimeer/nikk-slicer/releases/latest) y ábrelo con doble clic.
 2. Ejecuta **`Instalar_Nikk_Slicer.command`** (copiará el proyecto a `~/Apps/NikkSlicer`, creará el `.venv`, instalará dependencias e instalará **`/Applications/Nikk Slicer.app`**).
 3. Edita `~/Apps/NikkSlicer/backend/.env` y pega tu clave **`DEEPSEEK_API_KEY=...`**.
 4. Abre **Nikk Slicer** desde `/Applications/Nikk Slicer.app` o desde el Dock.
@@ -123,6 +165,22 @@ http://<IP_DEL_MAC_PRINCIPAL>:8000
 
 ---
 
+## Endpoints REST Principales
+
+| Método | Ruta | Descripción |
+| :--- | :--- | :--- |
+| `GET` | `/api/health` | Estado del servidor unificado (`Nikk Slicer`) |
+| `POST` | `/api/analyze-mesh` | Análisis geométrico (`trimesh`) y detección multicolor `.3mf` |
+| `POST` | `/api/ai-recommend` | Recomendación automática con DeepSeek + aprendizajes reales |
+| `POST` | `/api/ai-support-orient` | Orientación anti-soportes y evaluación comparativa |
+| `POST` | `/api/slice` | Laminado real multi-perfil y multi-extrusor (`T0–T3`) |
+| `GET` | `/api/printers/status` | Telemetría en vivo de toda la granja + ingestión continua |
+| `GET` | `/api/printers/{id}/telemetry-session` | Sesión activa grabada (`0–100%`) e historial de compendios |
+| `POST` | `/api/printers/{id}/telemetry-session/compendium` | Genera compendio IA acumulado hasta el instante actual |
+| `GET` | `/api/telemetry/learnings` | Aprendizajes reales acumulados por máquina y material |
+
+---
+
 ## Actualizar y Recompilar tras Cambios en el Código
 
 - **Recompilar frontend y actualizar `Nikk Slicer.app` + `/Applications/Nikk Slicer.app`:**
@@ -136,4 +194,6 @@ http://<IP_DEL_MAC_PRINCIPAL>:8000
 
 ---
 
-**Creador:** Niklauss Mauricio Quintero · `niklaussmauricio@gmail.com`
+## Licencia y Autor
+
+Distribuido bajo licencia **[MIT](LICENSE)** · © 2026 **Niklauss Mauricio Quintero Romero** (`niklaussmauricio@gmail.com`)
