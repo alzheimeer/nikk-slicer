@@ -13,6 +13,7 @@
 [![DeepSeek AI](https://img.shields.io/badge/AI%20Copilot-DeepSeek%20API-4D6BFE)](https://www.deepseek.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Download macOS DMG](https://img.shields.io/badge/Download-NikkSlicer%20v1.3.0%20(.dmg)-22c55e?logo=apple&logoColor=white)](https://github.com/alzheimeer/nikk-slicer/releases/latest)
+[![Apoyar en PayPal](https://img.shields.io/badge/Apoyar-PayPal.me-00457C?style=flat&logo=paypal&logoColor=white)](https://paypal.me/niklaussMauricio)
 
 [Características](#-características-principales) • [Ecosistema & Hardware](#-ecosistema-e-impresoras-soportadas) • [Galería](#-galería-de-interfaces) • [Arquitectura](#-arquitectura-del-sistema) • [Instalación](#-instalación-en-otro-mac-apple-silicon-m1m2m3m4-e-intel) • [API](#-endpoints-rest-principales)
 
@@ -201,6 +202,12 @@ http://<IP_DEL_MAC_PRINCIPAL>:8000
   ```bash
   ./package_release.sh
   ```
+
+---
+
+## Apoya el Proyecto (Opcional)
+
+**Nikk Slicer** es **100% gratuito y de código abierto (MIT)**. Si esta herramienta te ahorra tiempo en tu taller o granja de impresión 3D, puedes contribuir voluntariamente con un rollo de filamento o un café en **[paypal.me/niklaussMauricio](https://paypal.me/niklaussMauricio)** para seguir financiando pruebas reales y nuevas mejoras.
 
 ---
 
