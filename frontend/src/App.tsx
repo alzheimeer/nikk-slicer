@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, Cpu, Settings, Sliders } from 'lucide-react';
+import { Activity, AlertTriangle, Cpu, Settings, Sliders } from 'lucide-react';
+import { ErrorJournalModal } from './components/ErrorJournalModal';
 import {
   analyzeMesh,
   autoArrangeModels,
   autoOrientMesh,
+  clearLastSession,
   cutMeshByPlane,
   fetchAIRecommendation,
   fetchCachedMeshFile,
@@ -11,7 +13,9 @@ import {
   fetchGcodeText,
   fetchLayOnFaceCandidates,
   fetchPrintersConfig,
+  fetchUserPrefs,
   requestAISupportOrient,
+  saveUserPrefs,
   sliceModel,
   uploadJobToPrinter,
   type AISupportOrientResponse,
@@ -77,6 +81,26 @@ interface SavedUserPrefs {
   qualityPreset?: QualityPreset;
   autoLeveling?: boolean;
   extrudersConfig?: ExtruderSlotConfig[];
+  modelExtruder?: number;
+  supportExtruder?: number;
+  last_session?: LastSessionData;
+}
+
+interface LastSessionData {
+  mesh_id: string;
+  file_name: string;
+  printer_id?: PrinterId;
+  transform?: ModelTransform;
+  part_extruder_map?: Record<string, number>;
+  z_color_ranges?: ZColorRange[];
+  supports?: boolean;
+  support_type?: SupportType;
+  support_on_build_plate_only?: boolean;
+  support_z_distance?: number;
+  support_xy_distance?: number;
+  adhesion_type?: AdhesionType;
+  brim_width_mm?: number;
+  saved_at?: string;
 }
 
 function loadSavedUserPrefs(): SavedUserPrefs {
@@ -131,6 +155,7 @@ export function App() {
 
   const [activeTab, setActiveTab] = useState<'wizard' | 'monitor'>('wizard');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [journalOpen, setJournalOpen] = useState(false);
 
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [machineProfiles, setMachineProfiles] = useState<MachineProfileInfo[]>([]);
@@ -237,12 +262,30 @@ export function App() {
     }
     return DEFAULT_EXTRUDERS;
   });
-  const [modelExtruder, setModelExtruder] = useState<number>(0);
-  const [supportExtruder, setSupportExtruder] = useState<number>(0);
+  const [modelExtruder, setModelExtruder] = useState<number>(() =>
+    typeof initialPrefs.modelExtruder === 'number' &&
+    initialPrefs.modelExtruder >= 0 &&
+    initialPrefs.modelExtruder <= 3
+      ? initialPrefs.modelExtruder
+      : 0,
+  );
+  const [supportExtruder, setSupportExtruder] = useState<number>(() =>
+    typeof initialPrefs.supportExtruder === 'number' &&
+    initialPrefs.supportExtruder >= 0 &&
+    initialPrefs.supportExtruder <= 3
+      ? initialPrefs.supportExtruder
+      : 0,
+  );
   const [zColorRanges, setZColorRanges] = useState<ZColorRange[]>([]);
   const [partExtruderMap, setPartExtruderMap] = useState<Record<string, number>>({});
+  const [chamberTempTarget, setChamberTempTarget] = useState<number | null>(null);
+  const [pendingRestoreSession, setPendingRestoreSession] =
+    useState<LastSessionData | null>(null);
+  const [isRestoringSession, setIsRestoringSession] = useState(false);
 
   const analyzeSeqRef = useRef(0);
+  const prefsLoadedRef = useRef(false);
+  const lastSupportSyncKeyRef = useRef<string>('');
 
   const activePrinter =
     printers.find((p) => p.printer_id === selectedPrinterId) ?? null;
@@ -279,29 +322,88 @@ export function App() {
       .catch(() => {
         // Opcional en arranque si aún se está conectando
       });
+
+    fetchUserPrefs()
+      .then((raw) => {
+        const p = raw as SavedUserPrefs;
+        if (typeof p.selectedPrinterId === 'string' && p.selectedPrinterId) {
+          setSelectedPrinterId(p.selectedPrinterId);
+        }
+        if (p.material && p.material in MATERIAL_DEFAULTS) {
+          setMaterial(p.material);
+        }
+        if (p.nozzleDiameter && [0.2, 0.4, 0.6, 0.8].includes(p.nozzleDiameter)) {
+          setNozzleDiameter(p.nozzleDiameter);
+        }
+        if (typeof p.highSpeedFilament === 'boolean') {
+          setHighSpeedFilament(p.highSpeedFilament);
+        }
+        if (typeof p.lithophaneMode === 'boolean') {
+          setLithophaneMode(p.lithophaneMode);
+        }
+        if (typeof p.spoolMinTemp === 'number') setSpoolMinTemp(p.spoolMinTemp);
+        if (typeof p.spoolMaxTemp === 'number') setSpoolMaxTemp(p.spoolMaxTemp);
+        if (p.qualityPreset) setQualityPreset(p.qualityPreset);
+        if (typeof p.autoLeveling === 'boolean') setAutoLeveling(p.autoLeveling);
+        if (Array.isArray(p.extrudersConfig) && p.extrudersConfig.length === 4) {
+          setExtrudersConfig(
+            p.extrudersConfig.map((s, idx) => ({
+              ...DEFAULT_EXTRUDERS[idx],
+              ...s,
+              extruder_index: idx,
+            })),
+          );
+        }
+        if (typeof p.modelExtruder === 'number' && p.modelExtruder >= 0 && p.modelExtruder <= 3) {
+          setModelExtruder(p.modelExtruder);
+        }
+        if (typeof p.supportExtruder === 'number' && p.supportExtruder >= 0 && p.supportExtruder <= 3) {
+          setSupportExtruder(p.supportExtruder);
+        }
+        if (
+          p.last_session &&
+          typeof p.last_session.mesh_id === 'string' &&
+          p.last_session.mesh_id &&
+          typeof p.last_session.file_name === 'string' &&
+          p.last_session.file_name
+        ) {
+          setPendingRestoreSession(p.last_session);
+        }
+      })
+      .catch(() => {
+        // Fallback a localStorage si el backend aún está iniciando
+      })
+      .finally(() => {
+        prefsLoadedRef.current = true;
+      });
   }, []);
 
-  // Persistir última configuración del usuario en localStorage
+  // Persistir última configuración del usuario en localStorage y en disco del backend
   useEffect(() => {
+    const payload = {
+      selectedPrinterId,
+      material,
+      nozzleDiameter,
+      highSpeedFilament,
+      lithophaneMode,
+      spoolMinTemp,
+      spoolMaxTemp,
+      qualityPreset,
+      autoLeveling,
+      extrudersConfig,
+      modelExtruder,
+      supportExtruder,
+    };
     try {
-      window.localStorage.setItem(
-        PREFS_STORAGE_KEY,
-        JSON.stringify({
-          selectedPrinterId,
-          material,
-          nozzleDiameter,
-          highSpeedFilament,
-          lithophaneMode,
-          spoolMinTemp,
-          spoolMaxTemp,
-          qualityPreset,
-          autoLeveling,
-          extrudersConfig,
-        }),
-      );
+      window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(payload));
     } catch {
       // Ignorar errores de cuota de localStorage
     }
+    if (!prefsLoadedRef.current) return;
+    const timer = window.setTimeout(() => {
+      void saveUserPrefs(payload).catch(() => {});
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [
     selectedPrinterId,
     material,
@@ -313,6 +415,48 @@ export function App() {
     qualityPreset,
     autoLeveling,
     extrudersConfig,
+    modelExtruder,
+    supportExtruder,
+  ]);
+
+  // Guardar última sesión de modelo importado en disco para ofrecer reabrirlo al iniciar
+  useEffect(() => {
+    if (!prefsLoadedRef.current || !meshId || !stlFile) return;
+    const timer = window.setTimeout(() => {
+      void saveUserPrefs({
+        last_session: {
+          mesh_id: meshId,
+          file_name: stlFile.name,
+          printer_id: selectedPrinterId,
+          transform,
+          part_extruder_map: partExtruderMap,
+          z_color_ranges: zColorRanges,
+          supports,
+          support_type: supportType,
+          support_on_build_plate_only: supportOnBuildPlateOnly,
+          support_z_distance: supportZDistance,
+          support_xy_distance: supportXyDistance,
+          adhesion_type: adhesionType,
+          brim_width_mm: brimWidthMm,
+          saved_at: new Date().toISOString(),
+        },
+      }).catch(() => {});
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [
+    meshId,
+    stlFile,
+    selectedPrinterId,
+    transform,
+    partExtruderMap,
+    zColorRanges,
+    supports,
+    supportType,
+    supportOnBuildPlateOnly,
+    supportZDistance,
+    supportXyDistance,
+    adhesionType,
+    brimWidthMm,
   ]);
 
   // Recalcular temperaturas/caudal de T0..T3 si cambia boquilla o perfil y negociar cama en Creator 5 Pro
@@ -348,13 +492,47 @@ export function App() {
 
   useEffect(() => {
     if (activeProfileId !== 'creator5_pro') return;
-    const distinctBody = new Set(
-      extrudersConfig.filter((s) => s.material !== 'soporte').map((s) => s.material),
-    );
+    const bodySlots = extrudersConfig.filter((s) => s.material !== 'soporte');
+    const primarySlot =
+      extrudersConfig[modelExtruder]?.material !== 'soporte'
+        ? extrudersConfig[modelExtruder]
+        : bodySlots[0];
+    const effBodyMat: MaterialType =
+      primarySlot && primarySlot.material in MATERIAL_DEFAULTS
+        ? (primarySlot.material as MaterialType)
+        : material;
+
+    if (primarySlot && !lithophaneMode && effBodyMat !== material) {
+      handleChangeMaterial(effBodyMat);
+    }
+
+    const supportSlot = extrudersConfig[supportExtruder];
+    const supMat = supportSlot?.material ?? effBodyMat;
+    const syncKey = `${supMat}_${effBodyMat}_${nozzleDiameter}`;
+    if (!lithophaneMode && lastSupportSyncKeyRef.current !== syncKey) {
+      lastSupportSyncKeyRef.current = syncKey;
+      if (supMat === 'soporte') {
+        setSupportZDistance(0.15);
+        setSupportXyDistance(computeDefaultSupportXY(effBodyMat, nozzleDiameter));
+      } else if (supMat in MATERIAL_DEFAULTS) {
+        const m = supMat as MaterialType;
+        setSupportZDistance(MATERIAL_DEFAULTS[m].defaultSupportZ);
+        setSupportXyDistance(computeDefaultSupportXY(m, nozzleDiameter));
+      }
+    }
+
+    const distinctBody = new Set(bodySlots.map((s) => s.material));
     if (distinctBody.size > 1) {
       setBedTemp(negotiateMultiMaterialBedTemp(extrudersConfig.map((s) => s.material)));
     }
-  }, [activeProfileId, extrudersConfig]);
+  }, [
+    activeProfileId,
+    extrudersConfig,
+    modelExtruder,
+    supportExtruder,
+    nozzleDiameter,
+    lithophaneMode,
+  ]);
 
   // Recalcular automáticamente las 3 temperaturas óptimas según perfil, material, rango y HS
   useEffect(() => {
@@ -415,33 +593,25 @@ export function App() {
       setSupports(res.suggests_supports);
       setAdhesionType(res.suggests_raft ? 'raft' : 'none');
 
-      // Al cargar un archivo .3mf nuevo, precargar su mapeo de partes y colores embebidos en T0..T3
+      // Al cargar un archivo .3mf nuevo, inicializar mapeo de partes y zonas de color hacia T0..T3
+      // SIN sobrescribir los colores físicos reales configurados en los carretes T0..T3
       if (options.file) {
         const nextMap: Record<string, number> = {};
-        const colBySlot: Record<number, string> = {};
-        if (res.detected_filament_colors && res.detected_filament_colors.length > 0) {
-          res.detected_filament_colors.forEach((hex, idx) => {
-            if (hex && idx < 4) colBySlot[idx] = hex;
-          });
-        }
         if (res.multimaterial_parts && res.multimaterial_parts.length > 0) {
           for (const p of res.multimaterial_parts) {
             nextMap[p.part_id] = p.extruder;
-            if (p.color_hex && !colBySlot[p.extruder - 1]) {
-              colBySlot[p.extruder - 1] = p.color_hex;
-            }
+          }
+        }
+        const zoneCount = Math.max(
+          res.detected_extruder_count ?? 1,
+          res.detected_filament_colors?.length ?? 0,
+        );
+        if (res.is_multicolor && zoneCount > 1) {
+          for (let z = 0; z < Math.min(4, zoneCount); z += 1) {
+            nextMap[`zone_${z}`] = z;
           }
         }
         setPartExtruderMap(nextMap);
-        if (Object.keys(colBySlot).length > 0) {
-          setExtrudersConfig((prev) =>
-            prev.map((slot) =>
-              colBySlot[slot.extruder_index]
-                ? { ...slot, color_hex: colBySlot[slot.extruder_index] }
-                : slot,
-            ),
-          );
-        }
       }
     } catch (err: unknown) {
       if (seq !== analyzeSeqRef.current) return;
@@ -662,6 +832,7 @@ export function App() {
   };
 
   const skipNextAutoAuditRef = useRef(false);
+  const sliceAbortRef = useRef<AbortController | null>(null);
 
   const runRealSlice = async (overrides?: {
     meshIdOverride?: string | null;
@@ -729,9 +900,10 @@ export function App() {
           support_extruder: supportExtruder,
           z_color_ranges: zColorRanges,
           part_extruder_map: partExtruderMap,
+          ...(chamberTempTarget !== null ? { chamber_temp_target: chamberTempTarget } : {}),
         }
         : {}),
-    });
+    }, sliceAbortRef.current?.signal);
     const rawGcode = await fetchGcodeText(res.gcode_url);
     return { res, rawGcode };
   };
@@ -1112,6 +1284,9 @@ export function App() {
 
   const handleSlice = async () => {
     if (!stlFile && !meshId) return;
+    sliceAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    sliceAbortRef.current = ctrl;
     setIsSlicing(true);
     setErrorMsg(null);
     setSendPrintMsg(null);
@@ -1125,8 +1300,18 @@ export function App() {
         err instanceof Error ? err.message : 'Error ejecutando el laminado.',
       );
     } finally {
+      if (sliceAbortRef.current === ctrl) {
+        sliceAbortRef.current = null;
+      }
       setIsSlicing(false);
     }
+  };
+
+  const handleCancelSlice = () => {
+    sliceAbortRef.current?.abort();
+    sliceAbortRef.current = null;
+    setIsSlicing(false);
+    setErrorMsg('Laminado cancelado por el usuario.');
   };
 
   const handleSendToPrinter = async (
@@ -1220,6 +1405,15 @@ export function App() {
           </div>
           <button
             type="button"
+            onClick={() => setJournalOpen(true)}
+            title="Consultar bitácora de errores y fallos"
+            className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-amber-500/60"
+          >
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
+            Bitácora
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsOpen(true)}
             title="Configurar IPs, puertos USB/SD y API Keys de IA"
             className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-500/60"
@@ -1295,6 +1489,7 @@ export function App() {
             isOptimizingSupportAI={isOptimizingSupportAI}
             aiSupportStatus={aiSupportStatus}
             onSlice={handleSlice}
+            onCancelSlice={handleCancelSlice}
             isSlicing={isSlicing}
             sliceResult={sliceResult}
             errorMsg={errorMsg}
@@ -1317,6 +1512,8 @@ export function App() {
             onChangeZColorRanges={setZColorRanges}
             partExtruderMap={partExtruderMap}
             onChangePartExtruderMap={setPartExtruderMap}
+            chamberTempTarget={chamberTempTarget}
+            onChangeChamberTempTarget={setChamberTempTarget}
           />
 
           <Viewport3D
@@ -1337,7 +1534,14 @@ export function App() {
             isCuttingMesh={isCuttingMesh}
             extruderColors={
               activeProfileId === 'creator5_pro'
-                ? extrudersConfig.map((s) => s.color_hex)
+                ? [0, 1, 2, 3].map((zoneIdx) => {
+                    const mappedSlot = partExtruderMap[`zone_${zoneIdx}`] ?? zoneIdx;
+                    return (
+                      extrudersConfig[mappedSlot]?.color_hex ??
+                      extrudersConfig[zoneIdx]?.color_hex ??
+                      '#ffffff'
+                    );
+                  })
                 : undefined
             }
             multimaterialParts={analysis?.multimaterial_parts}
@@ -1389,6 +1593,106 @@ export function App() {
           void refreshCatalog();
         }}
       />
+
+      <ErrorJournalModal
+        open={journalOpen}
+        onClose={() => setJournalOpen(false)}
+      />
+
+      {pendingRestoreSession && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl">
+            <div className="space-y-1">
+              <h2 className="text-sm font-semibold text-slate-100">
+                ¿Continuar con el último proyecto?
+              </h2>
+              <p className="text-xs text-slate-400">
+                Se encontró tu sesión anterior guardada antes de cerrar:
+              </p>
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-xs">
+              <p className="truncate font-semibold text-cyan-200" title={pendingRestoreSession.file_name}>
+                {pendingRestoreSession.file_name}
+              </p>
+              <p className="mt-0.5 font-mono text-[10px] text-slate-400">
+                Impresora: {pendingRestoreSession.printer_id || selectedPrinterId}
+                {pendingRestoreSession.saved_at
+                  ? ` · ${new Date(pendingRestoreSession.saved_at).toLocaleString()}`
+                  : ''}
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={isRestoringSession}
+                onClick={() => {
+                  setPendingRestoreSession(null);
+                  void clearLastSession().catch(() => {});
+                }}
+                className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+              >
+                Proyecto nuevo
+              </button>
+              <button
+                type="button"
+                disabled={isRestoringSession}
+                onClick={async () => {
+                  const sess = pendingRestoreSession;
+                  setIsRestoringSession(true);
+                  try {
+                    const targetPrinter = sess.printer_id || selectedPrinterId;
+                    if (sess.printer_id) {
+                      setSelectedPrinterId(sess.printer_id);
+                    }
+                    const nextTx = sess.transform ?? DEFAULT_TRANSFORM;
+                    setTransform(nextTx);
+                    if (sess.part_extruder_map) setPartExtruderMap(sess.part_extruder_map);
+                    if (sess.z_color_ranges) setZColorRanges(sess.z_color_ranges);
+                    if (typeof sess.supports === 'boolean') setSupports(sess.supports);
+                    if (sess.support_type) setSupportType(sess.support_type);
+                    if (typeof sess.support_on_build_plate_only === 'boolean') {
+                      setSupportOnBuildPlateOnly(sess.support_on_build_plate_only);
+                    }
+                    if (typeof sess.support_z_distance === 'number') {
+                      setSupportZDistance(sess.support_z_distance);
+                    }
+                    if (typeof sess.support_xy_distance === 'number') {
+                      setSupportXyDistance(sess.support_xy_distance);
+                    }
+                    if (sess.adhesion_type) setAdhesionType(sess.adhesion_type);
+                    if (typeof sess.brim_width_mm === 'number') {
+                      setBrimWidthMm(sess.brim_width_mm);
+                    }
+
+                    const restoredFile = await fetchCachedMeshFile(sess.mesh_id, sess.file_name);
+                    setStlFile(restoredFile);
+                    setMeshId(sess.mesh_id);
+                    setSliceResult(null);
+                    setGcodeText(null);
+                    setPendingRestoreSession(null);
+                    await runAnalysis(targetPrinter, nextTx, {
+                      cachedMeshId: sess.mesh_id,
+                    });
+                    if (sess.part_extruder_map) setPartExtruderMap(sess.part_extruder_map);
+                  } catch (err: unknown) {
+                    setPendingRestoreSession(null);
+                    setErrorMsg(
+                      err instanceof Error
+                        ? `No se pudo restaurar el último modelo: ${err.message}`
+                        : 'No se pudo restaurar el último modelo.',
+                    );
+                  } finally {
+                    setIsRestoringSession(false);
+                  }
+                }}
+                className="rounded-xl bg-cyan-500 px-3.5 py-1.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
+              >
+                {isRestoringSession ? 'Abriendo...' : 'Abrir último proyecto'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

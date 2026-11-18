@@ -13,6 +13,7 @@ from app.connectors.marlin_serial import marlin_manager
 from app.connectors.moonraker import (
     control_moonraker,
     delete_moonraker_file,
+    download_moonraker_file,
     list_moonraker_files,
     list_moonraker_timelapses,
     print_moonraker_file,
@@ -26,6 +27,7 @@ __all__ = [
     "control_moonraker",
     "delete_flashforge_file",
     "delete_moonraker_file",
+    "download_moonraker_file",
     "list_flashforge_files",
     "list_moonraker_files",
     "list_moonraker_timelapses",

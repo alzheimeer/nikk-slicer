@@ -37,6 +37,7 @@ import {
   fetchPrinterTimelapses,
   fetchPrintersStatus,
   generatePrinterCompendium,
+  getPrinterStoredFileDownloadUrl,
   printStoredFile,
   requestAITelemetryDiagnosis,
   togglePrinterLight,
@@ -253,7 +254,7 @@ export function FarmDashboard() {
     try {
       const res = await controlPrinter(printerId, action);
       setPrinterFeedback(printerId, res.message);
-      await loadStatus();
+      void loadStatus();
     } catch (err: unknown) {
       setPrinterFeedback(
         printerId,
@@ -367,6 +368,60 @@ export function FarmDashboard() {
       setPrinterFeedback(
         printerId,
         err instanceof Error ? err.message : 'Error eliminando todos los archivos.',
+      );
+    } finally {
+      setPrinterActionBusy(printerId, null);
+    }
+  };
+
+  const handleDownloadStoredFile = async (printerId: PrinterId, filename: string) => {
+    setPrinterActionBusy(printerId, `download:${filename}`);
+    setPrinterFeedback(printerId, null);
+    try {
+      const url = getPrinterStoredFileDownloadUrl(printerId, filename);
+      const safeName = filename.split('/').pop() || filename;
+      const pywebviewSave = (
+        window as unknown as {
+          pywebview?: {
+            api?: {
+              save_file?: (
+                fileUrl: string,
+                suggestedName: string,
+              ) => Promise<{ saved?: boolean; path?: string; cancelled?: boolean; error?: string }>;
+            };
+          };
+        }
+      ).pywebview?.api?.save_file;
+
+      if (pywebviewSave) {
+        const result = await pywebviewSave(url, safeName);
+        if (result?.error) {
+          throw new Error(result.error);
+        }
+        if (result?.saved) {
+          setPrinterFeedback(printerId, `Archivo guardado: ${result.path || safeName}`);
+        }
+        return;
+      }
+
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`No se pudo descargar '${safeName}' (HTTP ${res.status}).`);
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = safeName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      setPrinterFeedback(printerId, `Archivo descargado: ${safeName}`);
+    } catch (err: unknown) {
+      setPrinterFeedback(
+        printerId,
+        err instanceof Error ? err.message : `Error descargando '${filename}'.`,
       );
     } finally {
       setPrinterActionBusy(printerId, null);
@@ -667,10 +722,18 @@ export function FarmDashboard() {
                         </span>
                       </div>
                       <div className="flex flex-col">
-                        <span className="text-slate-400">MCU / Placa</span>
+                        <span className="text-slate-400">
+                          {st.chamber_temp !== null && st.chamber_temp !== undefined
+                            ? 'Cabina'
+                            : 'MCU / Placa'}
+                        </span>
                         <span className="font-mono font-semibold text-slate-200">
                           {st.chamber_temp !== null && st.chamber_temp !== undefined
-                            ? `Cám ${st.chamber_temp}°`
+                            ? `Cabina: ${st.chamber_temp}°C${
+                                st.chamber_target !== null && st.chamber_target !== undefined
+                                  ? ` / Obj ${st.chamber_target}°C`
+                                  : ''
+                              }`
                             : st.mcu_temp !== null && st.mcu_temp !== undefined
                               ? `${st.mcu_temp}° / ${st.host_temp ?? '—'}°`
                               : '—'}
@@ -949,12 +1012,16 @@ export function FarmDashboard() {
                         )}
                       </button>
 
-                      {filesOpen && (
+                      {filesOpen && (() => {
+                        const canRemoteDelete = st.protocol === 'moonraker';
+                        const canDownloadStoredFile = st.protocol === 'moonraker';
+                        return (
                         <div className="space-y-1.5 border-t border-slate-800 px-2.5 py-2">
                           <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-slate-400">
                             <span>Almacenamiento de {st.display_name}</span>
                             <div className="flex items-center gap-2">
-                              {filesList.length > 0 &&
+                              {canRemoteDelete &&
+                                filesList.length > 0 &&
                                 (isConfirmingDeleteAll ? (
                                   <div className="flex items-center gap-1">
                                     <button
@@ -999,6 +1066,14 @@ export function FarmDashboard() {
                                     Borrar todos
                                   </button>
                                 ))}
+                              {!canRemoteDelete && st.protocol === 'flashforge_lan' && (
+                                <span
+                                  className="text-[9px] text-slate-500"
+                                  title="Creator 5 Pro no permite borrado remoto por LAN"
+                                >
+                                  Borrado solo en pantalla táctil
+                                </span>
+                              )}
                               <button
                                 type="button"
                                 disabled={cardBusy}
@@ -1064,47 +1139,65 @@ export function FarmDashboard() {
                                             'Imprimir'
                                           )}
                                         </button>
-                                        {isConfirmingDelete ? (
-                                          <>
-                                            <button
-                                              type="button"
-                                              disabled={cardBusy}
-                                              onClick={() =>
-                                                void handleDeleteStoredFile(pid, f.filename)
-                                              }
-                                              className="rounded border border-rose-500 bg-rose-500/30 px-1.5 py-0.5 font-bold text-rose-100 hover:bg-rose-500/45 disabled:opacity-40"
-                                            >
-                                              Confirmar
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={() =>
-                                                setConfirmDeleteById((prev) => ({
-                                                  ...prev,
-                                                  [pid]: null,
-                                                }))
-                                              }
-                                              className="rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-slate-300"
-                                            >
-                                              No
-                                            </button>
-                                          </>
-                                        ) : (
+                                        {canDownloadStoredFile && (
                                           <button
                                             type="button"
                                             disabled={cardBusy}
                                             onClick={() =>
-                                              setConfirmDeleteById((prev) => ({
-                                                ...prev,
-                                                [pid]: f.filename,
-                                              }))
+                                              void handleDownloadStoredFile(pid, f.filename)
                                             }
-                                            className="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/25 disabled:opacity-40"
-                                            title="Eliminar archivo de memoria"
+                                            className="rounded border border-cyan-500/35 bg-cyan-500/10 p-1 text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-40"
+                                            title="Descargar archivo al Mac"
                                           >
-                                            <Trash2 className="h-3 w-3" />
+                                            {busyAction === `download:${f.filename}` ? (
+                                              <Loader2 className="h-3 w-3 animate-spin" />
+                                            ) : (
+                                              <Download className="h-3 w-3" />
+                                            )}
                                           </button>
                                         )}
+                                        {canRemoteDelete &&
+                                          (isConfirmingDelete ? (
+                                            <>
+                                              <button
+                                                type="button"
+                                                disabled={cardBusy}
+                                                onClick={() =>
+                                                  void handleDeleteStoredFile(pid, f.filename)
+                                                }
+                                                className="rounded border border-rose-500 bg-rose-500/30 px-1.5 py-0.5 font-bold text-rose-100 hover:bg-rose-500/45 disabled:opacity-40"
+                                              >
+                                                Confirmar
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  setConfirmDeleteById((prev) => ({
+                                                    ...prev,
+                                                    [pid]: null,
+                                                  }))
+                                                }
+                                                className="rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-slate-300"
+                                              >
+                                                No
+                                              </button>
+                                            </>
+                                          ) : (
+                                            <button
+                                              type="button"
+                                              disabled={cardBusy}
+                                              onClick={() =>
+                                                setConfirmDeleteById((prev) => ({
+                                                  ...prev,
+                                                  [pid]: f.filename,
+                                                }))
+                                              }
+                                              className="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/25 disabled:opacity-40"
+                                              title="Eliminar archivo de memoria"
+                                            >
+                                              <Trash2 className="h-3 w-3" />
+                                            </button>
+                                          ))}
                                       </div>
                                     </div>
                                     {isConfirmingPrint && (
@@ -1156,7 +1249,8 @@ export function FarmDashboard() {
                             </div>
                           )}
                         </div>
-                      )}
+                        );
+                      })()}
                     </div>
                   )}
 

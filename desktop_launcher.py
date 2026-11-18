@@ -134,6 +134,7 @@ def start_embedded_uvicorn(logger: logging.Logger):
         port=PORT,
         log_level="info",
         log_config=None,
+        timeout_graceful_shutdown=1,
     )
     server = uvicorn.Server(config)
     server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
@@ -186,6 +187,27 @@ def _set_macos_dock_icon(logger: logging.Logger) -> None:
         logger.debug("No se pudo asignar icono del Dock: %s", exc)
 
 
+class DesktopApi:
+    """Puente JS -> Python para diálogo nativo de guardado en macOS (pywebview)."""
+
+    def save_file(self, url: str, suggested_name: str) -> dict[str, object]:
+        import webview  # type: ignore[import-not-found]
+
+        win = webview.active_window()
+        if win is None:
+            return {"saved": False, "reason": "No hay ventana activa."}
+        target = win.create_file_dialog(
+            webview.SAVE_DIALOG,
+            save_filename=suggested_name,
+        )
+        if not target:
+            return {"saved": False, "cancelled": True}
+        dest = Path(target[0] if isinstance(target, (list, tuple)) else target)
+        with urllib.request.urlopen(url, timeout=45) as resp:
+            dest.write_bytes(resp.read())
+        return {"saved": True, "path": str(dest)}
+
+
 def open_desktop_window(logger: logging.Logger) -> None:
     try:
         _configure_macos_app_identity(logger)
@@ -198,6 +220,7 @@ def open_desktop_window(logger: logging.Logger) -> None:
             width=1440,
             height=920,
             min_size=(1100, 720),
+            js_api=DesktopApi(),
         )
         _set_macos_dock_icon(logger)
         webview.start()
@@ -271,10 +294,11 @@ def main() -> int:
         open_desktop_window(logger)
     finally:
         if server is not None and server_thread is not None:
-            logger.info("Ventana cerrada: deteniendo uvicorn limpiamente...")
+            logger.info("Ventana cerrada: deteniendo uvicorn...")
             server.should_exit = True
-            server_thread.join(timeout=6.0)
+            server_thread.join(timeout=1.2)
             logger.info("Nikk Slicer detenido correctamente.")
+            os._exit(0)
 
     return 0
 

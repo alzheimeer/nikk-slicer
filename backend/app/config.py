@@ -328,6 +328,48 @@ def negotiate_multimaterial_bed_temp(materials: list[str]) -> int:
     return 65
 
 
+def get_optimal_chamber_config(
+    active_materials: list[str],
+    override_temp: int | None = None,
+) -> dict[str, Any]:
+    """Calcula la temperatura objetivo y modo de ventilación del habitáculo (Creator 5 Pro)."""
+    norm = {str(m).strip().lower() for m in active_materials if str(m).strip().lower() != "soporte"}
+
+    if "pla" in norm or "tpu" in norm:
+        target_temp = 30
+        max_safe = 35
+        mode = "extraction"
+        mode_label = "Extracción PLA/TPU" if "tpu" in norm else "Extracción PLA"
+        p2_fan = 128
+        p3_fan = 153
+    elif "abs" in norm or "asa" in norm:
+        target_temp = 50
+        max_safe = 55
+        mode = "preheat_closed"
+        mode_label = "Precalentamiento ABS/ASA" if "asa" in norm else "Precalentamiento ABS"
+        p2_fan = 0
+        p3_fan = 255
+    else:
+        target_temp = 40
+        max_safe = 45
+        mode = "recirculation"
+        mode_label = "Recirculación PETG"
+        p2_fan = 0
+        p3_fan = 102
+
+    if override_temp is not None:
+        target_temp = max(25, min(55, int(override_temp)))
+
+    return {
+        "target_temp": target_temp,
+        "max_safe_temp": max_safe,
+        "mode": mode,
+        "mode_label": mode_label,
+        "p2_fan": p2_fan,
+        "p3_fan": p3_fan,
+    }
+
+
 def compute_heterogeneous_speed_cap(
     volumetric_limits: list[float],
     materials: list[str],

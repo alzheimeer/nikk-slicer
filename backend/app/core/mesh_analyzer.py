@@ -772,8 +772,17 @@ def prepare_painted_3mf_for_slicer(
     offset_z: float = 0.0,
     drop_to_bed: bool = True,
     instances: list[ModelInstanceTransform] | None = None,
+    part_extruder_map: dict[str, int] | None = None,
 ) -> Path:
-    """Reempaqueta un `.3mf` pintado por triángulo transformado al plato, preservando `paint_color`."""
+    """Reempaqueta un `.3mf` pintado por triángulo transformado al plato, preservando o remapeando `paint_color`."""
+    zone_map: dict[int, int] = {}
+    if part_extruder_map:
+        for z_idx in range(4):
+            key = f"zone_{z_idx}"
+            if key in part_extruder_map:
+                target_ext = max(0, min(3, int(part_extruder_map[key]))) + 1
+                zone_map[z_idx + 1] = target_ext
+
     raw_parts: list[tuple[str, np.ndarray, list[tuple[int, int, int, str | None]]]] = []
 
     with zipfile.ZipFile(threemf_path, "r") as zf:
@@ -835,7 +844,13 @@ def prepare_painted_3mf_for_slicer(
                                 ext = (int(t.attrib["p1"]) % 4) + 1
                             except ValueError:
                                 ext = 1
+                            ext = zone_map.get(ext, ext)
                             pc = _PAINT_DIRECT_CODE.get(ext, "4")
+                        elif pc is not None and zone_map:
+                            ext = decode_paint_color_extruder(pc)
+                            mapped_ext = zone_map.get(ext, ext)
+                            if mapped_ext != ext:
+                                pc = _PAINT_DIRECT_CODE.get(mapped_ext, pc)
                         tri_rows.append(
                             (int(t.attrib["v1"]), int(t.attrib["v2"]), int(t.attrib["v3"]), pc)
                         )

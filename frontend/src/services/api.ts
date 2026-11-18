@@ -228,6 +228,7 @@ export interface SlicePayload {
   support_xy_distance?: number;
   adhesion_type: AdhesionType;
   brim_width_mm?: number;
+  chamber_temp_target?: number;
   prime_tower_mode?: 'auto' | 'off' | 'ultra_save';
   enable_prime_tower?: boolean;
   enable_timelapse?: boolean;
@@ -253,6 +254,10 @@ export interface SliceResponse {
   support_time_seconds?: number;
   support_weight_g?: number;
   support_percentage?: number;
+  supports_enabled?: boolean;
+  support_type?: string | null;
+  support_z_distance?: number | null;
+  support_xy_distance?: number | null;
   mesh_warnings: string[];
   dimensions_mm: DimensionsMM;
 }
@@ -390,6 +395,8 @@ export interface PrinterLiveStatus {
   mcu_temp?: number | null;
   host_temp?: number | null;
   chamber_temp?: number | null;
+  chamber_target?: number | null;
+  chamber_mode?: string | null;
   filament_used_mm?: number;
   filament_used_g?: number;
 }
@@ -530,6 +537,42 @@ export interface SendPrintResponse {
   mode: string;
   destination: string;
   message: string;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 15000,
+): Promise<Response> {
+  const controller = new AbortController();
+  const externalSignal = init.signal;
+  const onExternalAbort = () => controller.abort(externalSignal?.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort(externalSignal.reason);
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+  const timer = window.setTimeout(() => {
+    controller.abort(new Error(`Tiempo de espera agotado (${Math.round(timeoutMs / 1000)}s).`));
+  }, timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      if (externalSignal?.aborted) {
+        throw new Error('Operación cancelada por el usuario.');
+      }
+      throw new Error(`Tiempo de espera agotado (${Math.round(timeoutMs / 1000)}s).`);
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
+  }
 }
 
 async function parseError(response: Response): Promise<string> {
@@ -810,7 +853,10 @@ export async function requestAISupportOrient({
   return res.json() as Promise<AISupportOrientResponse>;
 }
 
-export async function sliceModel(payload: SlicePayload): Promise<SliceResponse> {
+export async function sliceModel(
+  payload: SlicePayload,
+  signal?: AbortSignal,
+): Promise<SliceResponse> {
   const form = new FormData();
   form.append('printer_id', payload.printer_id);
   form.append('material', payload.material);
@@ -838,6 +884,9 @@ export async function sliceModel(payload: SlicePayload): Promise<SliceResponse> 
   form.append('adhesion_type', payload.adhesion_type);
   if (payload.brim_width_mm !== undefined) {
     form.append('brim_width_mm', String(payload.brim_width_mm));
+  }
+  if (payload.chamber_temp_target !== undefined) {
+    form.append('chamber_temp_target', String(payload.chamber_temp_target));
   }
   if (payload.prime_tower_mode !== undefined) {
     form.append('prime_tower_mode', payload.prime_tower_mode);
@@ -898,10 +947,15 @@ export async function sliceModel(payload: SlicePayload): Promise<SliceResponse> 
     form.append('part_extruder_map_json', JSON.stringify(payload.part_extruder_map));
   }
 
-  const res = await fetch(`${API_BASE_URL}/slice`, {
-    method: 'POST',
-    body: form,
-  });
+  const res = await fetchWithTimeout(
+    `${API_BASE_URL}/slice`,
+    {
+      method: 'POST',
+      body: form,
+      signal,
+    },
+    180000,
+  );
   if (!res.ok) {
     throw new Error(await parseError(res));
   }
@@ -958,7 +1012,7 @@ export async function updatePrintersConfig(
 }
 
 export async function fetchPrintersStatus(): Promise<PrinterLiveStatus[]> {
-  const res = await fetch(`${API_BASE_URL}/printers/status`);
+  const res = await fetchWithTimeout(`${API_BASE_URL}/printers/status`, {}, 12000);
   if (!res.ok) {
     throw new Error(await parseError(res));
   }
@@ -1052,11 +1106,15 @@ export async function controlPrinter(
   printerId: PrinterId,
   action: 'pause' | 'resume' | 'cancel' | 'light_on' | 'light_off' | 'light_toggle',
 ): Promise<{ status: string; printer_id: string; message: string }> {
-  const res = await fetch(`${API_BASE_URL}/printers/${printerId}/command`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
-  });
+  const res = await fetchWithTimeout(
+    `${API_BASE_URL}/printers/${printerId}/command`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    },
+    15000,
+  );
   if (!res.ok) {
     throw new Error(await parseError(res));
   }
@@ -1112,6 +1170,13 @@ export async function printStoredFile(
     throw new Error(await parseError(res));
   }
   return res.json() as Promise<{ status: string; printer_id: string; message: string }>;
+}
+
+export function getPrinterStoredFileDownloadUrl(
+  printerId: PrinterId,
+  filename: string,
+): string {
+  return `${API_BASE_URL}/printers/${printerId}/files/download?filename=${encodeURIComponent(filename)}`;
 }
 
 export async function deleteStoredFile(
@@ -1212,4 +1277,60 @@ export async function fetchTelemetryLearnings(
     throw new Error(await parseError(res));
   }
   return res.json() as Promise<MachineMaterialLearningsResponse>;
+}
+
+export interface ErrorJournalEntry {
+  timestamp: string;
+  source: string;
+  printer_id?: string;
+  message: string;
+  detail?: string;
+  context?: Record<string, unknown>;
+}
+
+export interface ErrorJournalResponse {
+  log_path: string;
+  count: number;
+  entries: ErrorJournalEntry[];
+}
+
+export async function fetchErrorJournal(limit = 60): Promise<ErrorJournalResponse> {
+  const res = await fetch(`${API_BASE_URL}/logs/errors?limit=${limit}`);
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<ErrorJournalResponse>;
+}
+
+export async function clearErrorJournal(): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/logs/errors`, { method: 'DELETE' });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<{ status: string; message: string }>;
+}
+
+export async function fetchUserPrefs(): Promise<Record<string, unknown>> {
+  const res = await fetchWithTimeout(`${API_BASE_URL}/prefs`, {}, 6000);
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  const data = (await res.json()) as { prefs?: Record<string, unknown> };
+  return data.prefs ?? {};
+}
+
+export async function saveUserPrefs(payload: Record<string, unknown>): Promise<void> {
+  await fetchWithTimeout(
+    `${API_BASE_URL}/prefs`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    6000,
+  );
+}
+
+export async function clearLastSession(): Promise<void> {
+  await fetchWithTimeout(`${API_BASE_URL}/prefs/last-session`, { method: 'DELETE' }, 6000);
 }

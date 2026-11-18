@@ -15,9 +15,9 @@ from typing import Any
 
 import httpx
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
@@ -46,6 +46,7 @@ from app.connectors import (
     control_moonraker,
     delete_flashforge_file,
     delete_moonraker_file,
+    download_moonraker_file,
     list_flashforge_files,
     list_moonraker_files,
     list_moonraker_timelapses,
@@ -64,6 +65,13 @@ from app.core.ai_copilot import (
     generate_ai_recommendation,
     generate_ai_support_decision,
 )
+from app.core.error_journal import (
+    ERROR_JOURNAL_LOG_PATH,
+    clear_error_journal,
+    read_error_journal,
+    record_error,
+)
+from app.core.gcode_3mf_packager import package_gcode_as_3mf, prepare_flashforge_gcode
 from app.core.json_patcher import patch_profiles_for_job
 from app.core.print_telemetry_recorder import (
     get_machine_material_learnings,
@@ -165,10 +173,117 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(HTTPException)
+async def _http_exception_journal_handler(request: Request, exc: HTTPException):
+    if exc.status_code >= 500 or request.url.path.startswith(("/api/slice", "/api/ai-")):
+        detail_str = (
+            json.dumps(exc.detail, ensure_ascii=False)
+            if not isinstance(exc.detail, str)
+            else exc.detail
+        )
+        # Evitar duplicar si slicer_router ya registró el error CLI exacto
+        if "Error en laminado CLI" not in detail_str:
+            record_error(
+                f"http_{exc.status_code}",
+                detail_str,
+                detail=f"{request.method} {request.url.path}",
+            )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_journal_handler(request: Request, exc: Exception):
+    err_msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    record_error(
+        "unhandled_exception",
+        err_msg,
+        detail=f"{request.method} {request.url.path}",
+    )
+    return JSONResponse(status_code=500, content={"detail": err_msg})
+
+
 @app.get("/api/health")
 def health_endpoint() -> dict[str, str]:
     """Comprobación rápida de disponibilidad para el lanzador de escritorio."""
     return {"status": "ok", "app": "Nikk Slicer", "version": "1.3.0"}
+
+
+@app.get("/api/logs/errors")
+def get_error_journal_endpoint(limit: int = 60) -> dict[str, Any]:
+    """Devuelve las entradas recientes de la bitácora de errores y la ruta del archivo `.log`."""
+    entries = read_error_journal(limit=limit)
+    return {
+        "log_path": str(ERROR_JOURNAL_LOG_PATH),
+        "count": len(entries),
+        "entries": entries,
+    }
+
+
+@app.delete("/api/logs/errors")
+def clear_error_journal_endpoint() -> dict[str, str]:
+    """Limpia los archivos de bitácora de errores."""
+    clear_error_journal()
+    return {"status": "ok", "message": "Bitácora de errores limpiada."}
+
+
+USER_PREFS_PATH = TEMP_DIR / "user_prefs.json"
+
+
+@app.get("/api/prefs")
+def get_user_prefs_endpoint() -> dict[str, Any]:
+    """Lee las preferencias persistentes del usuario y la última sesión de modelo si aún existe en caché."""
+    if not USER_PREFS_PATH.is_file():
+        return {"prefs": {}}
+    try:
+        data = json.loads(USER_PREFS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"prefs": {}}
+    except Exception:
+        return {"prefs": {}}
+
+    last_sess = data.get("last_session")
+    if isinstance(last_sess, dict):
+        mid = str(last_sess.get("mesh_id") or "").strip()
+        if not mid or not any(MESH_CACHE_DIR.glob(f"{mid}.*")):
+            data.pop("last_session", None)
+    return {"prefs": data}
+
+
+@app.put("/api/prefs")
+def save_user_prefs_endpoint(payload: dict[str, Any]) -> dict[str, str]:
+    """Guarda en disco las preferencias de usuario (incluidos T0-T3 y última sesión)."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload inválido.")
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, Any] = {}
+    if USER_PREFS_PATH.is_file():
+        try:
+            loaded = json.loads(USER_PREFS_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            existing = {}
+    existing.update(payload)
+    tmp_path = USER_PREFS_PATH.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp_path, USER_PREFS_PATH)
+    return {"status": "ok"}
+
+
+@app.delete("/api/prefs/last-session")
+def clear_last_session_endpoint() -> dict[str, str]:
+    """Elimina la última sesión guardada cuando el usuario decide iniciar un proyecto nuevo."""
+    if USER_PREFS_PATH.is_file():
+        try:
+            data = json.loads(USER_PREFS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "last_session" in data:
+                data.pop("last_session", None)
+                tmp_path = USER_PREFS_PATH.with_suffix(".json.tmp")
+                tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+                os.replace(tmp_path, USER_PREFS_PATH)
+        except Exception:
+            pass
+    return {"status": "ok"}
 
 
 def _save_upload(upload: UploadFile, target_path: Path) -> None:
@@ -671,6 +786,7 @@ def _execute_slice_job_sync(
             offset_z=req.offset_z,
             drop_to_bed=req.drop_to_bed,
             instances=req.instances,
+            part_extruder_map=req.part_extruder_map,
         )
         patched = patch_profiles_for_job(req, job_dir, multimaterial_3mf=True)
         model_input = painted_3mf_path
@@ -711,6 +827,75 @@ def _execute_slice_job_sync(
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    eff_supports_enabled = bool(req.supports)
+    eff_support_type: str | None = req.support_type if req.supports else None
+    eff_support_z: float | None = req.support_z_distance
+    eff_support_xy: float | None = req.support_xy_distance
+    try:
+        proc_data = json.loads(patched.process_json.read_text(encoding="utf-8"))
+        eff_supports_enabled = str(proc_data.get("enable_support", "0")) == "1"
+        if eff_supports_enabled:
+            eff_support_type = str(proc_data.get("support_type") or req.support_type)
+            eff_support_z = round(float(proc_data.get("support_top_z_distance", 0.2)), 2)
+            eff_support_xy = round(float(proc_data.get("support_object_xy_distance", 0.5)), 2)
+        else:
+            eff_support_type = None
+            eff_support_z = None
+            eff_support_xy = None
+    except Exception:
+        pass
+
+    if printer.profile_id == "creator5_pro":
+        try:
+            tool_entries: list[dict[str, Any]] = []
+            if req.extruders_config:
+                per_tool_g = round(result.filament_grams / max(1, len(req.extruders_config)), 2)
+                per_tool_m = round(result.filament_meters / max(1, len(req.extruders_config)), 2)
+                for slot in req.extruders_config:
+                    tool_entries.append(
+                        {
+                            "tool_id": slot.extruder_index,
+                            "material": slot.material.upper(),
+                            "color": slot.color_hex,
+                            "used_g": per_tool_g,
+                            "used_m": per_tool_m,
+                        }
+                    )
+            else:
+                tool_entries.append(
+                    {
+                        "tool_id": req.model_extruder,
+                        "material": req.material.upper(),
+                        "color": "#38BDF8",
+                        "used_g": result.filament_grams,
+                        "used_m": result.filament_meters,
+                    }
+                )
+            package_gcode_as_3mf(
+                result.gcode_path,
+                cached_path,
+                job_dir / "output" / "model.gcode.3mf",
+                prediction_sec=result.estimated_time_seconds,
+                weight_g=result.filament_grams,
+                length_m=result.filament_meters,
+                nozzle_diameter=req.nozzle_diameter,
+                supports_used=eff_supports_enabled,
+                tool_entries=tool_entries,
+            )
+            primary_color = str(tool_entries[0].get("color") or "#38BDF8") if tool_entries else "#38BDF8"
+            prepare_flashforge_gcode(
+                result.gcode_path,
+                cached_path,
+                job_dir / "output" / "model.flashforge.gcode",
+                primary_color=primary_color,
+            )
+            policy = _extract_chamber_policy_from_gcode(result.gcode_path)
+            if policy is not None:
+                _CHAMBER_POLICY_BY_PRINTER[req.printer_id] = policy
+                _CHAMBER_POLICY_BY_PRINTER[resolve_profile_id(req.printer_id)] = policy
+        except Exception:
+            pass
+
     return SliceResponse(
         job_id=job_id,
         gcode_url=f"/api/download/{job_id}",
@@ -721,6 +906,10 @@ def _execute_slice_job_sync(
         support_time_seconds=result.support_time_seconds,
         support_weight_g=result.support_weight_g,
         support_percentage=result.support_percentage,
+        supports_enabled=eff_supports_enabled,
+        support_type=eff_support_type,
+        support_z_distance=eff_support_z,
+        support_xy_distance=eff_support_xy,
         mesh_warnings=analysis.warnings,
         dimensions_mm=analysis.dimensions_mm,
     )
@@ -743,6 +932,7 @@ async def slice_endpoint(
     support_xy_distance: float | None = Form(None),
     adhesion_type: AdhesionType = Form("none"),
     brim_width_mm: float = Form(6.0),
+    chamber_temp_target: int | None = Form(None),
     prime_tower_mode: str = Form("auto"),
     enable_prime_tower: bool | None = Form(None),
     enable_timelapse: bool = Form(False),
@@ -824,6 +1014,7 @@ async def slice_endpoint(
             support_xy_distance=support_xy_distance,
             adhesion_type=eff_adhesion,
             brim_width_mm=eff_brim_w,
+            chamber_temp_target=chamber_temp_target,
             prime_tower_mode=prime_tower_mode if prime_tower_mode in ("auto", "off", "ultra_save") else "auto",  # type: ignore[arg-type]
             enable_prime_tower=enable_prime_tower,
             enable_timelapse=enable_timelapse,
@@ -868,8 +1059,12 @@ def _sanitize_gcode_filename(raw_name: str | None, fallback_job_id: str) -> str:
 
 
 @app.get("/api/download/{job_id}")
-def download_gcode(job_id: str, filename: str | None = None) -> FileResponse:
-    """Descarga el archivo `.gcode` generado para un `job_id` con nombre personalizado."""
+def download_gcode(
+    job_id: str,
+    filename: str | None = None,
+    format: str = "gcode",
+) -> FileResponse:
+    """Descarga el archivo `.gcode` o `.gcode.3mf` generado para un `job_id` con nombre personalizado."""
     if not job_id.isalnum():
         raise HTTPException(status_code=400, detail="job_id inválido.")
     out_dir = TEMP_DIR / job_id / "output"
@@ -877,11 +1072,58 @@ def download_gcode(job_id: str, filename: str | None = None) -> FileResponse:
     if not gcodes:
         raise HTTPException(status_code=404, detail="G-code no encontrado para este job_id.")
     safe_name = _sanitize_gcode_filename(filename, job_id)
+    if format.lower() == "flashforge":
+        ff_gcode = out_dir / "model.flashforge.gcode"
+        if not ff_gcode.is_file():
+            prepare_flashforge_gcode(gcodes[0], None, ff_gcode)
+        return FileResponse(
+            path=ff_gcode,
+            media_type="application/octet-stream",
+            filename=safe_name,
+        )
+    if format.lower() == "3mf":
+        ff_3mf = out_dir / "model.gcode.3mf"
+        if not ff_3mf.is_file():
+            package_gcode_as_3mf(gcodes[0], None, ff_3mf)
+        safe_3mf_name = (
+            safe_name
+            if safe_name.lower().endswith(".gcode.3mf")
+            else f"{Path(safe_name).stem}.gcode.3mf"
+        )
+        return FileResponse(
+            path=ff_3mf,
+            media_type="application/octet-stream",
+            filename=safe_3mf_name,
+        )
     return FileResponse(
         path=gcodes[0],
-        media_type="text/plain; charset=utf-8",
+        media_type="application/octet-stream",
         filename=safe_name,
     )
+
+
+_CHAMBER_POLICY_BY_PRINTER: dict[str, tuple[float, str]] = {}
+
+
+def _extract_chamber_policy_from_gcode(gcode_path: Path) -> tuple[float, str] | None:
+    try:
+        with gcode_path.open("r", encoding="utf-8", errors="ignore") as fh:
+            head = [fh.readline() for _ in range(1500)]
+    except OSError:
+        return None
+    target: float | None = None
+    mode: str | None = None
+    for ln in head:
+        if ln.startswith("; SLICERHUB_CHAMBER_TARGET ="):
+            try:
+                target = float(ln.split("=", 1)[1].strip())
+            except ValueError:
+                pass
+        elif ln.startswith("; SLICERHUB_CHAMBER_MODE ="):
+            mode = ln.split("=", 1)[1].strip()
+    if target is not None and mode:
+        return (target, mode)
+    return None
 
 
 def _build_printers_config_response() -> PrintersConfigResponse:
@@ -933,7 +1175,19 @@ async def _query_single_printer(
     if protocol == "moonraker":
         return await query_moonraker_status(pid, display_name, cfg, timeout=timeout)
     if protocol == "flashforge_lan":
-        return await query_flashforge_status(pid, display_name, cfg, timeout=timeout)
+        st = await query_flashforge_status(pid, display_name, cfg, timeout=timeout)
+        policy = _CHAMBER_POLICY_BY_PRINTER.get(pid) or _CHAMBER_POLICY_BY_PRINTER.get(profile_id)
+        if policy is not None:
+            st.chamber_target, st.chamber_mode = policy
+        elif st.chamber_temp is not None:
+            fname = (st.current_file or "").upper()
+            if "ABS" in fname or "ASA" in fname or (st.bed_target or 0) >= 95:
+                st.chamber_target, st.chamber_mode = 50.0, "preheat_closed"
+            elif "PETG" in fname or (st.nozzle_target or 0) >= 232 or (st.bed_target or 0) >= 70:
+                st.chamber_target, st.chamber_mode = 40.0, "recirculation"
+            else:
+                st.chamber_target, st.chamber_mode = 30.0, "extraction"
+        return st
     return await asyncio.to_thread(marlin_manager.query_status, pid, display_name, cfg)
 
 
@@ -1101,10 +1355,22 @@ async def _dispatch_job_to_printer(
             )
 
         if protocol == "flashforge_lan":
+            ff_upload_path = out_dir / "model.flashforge.gcode"
+            if not ff_upload_path.is_file():
+                prepare_flashforge_gcode(gcode_path, None, ff_upload_path)
+            policy = _extract_chamber_policy_from_gcode(ff_upload_path)
+            if policy is not None:
+                _CHAMBER_POLICY_BY_PRINTER[resolved_pid] = policy
+            base_name = filename[:-10] if filename.lower().endswith(".gcode.3mf") else filename
+            ff_filename = (
+                base_name
+                if base_name.lower().endswith(".gcode")
+                else f"{Path(base_name).stem}.gcode"
+            )
             msg = await upload_and_start_flashforge(
                 cfg,
-                gcode_path,
-                filename,
+                ff_upload_path,
+                ff_filename,
                 start_immediately=start_immediately,
                 enable_timelapse=enable_timelapse,
                 auto_leveling=auto_leveling,
@@ -1392,6 +1658,39 @@ async def delete_all_stored_files_endpoint(printer_id: PrinterId) -> dict[str, A
             "failed_count": failed_count,
             "message": summary,
         }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        err_detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        raise HTTPException(status_code=500, detail=err_detail) from exc
+
+
+@app.get("/api/printers/{printer_id}/files/download")
+async def download_stored_file_endpoint(
+    printer_id: PrinterId,
+    filename: str,
+) -> Response:
+    """Descarga un archivo G-code de la memoria interna de `printer_id` (Moonraker)."""
+    try:
+        _, cfg = get_printer_instance(printer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    protocol = str(cfg.get("protocol", ""))
+    if protocol != "moonraker":
+        raise HTTPException(
+            status_code=400,
+            detail="La descarga remota de archivos solo está soportada en impresoras Klipper/Moonraker (T1 Pro / V400).",
+        )
+
+    try:
+        content, download_name = await download_moonraker_file(cfg, filename)
+        safe_name = download_name.replace('"', "")
+        return Response(
+            content=content,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
     except HTTPException:
         raise
     except Exception as exc:

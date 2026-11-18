@@ -799,6 +799,8 @@ def diagnose_live_telemetry(status: PrinterLiveStatus) -> AITelemetryDiagnosisRe
         "mcu_temp": status.mcu_temp,
         "host_temp": status.host_temp,
         "chamber_temp": status.chamber_temp,
+        "chamber_target": status.chamber_target,
+        "chamber_mode": status.chamber_mode,
         "filament_used_g": status.filament_used_g,
         "elapsed_seconds": status.elapsed_seconds,
         "eta_seconds": status.eta_seconds,
@@ -835,6 +837,27 @@ def diagnose_live_telemetry(status: PrinterLiveStatus) -> AITelemetryDiagnosisRe
             recs.append(
                 f"Desviación térmica detectada (boquilla Δ{noz_diff:.1f}°C, cama Δ{bed_diff:.1f}°C); vigila estabilidad PID."
             )
+        if status.chamber_temp is not None:
+            is_pla_tpu = (
+                status.chamber_mode == "extraction"
+                or (status.chamber_target is not None and status.chamber_target <= 35)
+                or (status.nozzle_target is not None and 0 < status.nozzle_target <= 225)
+            )
+            is_abs_asa = (
+                status.chamber_mode == "preheat_closed"
+                or (status.chamber_target is not None and status.chamber_target >= 48)
+                or (status.bed_target is not None and status.bed_target >= 95)
+            )
+            if is_pla_tpu and status.chamber_temp > 36.0:
+                badge = "CRITICO" if status.chamber_temp >= 40.0 else "ATENCION"
+                recs.append(
+                    f"Cabina a {status.chamber_temp:.1f}°C (>36°C con PLA/TPU): riesgo de atasco por heat creep; activa extracción o abre puerta superior."
+                )
+            elif is_abs_asa and status.state == "printing" and status.chamber_temp < 42.0:
+                badge = "ATENCION"
+                recs.append(
+                    f"Cabina a {status.chamber_temp:.1f}°C (<42°C con ABS/ASA): riesgo de warping/delaminación; mantén cámara cerrada."
+                )
         if status.state == "printing":
             if status.current_layer is not None and status.current_layer <= 2 and status.fan_speed_percent > 30:
                 badge = "ATENCION"
@@ -951,13 +974,40 @@ def generate_post_print_compendium(
     rating: str = "EXCELENTE"
     improvements: list[str] = []
 
+    raw_samples = session_data.get("samples") or []
+    chamber_vals = [
+        float(s["chamber_temp"])
+        for s in raw_samples
+        if isinstance(s, dict) and s.get("chamber_temp") is not None
+    ]
+    chamber_avg = round(sum(chamber_vals) / len(chamber_vals), 1) if chamber_vals else None
+    chamber_max = round(max(chamber_vals), 1) if chamber_vals else None
+    chamber_target = (
+        30
+        if detected_material in ("PLA", "TPU")
+        else 50
+        if detected_material in ("ABS", "ASA")
+        else 40
+    )
+
     if anomalies or (overall.mcu_max is not None and overall.mcu_max >= 65.0):
         rating = "REQUIERE_AJUSTE" if len(anomalies) >= 2 else "BUENA_CON_MEJORAS"
     elif (
         (overall.nozzle_max is not None and overall.nozzle_min is not None and (overall.nozzle_max - overall.nozzle_min) >= 6.0)
         or (stats.phase_initial_0_5.fan_avg is not None and stats.phase_initial_0_5.fan_avg > 35.0)
+        or (detected_material in ("PLA", "TPU") and chamber_max is not None and chamber_max > 36.0)
+        or (detected_material in ("ABS", "ASA") and chamber_avg is not None and chamber_avg < 42.0)
     ):
         rating = "BUENA_CON_MEJORAS"
+
+    if detected_material in ("PLA", "TPU") and chamber_max is not None and chamber_max > 36.0:
+        improvements.append(
+            f"Cabina alcanzó {chamber_max:.1f}°C (>36°C con {detected_material}): riesgo de atasco por heat creep; aumenta extracción (M106 P2) o imprime con puerta entreabierta."
+        )
+    elif detected_material in ("ABS", "ASA") and chamber_avg is not None and chamber_avg < 42.0:
+        improvements.append(
+            f"Cabina promedió {chamber_avg:.1f}°C (<42°C con {detected_material}, obj {chamber_target}°C): prolonga precalentamiento con cama cerrada para evitar warping."
+        )
 
     if overall.nozzle_avg is not None and overall.nozzle_min is not None and overall.nozzle_max is not None:
         spread = overall.nozzle_max - overall.nozzle_min
@@ -999,6 +1049,9 @@ def generate_post_print_compendium(
         "display_name": display_name,
         "filename": filename,
         "detected_material": detected_material,
+        "chamber_target_c": chamber_target,
+        "chamber_avg_c": chamber_avg,
+        "chamber_max_c": chamber_max,
         "is_partial": is_partial,
         "progress_pct": session_data.get("last_progress_pct", 0.0),
         "session_status": session_data.get("status", "completed"),

@@ -405,6 +405,20 @@ async def delete_moonraker_file(cfg: dict[str, Any], filename: str) -> str:
     return f"Moonraker ({ip}): archivo '{filename}' eliminado de la memoria."
 
 
+async def download_moonraker_file(cfg: dict[str, Any], filename: str) -> tuple[bytes, str]:
+    """Descarga el contenido binario de un archivo en `gcodes` desde Moonraker."""
+    _ip, base = await _resolve_live_base_url(cfg)
+    encoded = quote(filename, safe="")
+    async with httpx.AsyncClient(timeout=45.0, trust_env=False) as client:
+        resp = await client.get(f"{base}/server/files/gcodes/{encoded}")
+        if resp.status_code == 404 and "/" in filename:
+            resp = await client.get(
+                f"{base}/server/files/gcodes/{quote(filename, safe='/')}"
+            )
+        resp.raise_for_status()
+        return resp.content, Path(filename).name
+
+
 async def set_moonraker_light(
     cfg: dict[str, Any],
     target_on: bool | None = None,

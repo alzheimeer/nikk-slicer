@@ -187,6 +187,7 @@ class SliceRequest(BaseModel):
     support_xy_distance: float | None = Field(default=None, ge=0.1, le=2.0)
     adhesion_type: AdhesionType = "none"
     brim_width_mm: float = Field(default=6.0, ge=0.0, le=20.0)
+    chamber_temp_target: int | None = Field(default=None, ge=25, le=55)
     prime_tower_mode: Literal["auto", "off", "ultra_save"] = "auto"
     enable_prime_tower: bool | None = None
     enable_timelapse: bool = False
@@ -224,6 +225,10 @@ class SliceResponse(BaseModel):
     support_time_seconds: int = 0
     support_weight_g: float = 0.0
     support_percentage: float = 0.0
+    supports_enabled: bool = False
+    support_type: str | None = None
+    support_z_distance: float | None = None
+    support_xy_distance: float | None = None
     mesh_warnings: list[str] = Field(default_factory=list)
     dimensions_mm: DimensionsMM
 
@@ -376,6 +381,8 @@ class PrinterLiveStatus(BaseModel):
     mcu_temp: float | None = None
     host_temp: float | None = None
     chamber_temp: float | None = None
+    chamber_target: float | None = None
+    chamber_mode: str | None = None
     filament_used_mm: float = 0.0
     filament_used_g: float = 0.0
 

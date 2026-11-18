@@ -11,7 +11,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.config import PrinterConfig, resolve_profile_id
+from app.config import PrinterConfig, get_optimal_chamber_config, resolve_profile_id
+from app.core.error_journal import record_error
 from app.core.json_patcher import (
     DEFAULT_SLOT_COLORS,
     PatchedProfileSet,
@@ -167,7 +168,13 @@ def apply_multiextruder_and_z_painting(
     has_native_multitool = bool(re.search(r"^(?:T[1-3])\b", raw_text, flags=re.M))
     needs_z_paint = len(request.z_color_ranges) > 0
     if (has_native_multitool and not needs_z_paint) or (not needs_z_paint and not request.supports):
-        gcode_path.write_text(color_header + "\n" + raw_text, encoding="utf-8")
+        if "; HEADER_BLOCK_END" in raw_text:
+            gcode_path.write_text(
+                raw_text.replace("; HEADER_BLOCK_END", f"; HEADER_BLOCK_END\n{color_header}", 1),
+                encoding="utf-8",
+            )
+        else:
+            gcode_path.write_text(color_header + "\n" + raw_text, encoding="utf-8")
         return
 
     lines = raw_text.splitlines()
@@ -186,9 +193,7 @@ def apply_multiextruder_and_z_painting(
         prev_tool = active_tool
         active_tool = target_tool
         out.append(f"; SlicerHub Toolchange Z={cur_z:.2f}: T{prev_tool} -> T{target_tool}")
-        out.append(f"M104 T{prev_tool} S170")
         out.append(f"T{target_tool}")
-        out.append(f"M109 T{target_tool} S{slot_temps[target_tool]}")
 
     for ln in lines:
         stripped = ln.strip()
@@ -240,8 +245,10 @@ def inject_timelapse_commands(
     gcode_path: Path,
     request: SliceRequest | None,
 ) -> None:
-    """Inserta `TIMELAPSE_TAKE_FRAME` en cada cambio de capa cuando `enable_timelapse=True`."""
+    """Inserta `TIMELAPSE_TAKE_FRAME` en cada cambio de capa cuando `enable_timelapse=True` (solo Klipper/Moonraker)."""
     if not (request and request.enable_timelapse):
+        return
+    if resolve_profile_id(request.printer_id) == "creator5_pro":
         return
     raw_text = gcode_path.read_text(encoding="utf-8", errors="ignore")
     out: list[str] = ["; SLICERHUB_TIMELAPSE = 1"]
@@ -317,6 +324,88 @@ def apply_auto_leveling_gcode(
     gcode_path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
+def apply_creator5_pro_chamber_gcode(
+    gcode_path: Path,
+    request: SliceRequest | None,
+) -> None:
+    """Inyecta precalentamiento y control de ventilación de cabina (`M106 P2`/`P3`) para Creator 5 Pro."""
+    if request is None or resolve_profile_id(request.printer_id) != "creator5_pro":
+        return
+
+    active_mats: list[str] = []
+    if request.extruders_config:
+        if request.part_extruder_map:
+            used_indices = {max(0, min(3, int(ext) - 1)) for ext in request.part_extruder_map.values()}
+        else:
+            used_indices = {request.model_extruder}
+        if request.supports:
+            used_indices.add(request.support_extruder)
+        for zr in request.z_color_ranges:
+            used_indices.add(zr.extruder_index)
+        by_idx = {s.extruder_index: s.material for s in request.extruders_config}
+        active_mats = [by_idx.get(i, request.material) for i in sorted(used_indices)]
+    else:
+        active_mats = [request.material]
+
+    chamber_cfg = get_optimal_chamber_config(
+        active_mats,
+        override_temp=request.chamber_temp_target,
+    )
+    target_temp = int(chamber_cfg["target_temp"])
+    max_safe = int(chamber_cfg["max_safe_temp"])
+    mode = str(chamber_cfg["mode"])
+    p2_fan = int(chamber_cfg["p2_fan"])
+    p3_fan = int(chamber_cfg["p3_fan"])
+
+    chamber_lines: list[str] = [
+        f"; SLICERHUB_CHAMBER_TARGET = {target_temp}",
+        f"; SLICERHUB_CHAMBER_MODE = {mode}",
+    ]
+    if mode == "preheat_closed":
+        bed_soak = max(90, int(request.bed_temp))
+        chamber_lines.extend(
+            [
+                f"; SlicerHub Precalentamiento Cabina ABS/ASA (Obj {target_temp}C)",
+                f"M140 S{bed_soak}",
+                f"M190 S{bed_soak}",
+                f"M106 P2 S{p2_fan} ; Center_Fresh_Air_Input_Fan OFF (camara cerrada)",
+                f"M106 P3 S{p3_fan} ; Filter_Unit_Fan 100% recirculacion ABS",
+                "G4 P90000 ; Estabilizacion termica del habitaculo (90s)",
+            ]
+        )
+    elif mode == "extraction":
+        chamber_lines.extend(
+            [
+                f"; SlicerHub Extraccion Cabina PLA/TPU (Obj {target_temp}C / Max {max_safe}C)",
+                f"M106 P2 S{p2_fan} ; Center_Fresh_Air_Input_Fan extraccion PLA/TPU",
+                f"M106 P3 S{p3_fan} ; Filter_Unit_Fan renovacion de aire",
+            ]
+        )
+    else:
+        chamber_lines.extend(
+            [
+                f"; SlicerHub Recirculacion Cabina PETG (Obj {target_temp}C)",
+                f"M106 P2 S{p2_fan} ; Center_Fresh_Air_Input_Fan OFF (recirculacion PETG)",
+                f"M106 P3 S{p3_fan} ; Filter_Unit_Fan 40% recirculacion interna",
+            ]
+        )
+
+    raw_text = gcode_path.read_text(encoding="utf-8", errors="ignore")
+    lines = raw_text.splitlines()
+    # Insertar justo después de ';start_gcode end' para que el start_gcode base no sobrescriba P2/P3
+    insert_idx = next(
+        (i + 1 for i, ln in enumerate(lines) if ln.strip() == ";start_gcode end"),
+        None,
+    )
+    if insert_idx is None:
+        insert_idx = next(
+            (i + 1 for i, ln in enumerate(lines) if ln.strip() == "; EXECUTABLE_BLOCK_START"),
+            0,
+        )
+    lines[insert_idx:insert_idx] = chamber_lines
+    _atomic_write_text(gcode_path, "\n".join(lines) + "\n")
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     tmp_path = path.with_suffix(f"{path.suffix}.tmp")
     with tmp_path.open("w", encoding="utf-8") as fh:
@@ -384,6 +473,7 @@ def _build_slicer_cli_cmd(
     patched: PatchedProfileSet,
     out_dir: Path,
     filament_ids: list[int] | None,
+    arrange_mode: str = "0",
 ) -> tuple[list[str], bool]:
     filaments_arg = ";".join(str(p) for p in patched.filament_jsons)
     cmd = [
@@ -391,7 +481,7 @@ def _build_slicer_cli_cmd(
         "--debug",
         "2",
         "--arrange",
-        "0",
+        arrange_mode,
         "--ensure-on-bed",
         "--load-settings",
         f"{patched.machine_json};{patched.process_json}",
@@ -416,7 +506,7 @@ def run_slicer_cli(
     patched: PatchedProfileSet,
     request: SliceRequest | None = None,
     filament_ids: list[int] | None = None,
-    timeout_sec: int = 300,
+    timeout_sec: int = 150,
 ) -> SlicingResult:
     """Ejecuta el binario CLI en modo headless con escritura segura y reintento ante señal negativa."""
     out_dir = patched.job_dir / "output"
@@ -426,7 +516,17 @@ def run_slicer_cli(
     cmd, has_3mf = _build_slicer_cli_cmd(printer, model_paths, patched, out_dir, filament_ids)
 
     def _run_once(run_cmd: list[str]) -> tuple[int, str, list[Path]]:
-        proc = subprocess.run(run_cmd, capture_output=True, text=True, timeout=timeout_sec)
+        try:
+            proc = subprocess.run(run_cmd, capture_output=True, text=True, timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            msg = f"Tiempo agotado ({timeout_sec}s) ejecutando {printer.cli_binary.name}."
+            record_error(
+                "slicer_cli_timeout",
+                msg,
+                printer_id=printer.printer_id,
+                detail=f"job_dir={patched.job_dir.name} | cmd={' '.join(run_cmd)}",
+            )
+            raise RuntimeError(msg)
         combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
         err_lines = [ln for ln in combined.splitlines() if "[error]" in ln]
         detail_msg = "; ".join(err_lines[-5:]) if err_lines else combined[-500:]
@@ -463,15 +563,53 @@ def run_slicer_cli(
                 patched.job_dir.name,
             )
 
-    if returncode != 0 or not gcodes:
-        raise RuntimeError(
-            f"Error en laminado CLI ({printer.cli_binary.name}, exit={returncode}): {detail}"
+    # Ante error de área no imprimible (exit=154 / error_code = 4, p.ej. tras rotar o con torre de purga),
+    # reintentar 1 vez permitiendo --arrange 1 para reacomodar dentro de la cama.
+    is_unprintable_area = (
+        returncode == 154
+        or "unprintable area" in detail.lower()
+        or "error_code = 4" in detail
+    )
+    if (returncode != 0 or not gcodes) and is_unprintable_area:
+        logger.warning(
+            "Detectado error de área no imprimible (exit=%s); reintentando con --arrange 1 en job_dir=%s",
+            returncode,
+            patched.job_dir.name,
         )
+        for stale in out_dir.glob("*"):
+            try:
+                if stale.is_file():
+                    stale.unlink()
+            except OSError:
+                pass
+        arrange_cmd, _ = _build_slicer_cli_cmd(
+            printer, model_paths, patched, out_dir, filament_ids, arrange_mode="1"
+        )
+        returncode, detail, gcodes = _run_once(arrange_cmd)
+
+    if returncode != 0 or not gcodes:
+        err_msg = f"Error en laminado CLI ({printer.cli_binary.name}, exit={returncode}): {detail}"
+        record_error(
+            "slicer_cli",
+            err_msg,
+            printer_id=printer.printer_id,
+            detail=f"job_dir={patched.job_dir.name} | cmd={' '.join(cmd)}",
+            context={
+                "returncode": returncode,
+                "supports": bool(request.supports) if request else None,
+                "support_type": request.support_type if request else None,
+                "rot_x": request.rot_x if request else None,
+                "rot_y": request.rot_y if request else None,
+                "rot_z": request.rot_z if request else None,
+            },
+        )
+        raise RuntimeError(err_msg)
 
     gcode_path = gcodes[0]
     apply_multiextruder_and_z_painting(gcode_path, request)
     inject_timelapse_commands(gcode_path, request)
     apply_auto_leveling_gcode(gcode_path, request)
+    apply_creator5_pro_chamber_gcode(gcode_path, request)
     if request and request.lithophane_mode:
         raw_gc = gcode_path.read_text(encoding="utf-8", errors="ignore")
         if not raw_gc.startswith("; SLICERHUB_LITHOPHANE_MODE = 1"):

@@ -19,6 +19,7 @@ from app.config import (
     compute_heterogeneous_speed_cap,
     compute_lithophane_process_overrides,
     compute_optimal_temperatures,
+    get_optimal_chamber_config,
     get_printer_config,
     get_slot_volumetric_limit,
     load_catalog,
@@ -272,6 +273,10 @@ def patch_profiles_for_job(
             if len(distinct_body_mats) > 1
             else request.bed_temp
         )
+        chamber_cfg = get_optimal_chamber_config(
+            active_mats_all,
+            override_temp=request.chamber_temp_target,
+        )
 
         machine_data["extruder_colour"] = [s.color_hex for s in creator_slots]
         machine_data["idle_temperature"] = ["170"] * 4
@@ -310,6 +315,8 @@ def patch_profiles_for_job(
             ]
             slot_data["filament_is_support"] = ["1" if is_support_mat else "0"]
             slot_data["idle_temperature"] = ["170"]
+            slot_data["activate_chamber_temp_control"] = ["1"]
+            slot_data["chamber_temperature"] = [str(chamber_cfg["target_temp"])]
             slot_data["overhang_fan_speed"] = ["100"]
             if request.lithophane_mode:
                 slot_data["fan_min_speed"] = ["85"]

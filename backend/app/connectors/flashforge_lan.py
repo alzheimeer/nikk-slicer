@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 import socket
@@ -348,7 +349,13 @@ async def query_flashforge_status(
                             current_file=detail.get("printFileName") or None,
                             eta_seconds=eta_sec,
                             camera_url=cam_stream,
-                            message=f"Conectado vía FlashForge HTTP LAN ({cand_ip}:8898)",
+                            message=(
+                                "Trabajo cancelado en pantalla (toca OK en la impresora para liberar)"
+                                if raw_status == "cancel"
+                                else "Trabajo completado en pantalla (toca OK en la impresora para liberar)"
+                                if raw_status in ("completed", "complete", "finished")
+                                else f"Conectado vía FlashForge HTTP LAN ({cand_ip}:8898)"
+                            ),
                             light_on=light_on,
                             current_layer=cur_layer if tgt_layer > 0 else None,
                             total_layers=tgt_layer if tgt_layer > 0 else None,
@@ -493,6 +500,68 @@ def _tcp_upload_sync(
     )
 
 
+def _build_material_mappings_from_gcode(
+    gcode_path: Path,
+    detail: dict[str, Any],
+) -> tuple[bool, int, list[dict[str, Any]]]:
+    """Extrae herramientas T0..T3 del `.gcode` o `.gcode.3mf` y arma `materialMappings` para Creator 5 Pro."""
+    try:
+        if gcode_path.suffix.lower() == ".3mf":
+            import zipfile
+
+            with zipfile.ZipFile(gcode_path, "r") as zf:
+                text = zf.read("Metadata/plate_1.gcode").decode("utf-8", errors="ignore")
+        else:
+            text = gcode_path.read_text(encoding="utf-8", errors="ignore")
+    except (OSError, KeyError, Exception):
+        return False, 0, []
+
+    used_tools = sorted({int(m) for m in re.findall(r"^T([0-3])\b", text, flags=re.M)})
+    if not used_tools:
+        used_tools = [0]
+
+    colors = ["#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF"]
+    m_colors = re.search(r";\s*SLICERHUB_EXTRUDER_COLORS\s*=\s*(.+)", text)
+    if m_colors:
+        parts = [c.strip() for c in m_colors.group(1).split(",") if c.strip()]
+        for idx, col in enumerate(parts[:4]):
+            colors[idx] = col
+
+    matl_info = detail.get("matlStationInfo") if isinstance(detail, dict) else None
+    slot_infos = (
+        matl_info.get("slotInfos", [])
+        if isinstance(matl_info, dict) and isinstance(matl_info.get("slotInfos"), list)
+        else []
+    )
+    slots_by_id = {
+        int(s.get("slotId", 0)): s
+        for s in slot_infos
+        if isinstance(s, dict) and s.get("slotId")
+    }
+
+    mappings: list[dict[str, Any]] = []
+    for t_id in used_tools:
+        slot_id = t_id + 1
+        slot = slots_by_id.get(slot_id, {})
+        mat_name = str(slot.get("materialName") or "PLA").strip() or "PLA"
+        slot_color = str(slot.get("materialColor") or colors[t_id] or "#FFFFFF").strip()
+        tool_color = colors[t_id] or slot_color
+        mappings.append(
+            {
+                "toolId": t_id,
+                "slotId": slot_id,
+                "materialName": mat_name,
+                "toolMaterialColor": tool_color,
+                "slotMaterialColor": slot_color,
+            }
+        )
+
+    use_station = bool(slot_infos) and (len(used_tools) > 1 or used_tools[0] > 0)
+    if not use_station:
+        return False, 0, []
+    return True, len(mappings), mappings
+
+
 async def upload_and_start_flashforge(
     cfg: dict[str, Any],
     gcode_path: Path,
@@ -504,7 +573,13 @@ async def upload_and_start_flashforge(
     """Sube G-code a la memoria de Creator 5 Pro vía `:8898/uploadGcode` (campo `gcodeFile`)."""
     port = int(cfg.get("port", 8899) or 8899)
     async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
-        ip, eff_sn, access_code, _ = await _resolve_flashforge_target(cfg, client)
+        ip, eff_sn, access_code, detail = await _resolve_flashforge_target(cfg, client)
+        use_station, tool_cnt, mappings = _build_material_mappings_from_gcode(
+            gcode_path, detail if isinstance(detail, dict) else {}
+        )
+        mappings_b64 = base64.b64encode(
+            json.dumps(mappings, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
         headers = {
             "serialNumber": eff_sn,
             "checkCode": access_code,
@@ -514,9 +589,9 @@ async def upload_and_start_flashforge(
             "flowCalibration": "true" if auto_leveling else "false",
             "firstLayerInspection": "false",
             "timeLapseVideo": "true" if enable_timelapse else "false",
-            "useMatlStation": "false",
-            "gcodeToolCnt": "0",
-            "materialMappings": "W10=",
+            "useMatlStation": "true" if use_station else "false",
+            "gcodeToolCnt": str(tool_cnt),
+            "materialMappings": mappings_b64,
         }
         try:
             with gcode_path.open("rb") as fh:
@@ -563,10 +638,9 @@ async def upload_and_start_flashforge(
 
 
 async def list_flashforge_files(cfg: dict[str, Any]) -> list[PrinterStoredFile]:
-    """Consulta la lista de archivos internos en Creator 5 Pro (`:8898/gcodeList`)."""
+    """Consulta la lista real de archivos internos en Creator 5 Pro (`:8898/gcodeList`)."""
     async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
         ip, eff_sn, access_code, _ = await _resolve_flashforge_target(cfg, client)
-        deleted = set(_load_deleted_files_map().get(eff_sn or ip, []))
         try:
             resp = await client.post(
                 f"http://{ip}:8898/gcodeList",
@@ -587,8 +661,6 @@ async def list_flashforge_files(cfg: dict[str, Any]) -> list[PrinterStoredFile]:
 
                 out: list[PrinterStoredFile] = []
                 for name in names:
-                    if name in deleted:
-                        continue
                     det = details_by_name.get(name, {})
                     est_sec = det.get("printingTime")
                     weight_g = det.get("totalFilamentWeight")
@@ -615,7 +687,7 @@ async def list_flashforge_files(cfg: dict[str, Any]) -> list[PrinterStoredFile]:
             for ln in raw.splitlines()
             if ln.strip().lower().endswith((".gcode", ".gx", ".3mf"))
         ]
-        return [PrinterStoredFile(filename=n) for n in names if n not in deleted]
+        return [PrinterStoredFile(filename=n) for n in names]
     except OSError:
         return []
 
@@ -628,7 +700,38 @@ async def print_flashforge_file(
 ) -> str:
     """Inicia la impresión de un archivo guardado en Creator 5 Pro (`:8898/printGcode`)."""
     async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
-        ip, eff_sn, access_code, _ = await _resolve_flashforge_target(cfg, client)
+        ip, eff_sn, access_code, detail = await _resolve_flashforge_target(cfg, client)
+        raw_status = str(detail.get("status", "")).strip().lower() if isinstance(detail, dict) else ""
+
+        use_matl_station = False
+        gcode_tool_cnt = 0
+        material_mappings: list[dict[str, Any]] = []
+        try:
+            list_resp = await client.post(
+                f"http://{ip}:8898/gcodeList",
+                json={"serialNumber": eff_sn, "checkCode": access_code},
+            )
+            if list_resp.status_code == 200:
+                for det in list_resp.json().get("gcodeListDetail") or []:
+                    if isinstance(det, dict) and det.get("gcodeFileName") == filename:
+                        use_matl_station = bool(det.get("useMatlStation", False))
+                        tool_datas = det.get("gcodeToolDatas") or []
+                        gcode_tool_cnt = int(det.get("gcodeToolCnt") or len(tool_datas) or 0)
+                        for td in tool_datas:
+                            if isinstance(td, dict):
+                                material_mappings.append(
+                                    {
+                                        "toolId": int(td.get("toolId", 0)),
+                                        "slotId": int(td.get("slotId", 1)),
+                                        "materialName": str(td.get("materialName") or "PLA"),
+                                        "toolMaterialColor": str(td.get("materialColor") or "#FFFFFF"),
+                                        "slotMaterialColor": str(td.get("materialColor") or "#FFFFFF"),
+                                    }
+                                )
+                        break
+        except (httpx.HTTPError, ValueError):
+            pass
+
         payload = {
             "serialNumber": eff_sn,
             "checkCode": access_code,
@@ -637,9 +740,9 @@ async def print_flashforge_file(
             "flowCalibration": bool(auto_leveling),
             "firstLayerInspection": False,
             "timeLapseVideo": bool(enable_timelapse),
-            "useMatlStation": False,
-            "gcodeToolCnt": 0,
-            "materialMappings": [],
+            "useMatlStation": use_matl_station,
+            "gcodeToolCnt": gcode_tool_cnt,
+            "materialMappings": material_mappings,
         }
         try:
             resp = await client.post(f"http://{ip}:8898/printGcode", json=payload)
@@ -647,8 +750,14 @@ async def print_flashforge_file(
                 body = resp.json()
                 if body.get("code") == 0:
                     return f"FlashForge LAN ({ip}:8898): impresión iniciada para '{filename}'."
+                err_msg = str(body.get("message", body))
+                if "busy" in err_msg.lower() and raw_status in ("cancel", "completed", "complete", "finished"):
+                    raise RuntimeError(
+                        f"Creator 5 Pro sigue en pantalla de '{raw_status}' en su panel táctil. "
+                        f"Toca 'OK / Confirmar' en la pantalla de la impresora para liberarla antes de iniciar '{filename}'."
+                    )
                 raise RuntimeError(
-                    f"Creator 5 Pro rechazó iniciar '{filename}': {body.get('message', body)}"
+                    f"Creator 5 Pro rechazó iniciar '{filename}': {err_msg}"
                 )
         except httpx.HTTPError:
             pass
@@ -661,20 +770,38 @@ async def print_flashforge_file(
 
 
 async def delete_flashforge_file(cfg: dict[str, Any], filename: str) -> str:
-    """Elimina un archivo en Creator 5 Pro vía `~M30` y lo oculta del índice local."""
-    async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
-        ip, eff_sn, _code, _ = await _resolve_flashforge_target(cfg, client)
-    port = int(cfg.get("port", 8899) or 8899)
-    tcp_msg = ""
-    try:
-        tcp_msg = await asyncio.to_thread(
-            _tcp_command_sync, ip, port, f"~M30 0:/user/{filename}", 2.5
-        )
-    except OSError:
-        pass
-    _mark_deleted_file(eff_sn or ip, filename)
-    suffix = f" (TCP ~M30: {tcp_msg.strip()})" if tcp_msg.strip() else " (ocultado del índice local)"
-    return f"FlashForge ({ip}): archivo '{filename}' eliminado de la lista{suffix}."
+    """Elimina un archivo en Creator 5 Pro vía `:8898/control` y verifica en `/gcodeList`."""
+    async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
+        ip, eff_sn, access_code, _ = await _resolve_flashforge_target(cfg, client)
+        for cmd_name in ("delFile_cmd", "deleteFile_cmd"):
+            try:
+                await client.post(
+                    f"http://{ip}:8898/control",
+                    json={
+                        "serialNumber": eff_sn,
+                        "checkCode": access_code,
+                        "payload": {"cmd": cmd_name, "args": {"fileName": filename}},
+                    },
+                )
+            except httpx.HTTPError:
+                pass
+
+        try:
+            list_resp = await client.post(
+                f"http://{ip}:8898/gcodeList",
+                json={"serialNumber": eff_sn, "checkCode": access_code},
+            )
+            if list_resp.status_code == 200:
+                current_files = list_resp.json().get("gcodeList") or []
+                if filename not in current_files:
+                    return f"FlashForge ({ip}:8898): archivo '{filename}' eliminado de la memoria."
+                raise RuntimeError(
+                    f"El firmware de Creator 5 Pro no permite borrar '{filename}' de forma remota por LAN (bórralo desde la pantalla táctil de la impresora)."
+                )
+        except httpx.HTTPError:
+            pass
+
+    raise RuntimeError(f"No se pudo verificar el borrado de '{filename}' en Creator 5 Pro ({ip}).")
 
 
 async def set_flashforge_light(
