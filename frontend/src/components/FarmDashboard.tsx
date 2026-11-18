@@ -18,6 +18,7 @@ import {
   Layers,
   Lightbulb,
   Loader2,
+  Maximize2,
   Pause,
   Play,
   RefreshCw,
@@ -27,6 +28,7 @@ import {
   Trash2,
   Wifi,
   WifiOff,
+  X,
 } from 'lucide-react';
 import {
   controlPrinter,
@@ -86,7 +88,15 @@ function stateBadge(state: string, online: boolean): { label: string; cls: strin
   return { label: 'En Línea', cls: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200' };
 }
 
-function CameraStreamBox({ url, name }: { url: string; name: string }) {
+function CameraStreamBox({
+  url,
+  name,
+  onExpand,
+}: {
+  url: string;
+  name: string;
+  onExpand?: () => void;
+}) {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -95,7 +105,7 @@ function CameraStreamBox({ url, name }: { url: string; name: string }) {
 
   if (!url || failed) {
     return (
-      <div className="flex h-36 flex-col items-center justify-center rounded-xl border border-slate-800 bg-slate-950/80 text-center">
+      <div className="flex aspect-[4/3] w-full flex-col items-center justify-center rounded-xl border border-slate-800 bg-slate-950/80 text-center">
         <CameraOff className="mb-1.5 h-5 w-5 text-slate-600" />
         <p className="text-[11px] font-medium text-slate-500">
           {url ? 'Cámara MJPEG sin señal' : 'Sin URL de cámara configurada'}
@@ -105,17 +115,28 @@ function CameraStreamBox({ url, name }: { url: string; name: string }) {
   }
 
   return (
-    <div className="relative h-36 overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+    <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl border border-slate-800 bg-black">
       <img
         src={url}
         alt={`Cámara ${name}`}
         onError={() => setFailed(true)}
-        className="h-full w-full object-cover"
+        className="h-full w-full bg-black object-contain"
       />
       <span className="absolute left-2 top-2 flex items-center gap-1 rounded-md bg-slate-950/80 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 backdrop-blur">
         <Camera className="h-3 w-3" />
         EN VIVO
       </span>
+      {onExpand && (
+        <button
+          type="button"
+          onClick={onExpand}
+          title="Ampliar cámara en modal"
+          aria-label={`Ampliar cámara ${name}`}
+          className="absolute right-2 top-2 flex items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/80 p-1 text-slate-200 backdrop-blur transition hover:border-cyan-400/70 hover:text-cyan-200"
+        >
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
+      )}
     </div>
   );
 }
@@ -124,6 +145,9 @@ export function FarmDashboard() {
   const [statuses, setStatuses] = useState<PrinterLiveStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [expandedCamera, setExpandedCamera] = useState<{ url: string; name: string } | null>(
+    null,
+  );
 
   // Estado aislado ESTRICTAMENTE por instancia `printer_id`
   const [actionLoadingById, setActionLoadingById] = useState<Record<string, string | null>>({});
@@ -610,7 +634,13 @@ export function FarmDashboard() {
                   </div>
 
                   {/* Cámara MJPEG */}
-                  <CameraStreamBox url={st.camera_url} name={st.display_name} />
+                  <CameraStreamBox
+                    url={st.camera_url}
+                    name={st.display_name}
+                    onExpand={() =>
+                      setExpandedCamera({ url: st.camera_url, name: st.display_name })
+                    }
+                  />
 
                   {/* Temperaturas principales */}
                   <div className="grid grid-cols-2 gap-2">
@@ -1382,6 +1412,43 @@ export function FarmDashboard() {
               </article>
             );
           })}
+        </div>
+      )}
+
+      {/* Modal de vista ampliada de cámara */}
+      {expandedCamera && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
+          onClick={() => setExpandedCamera(null)}
+        >
+          <div
+            className="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
+              <div className="flex items-center gap-2">
+                <Camera className="h-4 w-4 text-emerald-400" />
+                <span className="text-sm font-bold text-slate-100">
+                  Cámara en Vivo · {expandedCamera.name}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExpandedCamera(null)}
+                aria-label="Cerrar vista ampliada"
+                className="rounded-lg border border-slate-700 bg-slate-800 p-1.5 text-slate-300 hover:bg-slate-700 hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex items-center justify-center bg-black p-2">
+              <img
+                src={expandedCamera.url}
+                alt={`Vista ampliada ${expandedCamera.name}`}
+                className="max-h-[80vh] w-full bg-black object-contain"
+              />
+            </div>
+          </div>
         </div>
       )}
     </div>
