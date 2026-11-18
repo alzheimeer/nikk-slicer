@@ -120,6 +120,36 @@ export interface MultimaterialPartInfo {
   extruder: number;
   color_hex: string | null;
   triangle_count: number;
+  z_min_mm?: number;
+  z_max_mm?: number;
+  suggested_slot?: number | null;
+}
+
+export interface LayerPauseItem {
+  layer: number;
+  note?: string;
+  z_mm?: number | null;
+  source?: 'manual' | 'auto_multicolor';
+  slot?: number | null;
+  outgoing_color?: string | null;
+  incoming_color?: string | null;
+}
+
+export interface DetectedColorInfo {
+  index: number;
+  zone_key: string;
+  name: string;
+  hex_color: string;
+  percentage: number;
+  z_min_mm: number;
+  z_max_mm: number;
+  suggested_slot: number;
+}
+
+export interface ApplyPausesResponse {
+  job_id: string;
+  applied_pauses: LayerPauseItem[];
+  gcode_text: string;
 }
 
 export interface MeshAnalysisResponse {
@@ -139,6 +169,7 @@ export interface MeshAnalysisResponse {
   is_multicolor?: boolean;
   extruder_triangle_percentages?: Record<string, number>;
   detected_filament_colors?: string[];
+  detected_colors?: DetectedColorInfo[];
   warnings: string[];
 }
 
@@ -229,6 +260,15 @@ export interface SlicePayload {
   adhesion_type: AdhesionType;
   brim_width_mm?: number;
   chamber_temp_target?: number;
+  layer_height_override?: number;
+  outer_wall_speed_override?: number;
+  flow_ratio_override?: number;
+  infill_density_override?: number;
+  fuzzy_skin?: boolean;
+  fuzzy_skin_thickness?: number;
+  fuzzy_skin_point_distance?: number;
+  ai_strategy_label?: string;
+  model_filename?: string;
   prime_tower_mode?: 'auto' | 'off' | 'ultra_save';
   enable_prime_tower?: boolean;
   enable_timelapse?: boolean;
@@ -242,6 +282,7 @@ export interface SlicePayload {
   support_extruder?: number;
   z_color_ranges?: ZColorRange[];
   part_extruder_map?: Record<string, number>;
+  layer_pauses?: LayerPauseItem[];
 }
 
 export interface SliceResponse {
@@ -260,6 +301,7 @@ export interface SliceResponse {
   support_xy_distance?: number | null;
   mesh_warnings: string[];
   dimensions_mm: DimensionsMM;
+  applied_pauses?: LayerPauseItem[];
 }
 
 export interface AIRecommendPayload {
@@ -776,6 +818,70 @@ export async function autoOrientMesh({
   return res.json() as Promise<AutoOrientResponse>;
 }
 
+export interface OrientationRotation {
+  rx: number;
+  ry: number;
+  rz: number;
+}
+
+export interface OrientationOption {
+  id: string;
+  title: string;
+  badge: string;
+  rotation: OrientationRotation;
+  z_height_mm: number;
+  overhang_ratio_pct: number;
+  contact_area_mm2: number;
+  estimated_time_delta_pct: string;
+  explanation: string;
+  stability_warning?: string | null;
+  fits_bed: boolean;
+  is_recommended: boolean;
+}
+
+export interface AIOrientationsResponse {
+  mesh_id: string;
+  model_name: string;
+  is_multicolor: boolean;
+  multicolor_parts_count: number;
+  ai_provider: 'GEMINI_API' | 'DEEPSEEK_API' | 'HEURISTICA_LOCAL';
+  recommended_id: string;
+  options: OrientationOption[];
+}
+
+export async function requestAIOrientations({
+  printerId,
+  material,
+  meshId,
+  file,
+  scalePercent = 100,
+}: {
+  printerId: PrinterId;
+  material: MaterialType;
+  meshId?: string | null;
+  file?: File | null;
+  scalePercent?: number;
+}): Promise<AIOrientationsResponse> {
+  const form = new FormData();
+  form.append('printer_id', printerId);
+  form.append('material', material);
+  form.append('scale_percent', String(scalePercent));
+  if (meshId) {
+    form.append('mesh_id', meshId);
+  } else if (file) {
+    form.append('file', file);
+  }
+
+  const res = await fetch(`${API_BASE_URL}/ai/orientations`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<AIOrientationsResponse>;
+}
+
 export async function fetchAIRecommendation(
   payload: AIRecommendPayload,
 ): Promise<AIRecommendResponse> {
@@ -853,6 +959,169 @@ export async function requestAISupportOrient({
   return res.json() as Promise<AISupportOrientResponse>;
 }
 
+export interface AIPresetOption {
+  id: string;
+  label: string;
+  description: string;
+  badge?: string | null;
+}
+
+export interface AISubOption {
+  id: string;
+  label: string;
+  description: string;
+  preset_id: string;
+  layer_height: number;
+  calibrated_speed_mms: number;
+  calibrated_temp_c: number;
+  estimated_time_str: string;
+  estimated_time_seconds: number;
+}
+
+export interface AILayerResolutionGroup {
+  layer_height: number;
+  title: string;
+  subtitle: string;
+  calibrated_speed_mms: number;
+  calibrated_temp_c: number;
+  estimated_time_str: string;
+  estimated_time_seconds: number;
+  is_recommended: boolean;
+  options: AISubOption[];
+}
+
+export interface AIAnalyzeModelResponse {
+  detected_type_summary: string;
+  model_category:
+    | 'lithophane_flat'
+    | 'character_organic'
+    | 'mechanical_functional'
+    | 'large_enclosure';
+  filter_note: string;
+  contextual_options: AISubOption[];
+  recommended_presets: AIPresetOption[];
+  layer_resolutions: AILayerResolutionGroup[];
+  all_layer_resolutions: AILayerResolutionGroup[];
+  provider: 'GEMINI_API' | 'DEEPSEEK_API' | 'HEURISTICA_LOCAL';
+}
+
+export interface AIOptimizeSliceResponse {
+  strategy_label: string;
+  explanation: string;
+  apply_rotation: boolean;
+  rot_x: number;
+  rot_y: number;
+  rot_z: number;
+  supports_required: boolean;
+  support_type: SupportType;
+  support_on_build_plate_only: boolean;
+  support_z_distance: number;
+  support_xy_distance: number;
+  adhesion_type: AdhesionType;
+  brim_width_mm: number;
+  layer_height: number;
+  outer_wall_speed?: number | null;
+  flow_ratio?: number | null;
+  nozzle_temp?: number | null;
+  infill_density?: number | null;
+  fuzzy_skin: boolean;
+  fuzzy_skin_thickness: number;
+  fuzzy_skin_point_distance: number;
+  provider: 'GEMINI_API' | 'DEEPSEEK_API' | 'HEURISTICA_LOCAL';
+}
+
+export interface SavedProjectRecord {
+  project_id: string;
+  created_at: string;
+  gcode_filename: string;
+  model_filename: string;
+  mesh_id?: string | null;
+  printer_id: PrinterId;
+  material: MaterialType;
+  nozzle_diameter: number;
+  quality_preset: QualityPreset;
+  ai_strategy?: string;
+  transform: {
+    scale_percent?: number;
+    rot_x?: number;
+    rot_y?: number;
+    rot_z?: number;
+  };
+  params: Record<string, unknown>;
+  metrics: {
+    estimated_time?: string;
+    estimated_time_seconds?: number;
+    filament_grams?: number;
+    filament_meters?: number;
+    support_weight_g?: number;
+    support_percentage?: number;
+  };
+}
+
+export interface AIDefectDiagnoseResponse {
+  root_cause: string;
+  explanation: string;
+  corrected_params: Record<string, unknown>;
+  provider: 'GEMINI_API' | 'DEEPSEEK_API' | 'HEURISTICA_LOCAL';
+}
+
+export async function requestAIAnalyzeModel(
+  payload: Record<string, unknown>,
+): Promise<AIAnalyzeModelResponse> {
+  const res = await fetch(`${API_BASE_URL}/ai/analyze-model`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<AIAnalyzeModelResponse>;
+}
+
+export async function requestAIOptimizeSlice(
+  payload: Record<string, unknown>,
+): Promise<AIOptimizeSliceResponse> {
+  const res = await fetch(`${API_BASE_URL}/ai/optimize-slice`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<AIOptimizeSliceResponse>;
+}
+
+export async function fetchSavedProjects(): Promise<SavedProjectRecord[]> {
+  const res = await fetch(`${API_BASE_URL}/projects`);
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  const data = (await res.json()) as { projects?: SavedProjectRecord[] };
+  return Array.isArray(data.projects) ? data.projects : [];
+}
+
+export function getSavedProjectDownloadUrl(projectId: string): string {
+  return `${API_BASE_URL}/projects/${encodeURIComponent(projectId)}`;
+}
+
+export async function requestAIDefectDiagnose(payload: {
+  project_id?: string;
+  project_data?: Record<string, unknown>;
+  defect_description: string;
+}): Promise<AIDefectDiagnoseResponse> {
+  const res = await fetch(`${API_BASE_URL}/ai/diagnose-defect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<AIDefectDiagnoseResponse>;
+}
+
 export async function sliceModel(
   payload: SlicePayload,
   signal?: AbortSignal,
@@ -887,6 +1156,33 @@ export async function sliceModel(
   }
   if (payload.chamber_temp_target !== undefined) {
     form.append('chamber_temp_target', String(payload.chamber_temp_target));
+  }
+  if (payload.layer_height_override !== undefined) {
+    form.append('layer_height_override', String(payload.layer_height_override));
+  }
+  if (payload.outer_wall_speed_override !== undefined) {
+    form.append('outer_wall_speed_override', String(payload.outer_wall_speed_override));
+  }
+  if (payload.flow_ratio_override !== undefined) {
+    form.append('flow_ratio_override', String(payload.flow_ratio_override));
+  }
+  if (payload.infill_density_override !== undefined) {
+    form.append('infill_density_override', String(payload.infill_density_override));
+  }
+  if (payload.fuzzy_skin !== undefined) {
+    form.append('fuzzy_skin', String(payload.fuzzy_skin));
+  }
+  if (payload.fuzzy_skin_thickness !== undefined) {
+    form.append('fuzzy_skin_thickness', String(payload.fuzzy_skin_thickness));
+  }
+  if (payload.fuzzy_skin_point_distance !== undefined) {
+    form.append('fuzzy_skin_point_distance', String(payload.fuzzy_skin_point_distance));
+  }
+  if (payload.ai_strategy_label) {
+    form.append('ai_strategy_label', payload.ai_strategy_label);
+  }
+  if (payload.model_filename) {
+    form.append('model_filename', payload.model_filename);
   }
   if (payload.prime_tower_mode !== undefined) {
     form.append('prime_tower_mode', payload.prime_tower_mode);
@@ -946,6 +1242,9 @@ export async function sliceModel(
   if (payload.part_extruder_map && Object.keys(payload.part_extruder_map).length > 0) {
     form.append('part_extruder_map_json', JSON.stringify(payload.part_extruder_map));
   }
+  if (payload.layer_pauses && payload.layer_pauses.length > 0) {
+    form.append('layer_pauses_json', JSON.stringify(payload.layer_pauses));
+  }
 
   const res = await fetchWithTimeout(
     `${API_BASE_URL}/slice`,
@@ -960,6 +1259,30 @@ export async function sliceModel(
     throw new Error(await parseError(res));
   }
   return res.json() as Promise<SliceResponse>;
+}
+
+export async function applyLayerPauses({
+  jobId,
+  printerId,
+  pauses,
+}: {
+  jobId: string;
+  printerId: PrinterId;
+  pauses: LayerPauseItem[];
+}): Promise<ApplyPausesResponse> {
+  const res = await fetch(`${API_BASE_URL}/slicer/apply-pauses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      job_id: jobId,
+      printer_id: printerId,
+      pauses,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<ApplyPausesResponse>;
 }
 
 export function getGcodeUrl(gcodeUrlOrJobId: string, customFilename?: string): string {

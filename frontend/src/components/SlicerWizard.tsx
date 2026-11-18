@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
+import { GlobalProcessingOverlay, type ProcessingOverlayMode } from './GlobalProcessingOverlay';
+import { QuoteCalculatorModal } from './QuoteCalculatorModal';
 import {
   AlertTriangle,
+  Calculator,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -15,6 +18,7 @@ import {
   Layers,
   Loader2,
   Palette,
+  Pause,
   Play,
   Plus,
   Ruler,
@@ -28,14 +32,20 @@ import {
   Upload,
   Usb,
   Video,
+  X,
   Zap,
 } from 'lucide-react';
 import {
   fetchTelemetryLearnings,
   getGcodeUrl,
+  getSavedProjectDownloadUrl,
+  requestAIDefectDiagnose,
+  type AIAnalyzeModelResponse,
+  type AIDefectDiagnoseResponse,
   type AISupportOrientResponse,
   type AdhesionType,
   type ExtruderSlotConfig,
+  type LayerPauseItem,
   type MachineMaterialLearningsResponse,
   type MaterialType,
   type MeshAnalysisResponse,
@@ -43,6 +53,7 @@ import {
   type PrinterId,
   type PrinterInfo,
   type ProfileId,
+  type SavedProjectRecord,
   type QualityPreset,
   type SliceResponse,
   type SupportType,
@@ -500,12 +511,60 @@ interface SlicerWizardProps {
   primeTowerReason: string | null;
   qualityPreset: QualityPreset;
   onChangePreset: (p: QualityPreset) => void;
+  specializedProfileId:
+    | 'none'
+    | 'detalle_fino'
+    | 'detalle_optimo'
+    | 'piel_difusa'
+    | 'rapido_funcional'
+    | 'litofania_hd'
+    | 'litofania_ultra'
+    | 'litofania_vertical';
+  onSelectDynamicProfile: (
+    id:
+      | QualityPreset
+      | 'detalle_fino'
+      | 'detalle_optimo'
+      | 'piel_difusa'
+      | 'rapido_funcional'
+      | 'litofania_hd'
+      | 'litofania_ultra'
+      | 'litofania_vertical',
+    speedHintMmS?: number,
+    layerHeightHintMm?: number,
+  ) => void;
   isOptimizingAI: boolean;
   aiReasoning: string | null;
   aiProvider: string | null;
   onAISupportOrient: () => void;
   isOptimizingSupportAI: boolean;
   aiSupportStatus: AISupportOrientResponse | null;
+  onAnalyzeModelAI: () => void;
+  isAnalyzingAI: boolean;
+  aiAnalysisResult: AIAnalyzeModelResponse | null;
+  onOptimizeSliceWithAI: (presetId: string, userNotes?: string, targetLayerHeight?: number) => void;
+  isOptimizingSliceAI: boolean;
+  aiOptimizeComparison: {
+    strategyLabel: string;
+    explanation: string;
+    before: { time: string; grams: number; supportGrams: number; rot: string };
+    after: {
+      time: string;
+      grams: number;
+      supportGrams: number;
+      rot: string;
+      layerHeight: number;
+      fuzzySkin: boolean;
+    };
+  } | null;
+  canRollbackInitialSlice: boolean;
+  onRollbackToInitialSlice: () => void;
+  onRollbackToUnsliced: () => void;
+  savedProjects: SavedProjectRecord[];
+  isLoadingProjects: boolean;
+  onRefreshSavedProjects: () => void;
+  onLoadSavedProject: (proj: SavedProjectRecord) => void;
+  onApplyDefectCorrection: (proj: SavedProjectRecord, corrected: Record<string, unknown>) => void;
   onSlice: () => void;
   onCancelSlice?: () => void;
   isSlicing: boolean;
@@ -538,6 +597,9 @@ interface SlicerWizardProps {
   onChangePartExtruderMap: (next: Record<string, number>) => void;
   chamberTempTarget: number | null;
   onChangeChamberTempTarget: (next: number | null) => void;
+  layerPauses: LayerPauseItem[];
+  onAddLayerPause: (layer: number, zMm: number | null, note: string) => void;
+  onRemoveLayerPause: (layer: number) => void;
 }
 
 const COLOR_PRESETS: Array<{ name: string; hex: string }> = [
@@ -610,13 +672,27 @@ export function SlicerWizard({
   onTogglePrimeTower,
   primeTowerReason,
   qualityPreset,
-  onChangePreset,
+  onChangePreset: _onChangePreset,
+  specializedProfileId,
+  onSelectDynamicProfile,
   isOptimizingAI,
   aiReasoning,
   aiProvider,
-  onAISupportOrient,
-  isOptimizingSupportAI,
   aiSupportStatus,
+  onAnalyzeModelAI,
+  isAnalyzingAI,
+  aiAnalysisResult,
+  onOptimizeSliceWithAI,
+  isOptimizingSliceAI,
+  aiOptimizeComparison,
+  canRollbackInitialSlice,
+  onRollbackToInitialSlice,
+  onRollbackToUnsliced,
+  savedProjects,
+  isLoadingProjects,
+  onRefreshSavedProjects,
+  onLoadSavedProject,
+  onApplyDefectCorrection,
   onSlice,
   onCancelSlice,
   isSlicing,
@@ -643,8 +719,13 @@ export function SlicerWizard({
   onChangePartExtruderMap,
   chamberTempTarget,
   onChangeChamberTempTarget,
+  layerPauses,
+  onAddLayerPause,
+  onRemoveLayerPause,
 }: SlicerWizardProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const [pauseLayerInput, setPauseLayerInput] = useState('10');
+  const [pauseNoteInput, setPauseNoteInput] = useState('');
   const [showManualTemps, setShowManualTemps] = useState(false);
   const [costs, setCosts] = useState<CostSettings>(loadSavedCosts);
   const [enderMode, setEnderMode] = useState<'sd_volume' | 'usb_serial'>('sd_volume');
@@ -658,6 +739,71 @@ export function SlicerWizard({
   const [draftSpoolRanges, setDraftSpoolRanges] = useState<
     Record<number, { min: string; max: string }>
   >({});
+  const [aiUserNotes, setAiUserNotes] = useState('');
+  const [projectsModalOpen, setProjectsModalOpen] = useState(false);
+  const [quoteModalOpen, setQuoteModalOpen] = useState(false);
+  const [defectTargetProj, setDefectTargetProj] = useState<SavedProjectRecord | null>(null);
+  const [defectText, setDefectText] = useState('');
+  const [isDiagnosingDefect, setIsDiagnosingDefect] = useState(false);
+  const [defectResult, setDefectResult] = useState<AIDefectDiagnoseResponse | null>(null);
+  const [isAiPresetsExpanded, setIsAiPresetsExpanded] = useState(true);
+  const [expandedLayerHeight, setExpandedLayerHeight] = useState<number | null>(null);
+  const [showAllResolutions, setShowAllResolutions] = useState(false);
+  const [sliderLayerHeight, setSliderLayerHeight] = useState<number>(0.20);
+  const [isStep4Expanded, setIsStep4Expanded] = useState(true);
+  const [instantOverlayMode, setInstantOverlayMode] = useState<ProcessingOverlayMode | null>(null);
+  const [lastOverlayMode, setLastOverlayMode] = useState<ProcessingOverlayMode>('slicing');
+  const aiResultRef = useRef<HTMLDivElement | null>(null);
+
+  const rawOverlayMode: ProcessingOverlayMode | null =
+    isOptimizingSliceAI
+      ? 'ai_optimize'
+      : isAnalyzingAI || isDiagnosingDefect
+        ? 'ai_analyze'
+        : isSlicing
+          ? 'slicing'
+          : instantOverlayMode;
+  const overlayActive = rawOverlayMode !== null;
+
+  useEffect(() => {
+    if (rawOverlayMode) {
+      setLastOverlayMode(rawOverlayMode);
+    }
+  }, [rawOverlayMode]);
+
+  useEffect(() => {
+    if (!instantOverlayMode) return;
+    const raf = window.requestAnimationFrame(() => {
+      setInstantOverlayMode(null);
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [instantOverlayMode, isSlicing, isAnalyzingAI, isOptimizingSliceAI, isDiagnosingDefect]);
+
+  useEffect(() => {
+    if (lithophaneMode && sliderLayerHeight > 0.12) {
+      setSliderLayerHeight(0.12);
+    }
+  }, [lithophaneMode, sliderLayerHeight]);
+
+  useEffect(() => {
+    if (aiAnalysisResult && !aiOptimizeComparison) {
+      setIsAiPresetsExpanded(true);
+      setShowAllResolutions(false);
+      const firstRec = aiAnalysisResult.layer_resolutions?.find((g) => g.is_recommended);
+      setExpandedLayerHeight(
+        firstRec ? firstRec.layer_height : (aiAnalysisResult.layer_resolutions?.[0]?.layer_height ?? null),
+      );
+    }
+  }, [aiAnalysisResult, aiOptimizeComparison]);
+
+  useEffect(() => {
+    if (aiOptimizeComparison) {
+      setIsAiPresetsExpanded(false);
+      window.setTimeout(() => {
+        aiResultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 60);
+    }
+  }, [aiOptimizeComparison]);
 
   useEffect(() => {
     setDraftSpoolRanges({});
@@ -754,6 +900,16 @@ export function SlicerWizard({
       : MATERIAL_DEFAULTS[effSupportMatKey].defaultSupportZ;
   const recommendedSupportXY = computeDefaultSupportXY(effSupportMatKey, nozzleDiameter);
 
+  const sliderScaleInfo = useMemo(() => {
+    const h = Number(sliderLayerHeight.toFixed(2));
+    if (h <= 0.08) return { title: 'Ultra Detalle', sub: 'Miniaturas / Rostros · Tiempo alto' };
+    if (h <= 0.12) return { title: 'Alta Calidad', sub: 'Figuras / Curvas suaves' };
+    if (h <= 0.16) return { title: 'Detalle Óptimo', sub: 'Piezas visibles con buen acabado' };
+    if (h <= 0.20) return { title: 'Estándar Equilibrado', sub: 'Uso general' };
+    if (h <= 0.24) return { title: 'Rápido Funcional', sub: 'Ahorro de tiempo con buena cohesión' };
+    return { title: 'Extra Rápido Blindado', sub: 'Piezas grandes · Seguro anti-delaminación' };
+  }, [sliderLayerHeight]);
+
   const dynamicPresets = useMemo(() => {
     const shortMachine =
       selectedProfileId === 'flsun_t1_pro'
@@ -797,35 +953,95 @@ export function SlicerWizard({
             : selectedProfileId === 'flsun_sr'
               ? 160
               : 120;
-    const lineW = nozzleDiameter * 1.05;
+    const h = Number(sliderLayerHeight.toFixed(2));
+    const lineW = h >= 0.24 && nozzleDiameter <= 0.45 ? 0.48 : nozzleDiameter * 1.05;
+    const effQ = h >= 0.24 ? effFlowLimit * 0.90 : effFlowLimit;
     const calcSpeed = (lh: number, factor: number) => {
-      const flowSpeed = Math.round((effFlowLimit / (lh * lineW)) * factor);
+      const flowSpeed = Math.round((effQ / (lh * lineW)) * factor);
       return Math.max(35, Math.min(machineCapMmS, flowSpeed));
     };
 
-    return [
+    const lithoSpeed = Math.max(38, Math.min(60, calcSpeed(h, 0.32)));
+
+    if (lithophaneMode) {
+      return [
+        {
+          id: (h <= 0.08 ? 'litofania_ultra' : 'litofania_hd') as 'litofania_ultra' | 'litofania_hd',
+          label: `${shortMachine} · PLA · Litofanía HD (${h.toFixed(2)} mm)`,
+          desc: `${lithoSpeed} mm/s · ${effTemp}°C · 100% Rectilíneo · 5 paredes · Baja aceleración`,
+          speedMmS: lithoSpeed,
+          layerHeight: h,
+          shielded: false,
+        },
+        {
+          id: 'litofania_vertical' as const,
+          label: `${shortMachine} · PLA · Litofanía Vertical Estable (${h.toFixed(2)} mm)`,
+          desc: `${lithoSpeed} mm/s · ${effTemp}°C · 100% Rectilíneo · Brim 10 mm · Sin soportes`,
+          speedMmS: lithoSpeed,
+          layerHeight: h,
+          shielded: false,
+        },
+      ];
+    }
+
+    const stdSpeed = calcSpeed(h, 0.88);
+    const mechSpeed = calcSpeed(h, 0.72);
+    const fuzzySpeed = calcSpeed(h, 0.76);
+    const mechTemp = Math.min(300, effTemp + 5);
+    const thickTemp = h >= 0.24 ? Math.min(300, effTemp + 6) : effTemp;
+    const isThick = h >= 0.24;
+
+    const cards: Array<{
+      id: QualityPreset | 'piel_difusa' | 'litofania_hd';
+      label: string;
+      desc: string;
+      speedMmS: number;
+      layerHeight: number;
+      shielded: boolean;
+    }> = [
       {
-        id: 'estandar' as QualityPreset,
-        label: `${shortMachine} · ${matTag} · Estándar (${(nozzleDiameter * 0.5).toFixed(2)} mm)`,
-        desc: `${calcSpeed(nozzleDiameter * 0.5, 0.72)} mm/s · ${effTemp}°C · Z=${supportZDistance.toFixed(2)} · XY=${supportXyDistance.toFixed(2)}mm · Gyroid 12%`,
+        id: 'estandar',
+        label: `${shortMachine} · ${matTag} · Estándar (${h.toFixed(2)} mm)`,
+        desc: isThick
+          ? `${stdSpeed} mm/s · ${thickTemp}°C (+6°C) · Ancho 0.48 mm · Q_max protegido · Gyroid 12%`
+          : `${stdSpeed} mm/s · ${effTemp}°C · Z=${supportZDistance.toFixed(2)} · XY=${supportXyDistance.toFixed(2)}mm · Gyroid 12%`,
+        speedMmS: stdSpeed,
+        layerHeight: h,
+        shielded: isThick,
       },
       {
-        id: 'mecanico_resistente' as QualityPreset,
-        label: `${shortMachine} · ${matTag} · Mecánico (${(nozzleDiameter * 0.5).toFixed(2)} mm)`,
-        desc: `${calcSpeed(nozzleDiameter * 0.5, 0.58)} mm/s · ${effTemp}°C · 4 paredes · Gyroid 25% · Sándwich`,
+        id: 'mecanico_resistente',
+        label: `${shortMachine} · ${matTag} · Mecánico / Estructural (${h.toFixed(2)} mm)`,
+        desc: `${mechSpeed} mm/s · ${mechTemp}°C (+5°C) · 4 paredes · Gyroid 25%`,
+        speedMmS: mechSpeed,
+        layerHeight: h,
+        shielded: isThick,
       },
       {
-        id: 'alta_velocidad' as QualityPreset,
-        label: `${shortMachine} · ${matTag} · Alta Velocidad (${(nozzleDiameter * 0.5).toFixed(2)} mm)`,
-        desc: `${calcSpeed(nozzleDiameter * 0.5, 0.92)} mm/s · ${effTemp}°C · Z=${supportZDistance.toFixed(2)} · Gyroid 10%`,
-      },
-      {
-        id: 'rapidez_extrema' as QualityPreset,
-        label: `${shortMachine} · ${matTag} · Rapidez Extrema (${(nozzleDiameter * 0.7).toFixed(2)} mm)`,
-        desc: `${calcSpeed(nozzleDiameter * 0.7, 1.0)} mm/s · ${effTemp}°C · Z=${supportZDistance.toFixed(2)} · Gyroid 8%`,
+        id: 'piel_difusa',
+        label: `${shortMachine} · ${matTag} · Piel Difusa / Textura (${h.toFixed(2)} mm)`,
+        desc: `${fuzzySpeed} mm/s · ${thickTemp}°C · Fuzzy Skin 0.15/0.40 mm · Gyroid 12%`,
+        speedMmS: fuzzySpeed,
+        layerHeight: h,
+        shielded: isThick,
       },
     ];
+
+    if (h <= 0.12) {
+      cards.push({
+        id: 'litofania_hd',
+        label: `${shortMachine} · ${matTag} · Litofanía HD (${h.toFixed(2)} mm)`,
+        desc: `${lithoSpeed} mm/s · ${effTemp}°C · 100% Rectilíneo · Anti-ringing`,
+        speedMmS: lithoSpeed,
+        layerHeight: h,
+        shielded: false,
+      });
+    }
+
+    return cards;
   }, [
+    lithophaneMode,
+    sliderLayerHeight,
     selectedProfileId,
     matMeta.label,
     highSpeedFilament,
@@ -900,9 +1116,9 @@ export function SlicerWizard({
     (analysis ? analysis.fits_in_volume : true);
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-950/60">
-      {/* Área scrollable con Pasos 1, 2 y 3 */}
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+    <div className="flex h-full max-h-[calc(100vh-80px)] min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-950/60">
+      {/* Área scrollable unificada con Pasos 1, 2, 3 y 4 */}
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pr-2">
         {/* PASO 1: Selector de impresora */}
         <section className="rounded-xl border border-slate-800 bg-slate-900/75 p-3.5">
           <div className="mb-2.5 flex items-center justify-between">
@@ -1243,35 +1459,26 @@ export function SlicerWizard({
             )}
           </div>
 
-          {/* Selector Material (oculto en Creator 5 Pro porque usa los 4 cabezales T0–T3) */}
-          {selectedProfileId !== 'creator5_pro' && (
+          {/* Selector Material (oculto en Creator 5 Pro salvo en Modo Litofanía, donde solo se muestra PLA) */}
+          {(selectedProfileId !== 'creator5_pro' || lithophaneMode) && (
             <>
-              <div className="grid grid-cols-4 gap-1.5">
-                {(Object.keys(MATERIAL_DEFAULTS) as MaterialType[]).map((mat) => {
+              <div className={`grid gap-1.5 ${lithophaneMode ? 'grid-cols-1' : 'grid-cols-4'}`}>
+                {(Object.keys(MATERIAL_DEFAULTS) as MaterialType[])
+                  .filter((mat) => !lithophaneMode || mat === 'pla')
+                  .map((mat) => {
                   const active = material === mat;
-                  const disabledByLitho = lithophaneMode && mat !== 'pla';
                   return (
                     <button
                       key={mat}
                       type="button"
-                      disabled={disabledByLitho}
-                      title={
-                        disabledByLitho
-                          ? 'Las litofanías requieren PLA blanco/translúcido'
-                          : undefined
-                      }
-                      onClick={() => {
-                        if (!disabledByLitho) onChangeMaterial(mat);
-                      }}
+                      onClick={() => onChangeMaterial(mat)}
                       className={`rounded-lg border py-1.5 text-xs font-semibold transition ${
-                        disabledByLitho
-                          ? 'cursor-not-allowed border-slate-800/60 bg-slate-950/30 text-slate-600 opacity-45'
-                          : active
-                            ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
-                            : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:text-slate-200'
+                        active
+                          ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
+                          : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:text-slate-200'
                       }`}
                     >
-                      {MATERIAL_DEFAULTS[mat].label}
+                      {lithophaneMode ? 'PLA (Recomendado para Litofanía a contraluz)' : MATERIAL_DEFAULTS[mat].label}
                     </button>
                   );
                 })}
@@ -1690,8 +1897,8 @@ export function SlicerWizard({
             )}
           </div>
 
-          {/* Panel Multicabezal T0..T3 solo para FlashForge Creator 5 Pro */}
-          {selectedProfileId === 'creator5_pro' && (
+          {/* Panel Multicabezal T0..T3 solo para FlashForge Creator 5 Pro (oculto en Modo Litofanía) */}
+          {selectedProfileId === 'creator5_pro' && !lithophaneMode && (
             <div className="mt-2.5 space-y-2.5 rounded-xl border border-purple-500/35 bg-purple-950/15 p-2.5">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-semibold text-purple-200">
@@ -2071,83 +2278,145 @@ export function SlicerWizard({
                 );
               })()}
 
-              {/* Asignación interactiva: Zonas pintadas del .3MF -> Cabezal físico (T0–T3) */}
+              {/* Asignación interactiva: Todos los colores del .3MF (Color #1..#N) -> Cabezal físico (T0–T3) */}
               {analysis?.is_multicolor &&
-                analysis.extruder_triangle_percentages &&
-                Object.keys(analysis.extruder_triangle_percentages).length > 1 && (
-                  <div className="space-y-1.5 border-t border-purple-500/20 pt-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-medium text-purple-200">
-                        Colores del modelo → Cabezal físico ({analysis.detected_extruder_count ?? Object.keys(analysis.extruder_triangle_percentages).length} zonas)
-                      </span>
-                      <span className="rounded bg-purple-500/20 px-1.5 py-0.5 font-mono text-[10px] text-purple-200">
-                        paint_color
-                      </span>
-                    </div>
-                    <div className="space-y-1">
-                      {[0, 1, 2, 3].map((zoneIdx) => {
-                        const pct = analysis.extruder_triangle_percentages?.[`T${zoneIdx}`];
-                        if (pct === undefined) return null;
-                        const origHex =
-                          analysis.detected_filament_colors?.[zoneIdx] || '#94A3B8';
-                        const mappedSlot = partExtruderMap[`zone_${zoneIdx}`] ?? zoneIdx;
-                        const targetColor =
-                          extrudersConfig[mappedSlot]?.color_hex || origHex;
-                        return (
-                          <div
-                            key={zoneIdx}
-                            className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950 px-2 py-1 text-[11px]"
-                          >
-                            <div className="flex min-w-0 items-center gap-1.5">
-                              <span
-                                className="h-3 w-3 shrink-0 rounded-sm border border-white/25"
-                                style={{ backgroundColor: origHex }}
-                                title={`Color original en .3MF: ${origHex}`}
-                              />
-                              <span className="text-slate-200">
-                                Color #{zoneIdx + 1}
-                              </span>
-                              <span className="font-mono text-[10px] text-slate-400">
-                                ({pct.toFixed(1)}%)
-                              </span>
+                ((analysis.detected_colors && analysis.detected_colors.length > 1) ||
+                  (analysis.extruder_triangle_percentages &&
+                    Object.keys(analysis.extruder_triangle_percentages).length > 1)) && (() => {
+                  const colorRows =
+                    analysis.detected_colors && analysis.detected_colors.length > 0
+                      ? analysis.detected_colors
+                      : Object.entries(analysis.extruder_triangle_percentages || {})
+                          .sort(([a], [b]) => Number(a.replace('T', '')) - Number(b.replace('T', '')))
+                          .map(([tKey, pct], idx) => {
+                            const zIdx = Number(tKey.replace('T', ''));
+                            return {
+                              index: idx + 1,
+                              zone_key: `zone_${zIdx}`,
+                              name: `Color #${idx + 1}`,
+                              hex_color: analysis.detected_filament_colors?.[zIdx] || '#94A3B8',
+                              percentage: pct,
+                              z_min_mm: 0,
+                              z_max_mm: analysis.dimensions_mm?.z ?? 0,
+                              suggested_slot: Math.min(3, idx),
+                            };
+                          });
+                  const effLh = sliderLayerHeight || 0.2;
+
+                  return (
+                    <div className="space-y-1.5 border-t border-purple-500/20 pt-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-medium text-purple-200">
+                          Colores del modelo → Cabezal físico ({colorRows.length} zonas)
+                        </span>
+                        <span className="rounded bg-purple-500/20 px-1.5 py-0.5 font-mono text-[10px] text-purple-200">
+                          {colorRows.length > 4 ? `+4 Colores · Auto M25` : 'paint_color'}
+                        </span>
+                      </div>
+                      <div className="max-h-72 space-y-1.5 overflow-y-auto pr-0.5">
+                        {colorRows.map((col, rIdx) => {
+                          const mappedSlot =
+                            partExtruderMap[col.zone_key] ?? col.suggested_slot;
+                          const targetColor =
+                            extrudersConfig[mappedSlot]?.color_hex || col.hex_color;
+                          const peers = colorRows.filter((other, oIdx) => {
+                            if (oIdx === rIdx) return false;
+                            const otherSlot =
+                              partExtruderMap[other.zone_key] ?? other.suggested_slot;
+                            return otherSlot === mappedSlot;
+                          });
+                          const conflictingPeer = peers.find(
+                            (other) =>
+                              Math.max(col.z_min_mm, other.z_min_mm) <=
+                              Math.min(col.z_max_mm, other.z_max_mm),
+                          );
+                          const earlierPeer = peers
+                            .filter((other) => other.z_max_mm < col.z_min_mm)
+                            .sort((a, b) => b.z_max_mm - a.z_max_mm)[0];
+
+                          return (
+                            <div
+                              key={col.zone_key}
+                              className="space-y-1 rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 text-[11px]"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  <span
+                                    className="h-3 w-3 shrink-0 rounded-sm border border-white/25"
+                                    style={{ backgroundColor: col.hex_color }}
+                                    title={`Color original en .3MF: ${col.hex_color}`}
+                                  />
+                                  <span className="truncate font-medium text-slate-200">
+                                    {col.name}
+                                  </span>
+                                  <span className="shrink-0 font-mono text-[10px] text-slate-400">
+                                    ({col.percentage.toFixed(1)}%)
+                                  </span>
+                                  <span className="shrink-0 font-mono text-[9px] text-slate-500">
+                                    Z: {col.z_min_mm.toFixed(1)}–{col.z_max_mm.toFixed(1)}mm
+                                  </span>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                  <span
+                                    className="h-2.5 w-2.5 shrink-0 rounded-full border border-white/25"
+                                    style={{ backgroundColor: targetColor }}
+                                    title={`Carrete asignado: ${targetColor}`}
+                                  />
+                                  <select
+                                    value={mappedSlot}
+                                    aria-label={`Cabezal para ${col.name}`}
+                                    onChange={(e) =>
+                                      onChangePartExtruderMap({
+                                        ...partExtruderMap,
+                                        [col.zone_key]: Number(e.target.value),
+                                      })
+                                    }
+                                    className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200"
+                                  >
+                                    {[0, 1, 2, 3].map((t) => {
+                                      const sc = extrudersConfig[t];
+                                      const presetName =
+                                        COLOR_PRESETS.find(
+                                          (p) =>
+                                            p.hex.toUpperCase() ===
+                                            sc?.color_hex?.toUpperCase(),
+                                        )?.name || sc?.color_hex;
+                                      return (
+                                        <option key={t} value={t}>
+                                          T{t} · {presetName} (
+                                          {sc?.material?.toUpperCase() || 'PLA'})
+                                        </option>
+                                      );
+                                    })}
+                                  </select>
+                                </div>
+                              </div>
+
+                              {peers.length > 0 && (
+                                conflictingPeer ? (
+                                  <p className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200">
+                                    ⚠ Cruce en Z (
+                                    {Math.max(col.z_min_mm, conflictingPeer.z_min_mm).toFixed(1)}–
+                                    {Math.min(col.z_max_mm, conflictingPeer.z_max_mm).toFixed(1)} mm)
+                                    con {conflictingPeer.name} en T{mappedSlot}: compartirán el mismo
+                                    filamento en esas capas o elige otro cabezal/orientación
+                                  </p>
+                                ) : earlierPeer ? (
+                                  <p className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-200">
+                                    ✓ Sin cruce en Z · Pausa automática en Z=
+                                    {col.z_min_mm.toFixed(1)} mm (Capa{' '}
+                                    {Math.max(2, Math.round(col.z_min_mm / effLh))}) para cambiar
+                                    carrete en T{mappedSlot}
+                                  </p>
+                                ) : null
+                              )}
                             </div>
-                            <div className="flex items-center gap-1.5">
-                              <span
-                                className="h-2.5 w-2.5 shrink-0 rounded-full border border-white/25"
-                                style={{ backgroundColor: targetColor }}
-                                title={`Carrete asignado: ${targetColor}`}
-                              />
-                              <select
-                                value={mappedSlot}
-                                aria-label={`Cabezal para Color #${zoneIdx + 1}`}
-                                onChange={(e) =>
-                                  onChangePartExtruderMap({
-                                    ...partExtruderMap,
-                                    [`zone_${zoneIdx}`]: Number(e.target.value),
-                                  })
-                                }
-                                className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200"
-                              >
-                                {[0, 1, 2, 3].map((t) => {
-                                  const sc = extrudersConfig[t];
-                                  const presetName =
-                                    COLOR_PRESETS.find(
-                                      (p) => p.hex.toUpperCase() === sc?.color_hex?.toUpperCase(),
-                                    )?.name || sc?.color_hex;
-                                  return (
-                                    <option key={t} value={t}>
-                                      T{t} · {presetName} ({sc?.material?.toUpperCase() || 'PLA'})
-                                    </option>
-                                  );
-                                })}
-                              </select>
-                            </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
 
               {/* Partes multicolor detectadas en archivo .3MF (ocultar si es una sola malla pintada por triángulo) */}
               {analysis?.multimaterial_parts &&
@@ -2337,32 +2606,178 @@ export function SlicerWizard({
             </div>
           )}
 
+          {/* Mapeo Extendido Multicolor (+4 Colores · Creator 5 Pro) */}
+          {selectedProfileId === 'creator5_pro' &&
+            analysis?.multimaterial_parts &&
+            analysis.multimaterial_parts.length > 4 && (
+              <div className="mt-2.5 space-y-2 rounded-xl border border-fuchsia-500/35 bg-fuchsia-500/5 p-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-xs font-semibold text-fuchsia-200">
+                    <Palette className="h-3.5 w-3.5 text-fuchsia-400" />
+                    Mapeo Extendido Multicolor (+4 Colores · Creator 5 Pro)
+                  </span>
+                  <span className="rounded bg-fuchsia-500/20 px-1.5 py-0.5 font-mono text-[10px] text-fuchsia-200">
+                    {analysis.multimaterial_parts.length} colores
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  Asigna colores extra (5+) a T0–T3 si no se cruzan en Z; al laminar se inyectará pausa M25 automática.
+                </p>
+                <div className="space-y-1.5">
+                  {analysis.multimaterial_parts.map((part, pIdx) => {
+                    const assignedSlot =
+                      partExtruderMap[part.part_id] ??
+                      part.suggested_slot ??
+                      ((part.extruder - 1) % 4);
+                    const zMin = part.z_min_mm ?? 0;
+                    const zMax = part.z_max_mm ?? 0;
+                    const peers = (analysis.multimaterial_parts ?? []).filter((other, oIdx) => {
+                      if (oIdx === pIdx) return false;
+                      const otherSlot =
+                        partExtruderMap[other.part_id] ??
+                        other.suggested_slot ??
+                        ((other.extruder - 1) % 4);
+                      return otherSlot === assignedSlot;
+                    });
+                    const hasConflict = peers.some((other) => {
+                      const oMin = other.z_min_mm ?? 0;
+                      const oMax = other.z_max_mm ?? 0;
+                      return Math.max(zMin, oMin) <= Math.min(zMax, oMax);
+                    });
+                    const earlierPeer = peers
+                      .filter((other) => (other.z_max_mm ?? 0) < zMin)
+                      .sort((a, b) => (b.z_max_mm ?? 0) - (a.z_max_mm ?? 0))[0];
+
+                    return (
+                      <div
+                        key={part.part_id}
+                        className="flex flex-col gap-1 rounded-lg border border-slate-800 bg-slate-950/75 p-2 text-[11px]"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <span
+                              className="h-3 w-3 shrink-0 rounded-full border border-slate-600"
+                              style={{ backgroundColor: part.color_hex || '#94a3b8' }}
+                            />
+                            <span className="truncate font-medium text-slate-200">
+                              {part.name}
+                            </span>
+                            <span className="shrink-0 font-mono text-[10px] text-slate-400">
+                              [{zMin.toFixed(1)}–{zMax.toFixed(1)}mm]
+                            </span>
+                          </div>
+                          <select
+                            value={assignedSlot}
+                            onChange={(e) =>
+                              onChangePartExtruderMap({
+                                ...partExtruderMap,
+                                [part.part_id]: Number(e.target.value),
+                              })
+                            }
+                            className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-slate-100"
+                          >
+                            {[0, 1, 2, 3].map((slot) => (
+                              <option key={slot} value={slot}>
+                                T{slot}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        {peers.length > 0 && (
+                          <span
+                            className={`inline-flex w-fit rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                              hasConflict
+                                ? 'border border-rose-500/40 bg-rose-500/15 text-rose-200'
+                                : 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-200'
+                            }`}
+                          >
+                            {hasConflict
+                              ? 'Conflicto en Z: ambos colores coinciden en la misma capa'
+                              : `Sin cruce en Z · Pausa automática en Z=${(((earlierPeer?.z_max_mm ?? zMin) + zMin) / 2).toFixed(1)}mm`}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
           {/* Perfiles Dinámicos por Máquina + Material + Boquilla + HS */}
-          <div className="mt-2.5 space-y-1.5">
-            <p className="text-xs font-medium text-slate-300">
-              Perfiles Dinámicos (Arachne + Gyroid)
-            </p>
+          <div className="mt-2.5 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-slate-300">
+                Perfiles Dinámicos (Arachne + Gyroid)
+              </p>
+              <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-cyan-300">
+                {sliderLayerHeight.toFixed(2)} mm
+              </span>
+            </div>
+
+            {/* Slider Discreto Calidad vs. Velocidad (0.08 - 0.28 mm) */}
+            <div className="rounded-xl border border-slate-800 bg-slate-950/75 p-2.5">
+              <div className="mb-1 flex items-center justify-between text-[10px]">
+                <span className="font-semibold text-cyan-200">
+                  {sliderScaleInfo.title}
+                </span>
+                <span className="text-slate-400">{sliderScaleInfo.sub}</span>
+              </div>
+              <input
+                type="range"
+                min={0.08}
+                max={lithophaneMode ? 0.12 : 0.28}
+                step={0.04}
+                value={sliderLayerHeight}
+                onChange={(e) => {
+                  const nextH = Number(Number(e.target.value).toFixed(2));
+                  setSliderLayerHeight(nextH);
+                  onSelectDynamicProfile(
+                    specializedProfileId === 'none' ? qualityPreset : specializedProfileId,
+                    undefined,
+                    nextH,
+                  );
+                }}
+                className="w-full cursor-pointer accent-cyan-400"
+              />
+              <div className="mt-0.5 flex items-center justify-between text-[9px] text-slate-400">
+                <span>Calidad Máxima (0.08)</span>
+                <span>{lithophaneMode ? 'Litofanía (0.12)' : 'Máxima Velocidad (0.28)'}</span>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 gap-1.5">
               {dynamicPresets.map((opt) => {
-                const active = qualityPreset === opt.id;
+                const active =
+                  specializedProfileId === 'none'
+                    ? qualityPreset === opt.id
+                    : specializedProfileId === opt.id;
                 return (
                   <button
                     key={opt.id}
                     type="button"
-                    onClick={() => onChangePreset(opt.id)}
+                    onClick={() =>
+                      onSelectDynamicProfile(opt.id, opt.speedMmS, opt.layerHeight)
+                    }
                     className={`rounded-xl border px-3 py-1.5 text-left transition ${
                       active
                         ? 'border-cyan-500/70 bg-cyan-500/10'
                         : 'border-slate-800 bg-slate-950/60 hover:border-slate-700'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-1.5">
                       <span className="text-xs font-semibold text-slate-100">
                         {opt.label}
                       </span>
-                      {active && (
-                        <ShieldCheck className="h-3.5 w-3.5 text-cyan-400" />
-                      )}
+                      <div className="flex shrink-0 items-center gap-1">
+                        {opt.shielded && (
+                          <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-200">
+                            Blindaje Anti-Delaminación
+                          </span>
+                        )}
+                        {active && (
+                          <ShieldCheck className="h-3.5 w-3.5 text-cyan-400" />
+                        )}
+                      </div>
                     </div>
                     <p className="text-[10px] text-slate-400">{opt.desc}</p>
                   </button>
@@ -2434,11 +2849,14 @@ export function SlicerWizard({
             </div>
           </div>
         </section>
-      </div>
 
-      {/* PASO 4 STICKY: Fijo en la parte inferior de la barra lateral */}
-      <section className="sticky bottom-0 z-10 border-t border-slate-800 bg-slate-900/95 p-3.5 backdrop-blur">
-        <div className="mb-2 flex items-center justify-between">
+      {/* PASO 4 COLAPSABLE */}
+      <section className="rounded-xl border border-slate-800 bg-slate-900/95 p-3.5">
+        <button
+          type="button"
+          onClick={() => setIsStep4Expanded((prev) => !prev)}
+          className="flex w-full items-center justify-between gap-2 text-left"
+        >
           <div className="flex items-center gap-2">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[11px] font-bold text-cyan-300">
               4
@@ -2447,12 +2865,27 @@ export function SlicerWizard({
               Laminar y Exportar
             </h2>
           </div>
-          {!analysis?.fits_in_volume && analysis && (
-            <span className="text-[10px] font-medium text-amber-300">
-              Auto-Ajusta o Auto-Orienta
-            </span>
-          )}
-        </div>
+          <div className="flex items-center gap-2">
+            {!isStep4Expanded && sliceResult && (
+              <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-300">
+                Laminado listo · {sliceResult.estimated_time} · {sliceResult.filament_grams}g
+              </span>
+            )}
+            {!analysis?.fits_in_volume && analysis && (
+              <span className="text-[10px] font-medium text-amber-300">
+                Auto-Ajusta o Auto-Orienta
+              </span>
+            )}
+            {isStep4Expanded ? (
+              <ChevronDown className="h-4 w-4 text-slate-400" />
+            ) : (
+              <ChevronUp className="h-4 w-4 text-slate-400" />
+            )}
+          </div>
+        </button>
+
+        {isStep4Expanded && (
+        <div className="mt-2.5">
 
         <div className="mb-2 space-y-1.5">
           {!isUsbOrSdPrinter && (
@@ -2509,7 +2942,10 @@ export function SlicerWizard({
         <button
           type="button"
           disabled={!canSlice}
-          onClick={onSlice}
+          onClick={() => {
+            setInstantOverlayMode('slicing');
+            onSlice();
+          }}
           className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 transition hover:from-cyan-400 hover:to-blue-500 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {isSlicing ? (
@@ -2525,33 +2961,317 @@ export function SlicerWizard({
           )}
         </button>
 
-        <div className="mt-1.5 space-y-1">
-          <button
-            type="button"
-            disabled={!sliceResult || isSlicing || isOptimizingSupportAI}
-            onClick={onAISupportOrient}
-            title={
-              !sliceResult
-                ? 'Lamina primero para evaluar tiempos y soportes reales'
-                : 'Evalúa con DeepSeek IA si rotar o ajustar soportes ahorra tiempo y material'
-            }
-            className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-cyan-500/45 bg-gradient-to-r from-cyan-500/15 to-violet-500/15 px-3 py-2 text-xs font-semibold text-cyan-100 transition hover:from-cyan-500/25 hover:to-violet-500/25 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {isOptimizingSupportAI ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-300" />
-            ) : (
-              <Sparkles className="h-3.5 w-3.5 text-cyan-300" />
-            )}
-            <span>
-              {isOptimizingSupportAI
-                ? 'Optimizando y re-laminando...'
-                : 'Soporte con IA (Ángulo Anti-Soportes)'}
-            </span>
-          </button>
+        <div className="mt-1.5 space-y-1.5">
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              disabled={!sliceResult || isSlicing || isAnalyzingAI || isOptimizingSliceAI}
+              onClick={() => {
+                setInstantOverlayMode('ai_analyze');
+                onAnalyzeModelAI();
+              }}
+              title={
+                !sliceResult
+                  ? 'Lamina primero para evaluar tiempos, soportes y acabados reales'
+                  : 'Detecta el tipo de modelo y sugiere estrategias de acabado y orientación con DeepSeek IA'
+              }
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-cyan-500/45 bg-gradient-to-r from-cyan-500/15 to-violet-500/15 px-3 py-2 text-xs font-semibold text-cyan-100 transition hover:from-cyan-500/25 hover:to-violet-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {isAnalyzingAI || isOptimizingSliceAI ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-300" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5 text-cyan-300" />
+              )}
+              <span>
+                {isAnalyzingAI
+                  ? 'Analizando modelo y laminado...'
+                  : isOptimizingSliceAI
+                    ? 'Optimizando y re-laminando...'
+                    : 'Análisis IA'}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onRefreshSavedProjects();
+                setDefectTargetProj(null);
+                setDefectResult(null);
+                setProjectsModalOpen(true);
+              }}
+              className="rounded-xl border border-slate-700 bg-slate-800/90 px-2.5 py-2 text-[11px] font-semibold text-slate-200 hover:border-cyan-500/50 hover:text-cyan-200"
+              title="Ver proyectos guardados y diagnosticar defectos post-impresión"
+            >
+              Proyectos
+            </button>
+          </div>
           {!sliceResult && (
             <p className="text-center text-[10px] text-slate-400">
-              Lamina primero para evaluar tiempos y soportes reales
+              Lamina primero para activar Análisis IA
             </p>
+          )}
+
+          {aiAnalysisResult && sliceResult && (
+            isAiPresetsExpanded ? (
+              <div className="space-y-2 rounded-xl border border-cyan-500/35 bg-slate-950/90 p-2.5 text-[11px]">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-semibold leading-snug text-cyan-200">
+                    {aiAnalysisResult.detected_type_summary}
+                  </p>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 font-mono text-[9px] text-cyan-300">
+                      {aiAnalysisResult.provider}
+                    </span>
+                    {aiOptimizeComparison && (
+                      <button
+                        type="button"
+                        onClick={() => setIsAiPresetsExpanded(false)}
+                        className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-300 hover:bg-slate-700"
+                      >
+                        Ocultar ▲
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  value={aiUserNotes}
+                  onChange={(e) => setAiUserNotes(e.target.value)}
+                  placeholder="Nota opcional (ej: sin soportes en cara frontal, textura mate...)"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-400"
+                />
+                {aiAnalysisResult.filter_note && (
+                  <p className="rounded-lg border border-cyan-500/20 bg-cyan-950/25 px-2 py-1 text-[9px] leading-snug text-cyan-200">
+                    {aiAnalysisResult.filter_note}
+                  </p>
+                )}
+
+                {aiAnalysisResult.contextual_options &&
+                  aiAnalysisResult.contextual_options.length > 0 && (
+                    <div className="space-y-1">
+                      <p className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">
+                        Opciones Fijas Contextuales
+                      </p>
+                      <div className="grid grid-cols-1 gap-1">
+                        {aiAnalysisResult.contextual_options.map((opt) => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            disabled={isOptimizingSliceAI || isSlicing}
+                            onClick={() => {
+                              setInstantOverlayMode('ai_optimize');
+                              onOptimizeSliceWithAI(
+                                opt.preset_id,
+                                aiUserNotes,
+                                opt.layer_height,
+                              );
+                            }}
+                            className="flex w-full flex-col items-start rounded-lg border border-slate-800 bg-slate-900/90 px-2.5 py-1.5 text-left transition hover:border-cyan-500/50 hover:bg-cyan-500/10 disabled:opacity-45"
+                          >
+                            <div className="flex w-full items-center justify-between gap-1">
+                              <span className="text-[10px] font-semibold text-slate-100">
+                                {opt.label}
+                              </span>
+                              <span className="shrink-0 font-mono text-[9px] font-semibold text-amber-200">
+                                {opt.estimated_time_str}
+                              </span>
+                            </div>
+                            <span className="font-mono text-[9px] text-cyan-300">
+                              {opt.layer_height.toFixed(2)} mm · {opt.calibrated_speed_mms} mm/s ·{' '}
+                              {opt.calibrated_temp_c}°C
+                            </span>
+                            <span className="text-[9px] text-slate-400">{opt.description}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                <div className="space-y-1.5">
+                  {(() => {
+                    const groupsToShow =
+                      showAllResolutions && aiAnalysisResult.all_layer_resolutions?.length
+                        ? aiAnalysisResult.all_layer_resolutions
+                        : aiAnalysisResult.layer_resolutions;
+                    return groupsToShow && groupsToShow.length > 0 ? (
+                      groupsToShow.map((group) => {
+                      const isGroupOpen = expandedLayerHeight === group.layer_height;
+                      return (
+                        <div
+                          key={group.layer_height}
+                          className={`rounded-lg border transition ${
+                            group.is_recommended
+                              ? 'border-cyan-500/45 bg-slate-900/95'
+                              : 'border-slate-800 bg-slate-900/75'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedLayerHeight((prev) =>
+                                prev === group.layer_height ? null : group.layer_height,
+                              )
+                            }
+                            className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="font-mono text-[11px] font-bold text-cyan-300">
+                                  {group.layer_height.toFixed(2)} mm
+                                </span>
+                                <span className="text-[11px] font-semibold text-slate-100">
+                                  {group.title}
+                                </span>
+                                {group.is_recommended && (
+                                  <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-200">
+                                    Recomendado IA
+                                  </span>
+                                )}
+                              </div>
+                              <p className="truncate text-[9px] text-slate-400">
+                                {group.subtitle} · {group.calibrated_speed_mms} mm/s ·{' '}
+                                {group.calibrated_temp_c}°C
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              <span className="font-mono text-[10px] font-semibold text-amber-200">
+                                {group.estimated_time_str}
+                              </span>
+                              {isGroupOpen ? (
+                                <ChevronUp className="h-3.5 w-3.5 text-slate-400" />
+                              ) : (
+                                <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+                              )}
+                            </div>
+                          </button>
+
+                          {isGroupOpen && (
+                            <div className="space-y-1 border-t border-slate-800/80 px-2 py-1.5">
+                              {group.options.map((sub) => (
+                                <button
+                                  key={sub.id}
+                                  type="button"
+                                  disabled={isOptimizingSliceAI || isSlicing}
+                                  onClick={() => {
+                                    setInstantOverlayMode('ai_optimize');
+                                    onOptimizeSliceWithAI(
+                                      sub.preset_id,
+                                      aiUserNotes,
+                                      sub.layer_height,
+                                    );
+                                  }}
+                                  className="flex w-full flex-col items-start rounded-md border border-slate-800 bg-slate-950/85 px-2 py-1 text-left transition hover:border-cyan-500/50 hover:bg-cyan-500/10 disabled:opacity-45"
+                                >
+                                  <div className="flex w-full items-center justify-between gap-1">
+                                    <span className="text-[10px] font-semibold text-slate-100">
+                                      {sub.label}
+                                    </span>
+                                    <span className="font-mono text-[9px] font-semibold text-cyan-300">
+                                      {sub.calibrated_speed_mms} mm/s · {sub.calibrated_temp_c}°C ·{' '}
+                                      {sub.estimated_time_str}
+                                    </span>
+                                  </div>
+                                  <span className="text-[9px] text-slate-400">
+                                    {sub.description}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : null;
+                  })()}
+                  {!lithophaneMode &&
+                    aiAnalysisResult.model_category !== 'lithophane_flat' &&
+                    aiAnalysisResult.all_layer_resolutions &&
+                    aiAnalysisResult.all_layer_resolutions.length >
+                      (aiAnalysisResult.layer_resolutions?.length ?? 0) && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAllResolutions((prev) => !prev)}
+                        className="w-full pt-0.5 text-center text-[10px] font-medium text-slate-400 underline hover:text-cyan-300"
+                      >
+                        {showAllResolutions
+                          ? 'Ocultar resoluciones fuera de categoría'
+                          : 'Ver todas las resoluciones (0.08–0.28 mm)'}
+                      </button>
+                    )}
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsAiPresetsExpanded(true)}
+                className="flex w-full items-center justify-between gap-2 rounded-xl border border-cyan-500/35 bg-slate-950/90 px-2.5 py-1.5 text-left text-[10px] transition hover:border-cyan-400/60"
+              >
+                <span className="truncate font-semibold text-cyan-200">
+                  Estrategia aplicada:{' '}
+                  <strong className="text-white">
+                    {aiOptimizeComparison?.strategyLabel || 'Personalizada'}
+                  </strong>
+                </span>
+                <span className="shrink-0 font-semibold text-violet-300">
+                  Cambiar opción ▼
+                </span>
+              </button>
+            )
+          )}
+
+          {aiOptimizeComparison && (
+            <div
+              ref={aiResultRef}
+              className="space-y-2 rounded-xl border border-violet-500/40 bg-violet-950/20 p-2.5 text-[10px]"
+            >
+              <div className="flex items-center justify-between gap-1">
+                <span className="font-bold text-violet-200">
+                  {aiOptimizeComparison.strategyLabel}
+                </span>
+                <span className="font-mono text-[9px] text-emerald-300">
+                  Capa {aiOptimizeComparison.after.layerHeight}mm
+                  {aiOptimizeComparison.after.fuzzySkin ? ' · Piel Difusa' : ''}
+                </span>
+              </div>
+              <p className="leading-snug text-slate-300">{aiOptimizeComparison.explanation}</p>
+              <div className="grid grid-cols-2 gap-1.5 rounded-lg bg-slate-950/75 p-1.5 font-mono text-[9px]">
+                <div>
+                  <p className="text-slate-400">Laminado Inicial</p>
+                  <p className="text-slate-200">
+                    {aiOptimizeComparison.before.time} · {aiOptimizeComparison.before.grams}g
+                  </p>
+                  <p className="text-slate-400">
+                    Sop: {aiOptimizeComparison.before.supportGrams}g · {aiOptimizeComparison.before.rot}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-emerald-300">Optimizado IA</p>
+                  <p className="font-bold text-white">
+                    {aiOptimizeComparison.after.time} · {aiOptimizeComparison.after.grams}g
+                  </p>
+                  <p className="text-cyan-300">
+                    Sop: {aiOptimizeComparison.after.supportGrams}g · {aiOptimizeComparison.after.rot}
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {canRollbackInitialSlice && (
+                  <button
+                    type="button"
+                    onClick={onRollbackToInitialSlice}
+                    className="rounded-lg border border-amber-500/45 bg-amber-500/15 px-2 py-1 font-semibold text-amber-100 hover:bg-amber-500/25"
+                  >
+                    Volver al laminado inicial
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onRollbackToUnsliced}
+                  className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 font-semibold text-slate-200 hover:bg-slate-700"
+                >
+                  Volver al inicio sin laminar
+                </button>
+              </div>
+            </div>
           )}
         </div>
 
@@ -2577,6 +3297,85 @@ export function SlicerWizard({
             {errorMsg}
           </div>
         )}
+
+        {/* Gestor de Pausas Programadas por Capa */}
+        <div className="mt-2.5 space-y-2 rounded-xl border border-amber-500/25 bg-slate-950/70 p-2.5">
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-200">
+              <Pause className="h-3.5 w-3.5 text-amber-400" />
+              Pausas Programadas
+            </span>
+            <span className="font-mono text-[10px] text-slate-400">
+              {layerPauses.length} activa(s)
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="number"
+              min={1}
+              value={pauseLayerInput}
+              onChange={(e) => setPauseLayerInput(e.target.value)}
+              placeholder="Capa"
+              className="w-16 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-[11px] text-slate-100"
+            />
+            <input
+              type="text"
+              value={pauseNoteInput}
+              onChange={(e) => setPauseNoteInput(e.target.value)}
+              placeholder="Nota (ej. Insertar imán)"
+              className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-100 placeholder:text-slate-500"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const ln = Math.max(1, Math.round(Number(pauseLayerInput) || 1));
+                onAddLayerPause(ln, null, pauseNoteInput.trim());
+                setPauseNoteInput('');
+              }}
+              className="flex shrink-0 items-center gap-1 rounded-lg border border-amber-500/45 bg-amber-500/15 px-2 py-1 text-[11px] font-semibold text-amber-200 hover:bg-amber-500/25"
+            >
+              <Plus className="h-3 w-3" />
+              Añadir
+            </button>
+          </div>
+          {layerPauses.length > 0 && (
+            <div className="space-y-1">
+              {layerPauses.map((p) => (
+                <div
+                  key={p.layer}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/90 px-2 py-1 text-[10px]"
+                >
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="font-mono font-bold text-amber-300">
+                      Capa {p.layer}
+                    </span>
+                    {p.z_mm != null && (
+                      <span className="font-mono text-slate-400">
+                        (Z {Number(p.z_mm).toFixed(1)}mm)
+                      </span>
+                    )}
+                    {p.note && (
+                      <span className="truncate text-slate-300">· {p.note}</span>
+                    )}
+                    {p.source === 'auto_multicolor' && (
+                      <span className="rounded bg-fuchsia-500/20 px-1 py-0.5 text-[9px] text-fuchsia-200">
+                        Auto M25
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onRemoveLayerPause(p.layer)}
+                    title="Eliminar pausa"
+                    className="text-slate-400 hover:text-rose-400"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {sliceResult && !isSlicing && (
           <div className="mt-2.5 space-y-2 rounded-xl border border-emerald-500/35 bg-emerald-500/5 p-2.5">
@@ -2641,6 +3440,31 @@ export function SlicerWizard({
                 </span>
               </div>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setQuoteModalOpen(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-amber-500/50 bg-gradient-to-r from-amber-500/20 to-emerald-500/20 px-3 py-2 text-xs font-semibold text-amber-200 transition hover:border-amber-400 hover:from-amber-500/30 hover:to-emerald-500/30"
+            >
+              <Calculator className="h-3.5 w-3.5 text-amber-300" />
+              Calculadora de Venta
+            </button>
+
+            {layerPauses.length > 0 && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[10px] text-amber-200">
+                <span className="font-semibold">
+                  {layerPauses.length} Pausa{layerPauses.length === 1 ? '' : 's'} programada
+                  {layerPauses.length === 1 ? '' : 's'}:{' '}
+                </span>
+                {layerPauses
+                  .map((p) => {
+                    const slotSuffix = p.slot != null ? ` (T${p.slot})` : '';
+                    const zSuffix = p.z_mm != null && p.slot == null ? ` (Z ${Number(p.z_mm).toFixed(1)}mm)` : '';
+                    return `Capa ${p.layer}${slotSuffix}${zSuffix}`;
+                  })
+                  .join(' · ')}
+              </div>
+            )}
 
             {/* Selector USB Serial vs SD /Volumes/ para Ender 3 S1 Pro y FLSUN Super Racer */}
             {isUsbOrSdPrinter && (
@@ -2890,6 +3714,28 @@ export function SlicerWizard({
                         >
                           Confirmar Descarga
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const cleanName =
+                              customBaseName.replace(/^_+|_+$/g, '') ||
+                              `slicerhub_${sliceResult.job_id}`;
+                            const isC5P = selectedProfileId === 'creator5_pro';
+                            const baseUrl = getGcodeUrl(sliceResult.gcode_url, cleanName);
+                            const sep = baseUrl.includes('?') ? '&' : '?';
+                            const dlUrl = isC5P ? `${baseUrl}${sep}format=flashforge` : baseUrl;
+                            setPendingOutputAction(null);
+                            void triggerFileDownload(dlUrl, `${cleanName}.gcode`);
+                            void triggerFileDownload(
+                              getSavedProjectDownloadUrl(sliceResult.job_id),
+                              `${cleanName}.nikk.json`,
+                            );
+                          }}
+                          className="rounded-lg border border-cyan-500/50 bg-cyan-500/20 px-2.5 py-1 font-semibold text-cyan-100 hover:bg-cyan-500/30"
+                          title="Descarga el .gcode más la ficha JSON con todos los parámetros"
+                        >
+                          .gcode + Ficha (.json)
+                        </button>
                       </div>
                     )}
                   </div>
@@ -2904,7 +3750,198 @@ export function SlicerWizard({
             )}
           </div>
         )}
+        </div>
+        )}
       </section>
+      </div>
+
+      {projectsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  Proyectos Guardados y Diagnóstico Post-Impresión
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  Recarga parámetros exactos de laminados previos o corrige defectos físicos con DeepSeek IA.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProjectsModalOpen(false)}
+                className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="flex-1 space-y-2 overflow-y-auto p-4">
+              {isLoadingProjects ? (
+                <div className="flex items-center justify-center gap-2 py-8 text-xs text-slate-400">
+                  <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />
+                  Cargando proyectos...
+                </div>
+              ) : savedProjects.length === 0 ? (
+                <p className="py-8 text-center text-xs text-slate-400">
+                  Aún no hay proyectos laminados guardados en esta sesión.
+                </p>
+              ) : (
+                savedProjects.map((proj) => (
+                  <div
+                    key={proj.project_id}
+                    className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/75 p-3 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-slate-100">
+                          {proj.model_filename}{' '}
+                          <span className="font-mono text-[10px] text-cyan-300">
+                            ({proj.project_id})
+                          </span>
+                        </p>
+                        <p className="font-mono text-[10px] text-slate-400">
+                          {proj.printer_id} · {proj.material.toUpperCase()} · {proj.metrics?.estimated_time || '—'} ·{' '}
+                          {proj.metrics?.filament_grams ?? 0}g · {proj.ai_strategy || 'Estándar'}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onLoadSavedProject(proj);
+                            setProjectsModalOpen(false);
+                          }}
+                          className="rounded-lg border border-cyan-500/45 bg-cyan-500/15 px-2 py-1 text-[10px] font-semibold text-cyan-100 hover:bg-cyan-500/25"
+                        >
+                          Cargar parámetros
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDefectTargetProj(
+                              defectTargetProj?.project_id === proj.project_id ? null : proj,
+                            );
+                            setDefectResult(null);
+                          }}
+                          className="rounded-lg border border-amber-500/45 bg-amber-500/15 px-2 py-1 text-[10px] font-semibold text-amber-100 hover:bg-amber-500/25"
+                        >
+                          Corregir defecto
+                        </button>
+                      </div>
+                    </div>
+
+                    {defectTargetProj?.project_id === proj.project_id && (
+                      <div className="space-y-2 border-t border-slate-800 pt-2">
+                        <div className="flex flex-wrap gap-1">
+                          {[
+                            'Líneas gruesas / banding en una cara',
+                            'Cicatrices o marcas de soporte',
+                            'Hilos / stringing',
+                            'Capa inicial despegada',
+                            'Vibración / ringing',
+                          ].map((chip) => (
+                            <button
+                              key={chip}
+                              type="button"
+                              onClick={() => setDefectText(chip)}
+                              className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[9px] text-slate-300 hover:border-amber-400 hover:text-amber-200"
+                            >
+                              {chip}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex gap-1.5">
+                          <input
+                            type="text"
+                            value={defectText}
+                            onChange={(e) => setDefectText(e.target.value)}
+                            placeholder="Describe el defecto físico observado..."
+                            className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-white outline-none focus:border-amber-400"
+                          />
+                          <button
+                            type="button"
+                            disabled={isDiagnosingDefect || defectText.trim().length < 2}
+                            onClick={async () => {
+                              setInstantOverlayMode('ai_analyze');
+                              setIsDiagnosingDefect(true);
+                              setDefectResult(null);
+                              try {
+                                const res = await requestAIDefectDiagnose({
+                                  project_id: proj.project_id,
+                                  project_data: proj as unknown as Record<string, unknown>,
+                                  defect_description: defectText.trim(),
+                                });
+                                setDefectResult(res);
+                              } finally {
+                                setIsDiagnosingDefect(false);
+                              }
+                            }}
+                            className="rounded-lg border border-amber-500/60 bg-amber-500/25 px-3 py-1 text-[11px] font-semibold text-amber-100 hover:bg-amber-500/35 disabled:opacity-40"
+                          >
+                            {isDiagnosingDefect ? 'Analizando...' : 'Diagnosticar IA'}
+                          </button>
+                        </div>
+
+                        {defectResult && (
+                          <div className="space-y-1.5 rounded-lg border border-emerald-500/35 bg-emerald-950/20 p-2 text-[10px]">
+                            <p className="font-semibold text-amber-200">
+                              Causa raíz: {defectResult.root_cause}
+                            </p>
+                            <p className="text-slate-200">{defectResult.explanation}</p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setInstantOverlayMode('slicing');
+                                setProjectsModalOpen(false);
+                                onApplyDefectCorrection(proj, defectResult.corrected_params);
+                              }}
+                              className="rounded-lg border border-emerald-500/60 bg-emerald-500/25 px-2.5 py-1 font-semibold text-emerald-100 hover:bg-emerald-500/35"
+                            >
+                              Aplicar corrección y re-laminar
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <QuoteCalculatorModal
+        open={quoteModalOpen}
+        onClose={() => setQuoteModalOpen(false)}
+        initialData={
+          sliceResult
+            ? {
+                modelName: stlFile?.name,
+                printerProfileId: selectedProfileId,
+                printerName: selectedPrinter?.display_name || selectedPrinterId,
+                material,
+                hours: Math.floor(Math.max(0, Math.round(estHours * 3600)) / 3600),
+                minutes: Math.floor((Math.max(0, Math.round(estHours * 3600)) % 3600) / 60),
+                grams: sliceResult.filament_grams,
+                filamentPricePerKg:
+                  costs.spoolWeightGrams > 0
+                    ? Math.round((costs.spoolCostPesos / costs.spoolWeightGrams) * 1000)
+                    : 100000,
+              }
+            : null
+        }
+      />
+
+      <GlobalProcessingOverlay
+        active={overlayActive}
+        mode={rawOverlayMode ?? lastOverlayMode}
+        printerName={selectedPrinter?.display_name || selectedPrinterId}
+        fileSizeMb={(stlFile?.size ?? 0) / (1024 * 1024)}
+        triangleCount={analysis?.triangle_count ?? 0}
+        layerHeightMm={qualityPreset === 'rapidez_extrema' ? 0.24 : 0.2}
+      />
     </div>
   );
 }

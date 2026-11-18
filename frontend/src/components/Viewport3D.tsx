@@ -19,19 +19,25 @@ import {
   Maximize2,
   MousePointerClick,
   Move,
+  Pause,
+  Plus,
   RotateCcw,
   RotateCw,
   Ruler,
   Scaling,
   Scissors,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
 import type {
+  AIOrientationsResponse,
+  LayerPauseItem,
   LayOnFaceCandidate,
   ModelInstanceTransform,
   ModelTransform,
   MultimaterialPartInfo,
+  OrientationOption,
   PrinterInfo,
 } from '../services/api';
 import {
@@ -63,6 +69,10 @@ interface Viewport3DProps {
   onAutoOrient: () => void;
   isAutoOrienting?: boolean;
   autoOrientMessage?: string | null;
+  orientationsData?: AIOrientationsResponse | null;
+  selectedOrientationId?: string | null;
+  onSelectOrientation?: (option: OrientationOption) => void;
+  onCloseOrientations?: () => void;
   onAutoArrange?: (instances: ModelInstanceTransform[]) => Promise<void> | void;
   isAutoArranging?: boolean;
   onFetchLayOnFaces?: () => Promise<LayOnFaceCandidate[]>;
@@ -78,6 +88,9 @@ interface Viewport3DProps {
   partExtruderMap?: Record<string, number>;
   gcodeText: string | null;
   isAnalyzing?: boolean;
+  layerPauses?: LayerPauseItem[];
+  onAddLayerPause?: (layer: number, zMm: number, note: string) => void;
+  onRemoveLayerPause?: (layer: number) => void;
 }
 
 function buildInitialInstances(t: ModelTransform): ModelInstanceTransform[] {
@@ -800,6 +813,10 @@ export function Viewport3D({
   onAutoOrient,
   isAutoOrienting = false,
   autoOrientMessage = null,
+  orientationsData = null,
+  selectedOrientationId = null,
+  onSelectOrientation,
+  onCloseOrientations,
   onAutoArrange,
   isAutoArranging = false,
   onFetchLayOnFaces,
@@ -810,8 +827,13 @@ export function Viewport3D({
   partExtruderMap,
   gcodeText,
   isAnalyzing = false,
+  layerPauses = [],
+  onAddLayerPause,
+  onRemoveLayerPause,
 }: Viewport3DProps) {
   const [viewMode, setViewMode] = useState<'stl' | 'gcode'>('stl');
+  const [pauseNoteDraft, setPauseNoteDraft] = useState<string>('');
+  const [showPauseInput, setShowPauseInput] = useState<boolean>(false);
   const [isParsingModel, setIsParsingModel] = useState<boolean>(false);
   const [currentLayer, setCurrentLayer] = useState<number>(1);
   const [showTravel, setShowTravel] = useState<boolean>(false);
@@ -1432,7 +1454,7 @@ export function Viewport3D({
               }`}
             >
               <Layers className="h-3.5 w-3.5" />
-              Capas G-code ({totalLayers})
+              Vista de laminado ({totalLayers})
             </button>
           </div>
         )}
@@ -2228,7 +2250,7 @@ export function Viewport3D({
               )}
             </div>
 
-            <div className="flex flex-1 items-center justify-center py-2">
+            <div className="relative flex flex-1 items-center justify-center py-2">
               <input
                 type="range"
                 min={1}
@@ -2238,7 +2260,103 @@ export function Viewport3D({
                 aria-label="Selector de capa G-code"
                 className="h-44 cursor-pointer accent-orange-500 [writing-mode:vertical-lr] [direction:rtl]"
               />
+              {layerPauses.map((p) => {
+                const clamped = Math.max(1, Math.min(totalLayers, p.layer));
+                const bottomPct =
+                  totalLayers > 1 ? ((clamped - 1) / (totalLayers - 1)) * 100 : 0;
+                return (
+                  <button
+                    key={p.layer}
+                    type="button"
+                    onClick={() => setCurrentLayer(clamped)}
+                    title={`Pausa Capa ${p.layer}${p.note ? ` · ${p.note}` : ''}`}
+                    style={{ bottom: `calc(${bottomPct}% * 0.88 + 6%)` }}
+                    className="absolute right-0.5 h-2.5 w-2.5 rounded-full border border-amber-200 bg-amber-400 shadow"
+                  />
+                );
+              })}
             </div>
+
+            {onAddLayerPause && (
+              <div className="flex w-full flex-col items-center gap-1">
+                {(() => {
+                  const existingHere = layerPauses.find((p) => p.layer === currentLayer);
+                  if (existingHere && onRemoveLayerPause) {
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => onRemoveLayerPause(currentLayer)}
+                        title="Quitar pausa en esta capa"
+                        className="flex w-full items-center justify-center gap-1 rounded-lg border border-amber-400/60 bg-amber-500/20 px-2 py-1 text-[10px] font-semibold text-amber-200 hover:bg-amber-500/30"
+                      >
+                        <Pause className="h-3 w-3" />
+                        Quitar Pausa
+                      </button>
+                    );
+                  }
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!showPauseInput) {
+                            setShowPauseInput(true);
+                          } else {
+                            onAddLayerPause(
+                              currentLayer,
+                              activeLayerData?.z ?? 0,
+                              pauseNoteDraft.trim(),
+                            );
+                            setPauseNoteDraft('');
+                            setShowPauseInput(false);
+                          }
+                        }}
+                        title="Agregar pausa en la capa actual"
+                        className="flex w-full items-center justify-center gap-1 rounded-lg border border-amber-500/45 bg-amber-500/15 px-2 py-1 text-[10px] font-semibold text-amber-200 hover:bg-amber-500/25"
+                      >
+                        <Plus className="h-3 w-3" />
+                        + Pausa aquí
+                      </button>
+                      {showPauseInput && (
+                        <div className="flex w-28 flex-col gap-1 rounded-lg border border-slate-700 bg-slate-950 p-1.5">
+                          <input
+                            type="text"
+                            value={pauseNoteDraft}
+                            onChange={(e) => setPauseNoteDraft(e.target.value)}
+                            placeholder="Ej. Insertar imán"
+                            className="w-full rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[10px] text-slate-100 placeholder:text-slate-500"
+                          />
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onAddLayerPause(
+                                  currentLayer,
+                                  activeLayerData?.z ?? 0,
+                                  pauseNoteDraft.trim(),
+                                );
+                                setPauseNoteDraft('');
+                                setShowPauseInput(false);
+                              }}
+                              className="flex-1 rounded bg-amber-500/30 py-0.5 text-[9px] font-semibold text-amber-100 hover:bg-amber-500/45"
+                            >
+                              Guardar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setShowPauseInput(false)}
+                              className="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-400"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
 
             <button
               type="button"
@@ -2375,6 +2493,125 @@ export function Viewport3D({
               <span className="max-w-xs truncate text-[11px] text-slate-400">
                 {stlFile.name}
               </span>
+            </div>
+          </div>
+        )}
+
+      {stlFile && viewMode === 'stl' && isAutoOrienting && (
+        <div className="pointer-events-auto absolute inset-0 z-30 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-2.5 rounded-2xl border border-emerald-500/40 bg-slate-900/95 px-6 py-4 shadow-2xl">
+            <Loader2 className="h-7 w-7 animate-spin text-emerald-400" />
+            <p className="text-xs font-semibold text-emerald-100">
+              Calculando orientaciones óptimas con IA...
+            </p>
+            <span className="text-[11px] text-slate-400">
+              Evaluando altura Z, voladizos y estabilidad en cama
+            </span>
+          </div>
+        </div>
+      )}
+
+      {stlFile &&
+        viewMode === 'stl' &&
+        !isAutoOrienting &&
+        orientationsData &&
+        orientationsData.options.length > 0 && (
+          <div className="pointer-events-auto absolute inset-x-3 bottom-3 z-20 rounded-2xl border border-emerald-500/35 bg-slate-900/94 p-3 text-xs shadow-2xl backdrop-blur">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+              <div className="flex items-center gap-2">
+                <Compass className="h-4 w-4 text-emerald-400" />
+                <span className="font-semibold text-slate-100">
+                  Orientaciones IA · Previsualización en Vivo
+                </span>
+                {orientationsData.is_multicolor && (
+                  <span className="rounded-full border border-purple-500/40 bg-purple-500/15 px-2 py-0.5 text-[10px] font-semibold text-purple-200">
+                    Multicolor ({orientationsData.multicolor_parts_count} partes)
+                  </span>
+                )}
+                <span className="rounded-full border border-slate-700 bg-slate-950 px-2 py-0.5 text-[10px] text-slate-400">
+                  {orientationsData.ai_provider}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={onCloseOrientations}
+                className="flex items-center gap-1 rounded-lg border border-emerald-500/45 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-500/25"
+              >
+                Usar Orientación Seleccionada
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+              {orientationsData.options.map((opt) => {
+                const isSelected = selectedOrientationId === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => onSelectOrientation?.(opt)}
+                    className={`flex flex-col justify-between rounded-xl border p-2.5 text-left transition ${
+                      isSelected
+                        ? 'border-emerald-400 bg-emerald-500/15 ring-1 ring-emerald-400/50'
+                        : 'border-slate-800 bg-slate-950/80 hover:border-slate-600'
+                    }`}
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-start justify-between gap-1">
+                        <span className="text-[11px] font-semibold leading-tight text-slate-100">
+                          {opt.title}
+                        </span>
+                        <span
+                          className={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-semibold ${
+                            opt.is_recommended
+                              ? 'bg-amber-500/25 text-amber-200 border border-amber-400/40'
+                              : 'bg-slate-800 text-slate-300'
+                          }`}
+                        >
+                          {opt.is_recommended ? (
+                            <span className="inline-flex items-center gap-0.5">
+                              <Sparkles className="h-2.5 w-2.5" />
+                              {opt.badge}
+                            </span>
+                          ) : (
+                            opt.badge
+                          )}
+                        </span>
+                      </div>
+                      <p className="line-clamp-2 text-[10px] leading-snug text-slate-400">
+                        {opt.explanation}
+                      </p>
+                      {opt.stability_warning && (
+                        <p className="rounded-md border border-amber-500/35 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-200">
+                          {opt.stability_warning}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="mt-2 space-y-1 border-t border-slate-800/80 pt-1.5 font-mono text-[10px]">
+                      <div className="flex items-center justify-between text-slate-300">
+                        <span>
+                          X/Y/Z: {opt.rotation.rx}°/{opt.rotation.ry}°/{opt.rotation.rz}°
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-slate-400">
+                        <span>Z: {opt.z_height_mm} mm</span>
+                        <span>Voladizos: {opt.overhang_ratio_pct}%</span>
+                      </div>
+                      <div
+                        className={`text-[10px] font-semibold ${
+                          opt.estimated_time_delta_pct.startsWith('-')
+                            ? 'text-emerald-300'
+                            : opt.estimated_time_delta_pct.startsWith('+')
+                              ? 'text-amber-300'
+                              : 'text-slate-400'
+                        }`}
+                      >
+                        {opt.estimated_time_delta_pct}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}

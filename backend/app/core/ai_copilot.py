@@ -14,20 +14,35 @@ from typing import Any
 
 from app.config import (
     DEFAULT_SUPPORT_Z_BY_MATERIAL,
+    clamp_speed_by_volumetric_flow,
     compute_default_support_xy,
     compute_heterogeneous_speed_cap,
     compute_optimal_temperatures,
+    get_machine_thermal_kinematic_limits,
     get_printer_config,
     get_slot_volumetric_limit,
     load_catalog,
     negotiate_multimaterial_bed_temp,
+    resolve_profile_id,
 )
 from app.models.schemas import (
+    AIAnalyzeModelRequest,
+    AIAnalyzeModelResponse,
+    AIDefectDiagnoseRequest,
+    AIDefectDiagnoseResponse,
+    AILayerResolutionGroup,
+    AIOptimizeSliceRequest,
+    AIOptimizeSliceResponse,
+    AIOrientationsResponse,
+    AIPresetOption,
+    AISubOption,
     AIRecommendRequest,
     AIRecommendResponse,
     AISupportOrientResponse,
     AITelemetryDiagnosisResponse,
     MeshAnalysisResponse,
+    OrientationOption,
+    OrientationRotation,
     PostPrintCompendium,
     PrinterLiveStatus,
     TelemetrySessionSummary,
@@ -1111,4 +1126,912 @@ def generate_post_print_compendium(
         generated_at=datetime.now(timezone.utc).isoformat(),
         is_partial=is_partial,
         stats=stats,
+    )
+
+
+def _call_ai_json(prompt: str) -> tuple[dict[str, Any] | None, str]:
+    """Llama a DeepSeek (o Gemini como respaldo) y devuelve `(json_dict, provider)`."""
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if deepseek_key:
+        try:
+            return _call_deepseek(prompt, deepseek_key), "DEEPSEEK_API"
+        except (urllib.error.URLError, KeyError, ValueError, TimeoutError):
+            pass
+    if gemini_key:
+        try:
+            return _call_gemini(prompt, gemini_key), "GEMINI_API"
+        except (urllib.error.URLError, KeyError, ValueError, TimeoutError):
+            pass
+    return None, "HEURISTICA_LOCAL"
+
+
+def _format_est_time(seconds: int) -> str:
+    sec = max(60, int(seconds))
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    if h > 0:
+        return f"~{h}h {m}m"
+    return f"~{max(1, m)}m"
+
+
+def _parse_time_seconds_from_metrics(metrics: dict[str, Any]) -> int:
+    raw_sec = metrics.get("estimated_time_seconds")
+    if isinstance(raw_sec, (int, float)) and raw_sec > 0:
+        return int(raw_sec)
+    txt = str(metrics.get("estimated_time") or metrics.get("estimated_time_str") or "")
+    total = 0
+    mh = re.search(r"(\d+)\s*h", txt, re.I)
+    mm = re.search(r"(\d+)\s*m", txt, re.I)
+    ms = re.search(r"(\d+)\s*s", txt, re.I)
+    if mh:
+        total += int(mh.group(1)) * 3600
+    if mm:
+        total += int(mm.group(1)) * 60
+    if ms:
+        total += int(ms.group(1))
+    return total if total > 0 else 3600
+
+
+def _calibrated_speed_and_temp_for_layer(
+    printer_id: str,
+    material: str,
+    nozzle_diameter: float,
+    layer_height: float,
+    high_speed: bool = False,
+    speed_factor: float = 0.85,
+) -> tuple[int, int]:
+    """Devuelve `(outer_wall_speed_mms, nozzle_temp_c)` calibrados por Q_max y altura."""
+    mat = material if material in ("pla", "petg", "abs", "tpu") else "pla"
+    limits = get_machine_thermal_kinematic_limits(printer_id)
+    temps = compute_optimal_temperatures(
+        printer_id, mat, high_speed=high_speed, nozzle_diameter=nozzle_diameter
+    )
+    outer_range = limits["outer_wall_speed_range"].get(mat, (55, 110))
+    req_v = outer_range[1] if layer_height >= 0.24 else outer_range[0] + (outer_range[1] - outer_range[0]) * speed_factor
+    lw = 0.48 if (layer_height >= 0.27 and nozzle_diameter <= 0.45) else (0.46 if (layer_height >= 0.24 and nozzle_diameter <= 0.45) else round(nozzle_diameter * 1.05, 2))
+    guard = clamp_speed_by_volumetric_flow(
+        printer_id,
+        mat,
+        layer_height,
+        lw,
+        {"outer_wall_speed": req_v},
+        high_speed=high_speed,
+    )
+    spd = int(guard["clamped_speeds"]["outer_wall_speed"])
+    if layer_height <= 0.12:
+        spd = max(35, min(spd, int(round(outer_range[0] * 0.85))))
+    temp = min(300, int(temps["nozzle_temp"]) + int(guard.get("temp_boost_c") or 0))
+    return spd, temp
+
+
+def _build_6_layer_resolutions(
+    *,
+    base_seconds: int,
+    printer_id: str,
+    material: str,
+    nozzle_diameter: float,
+    high_speed: bool,
+    recommended_heights: list[float],
+) -> list[AILayerResolutionGroup]:
+    limits = get_machine_thermal_kinematic_limits(printer_id)
+    mat = material if material in ("pla", "petg", "abs", "tpu") else "pla"
+    q_max = float(limits["max_volumetric_speed"].get(mat, 12.0))
+    flow_slowdown_024 = 1.0 if q_max >= 20.0 else (1.06 if q_max >= 14.0 else 1.12)
+    flow_slowdown_028 = 1.0 if q_max >= 22.0 else (1.10 if q_max >= 14.0 else 1.18)
+
+    specs: list[tuple[float, str, str, float]] = [
+        (0.08, "Ultra Fino", "Miniaturas / Detalle Extremo", 2.20),
+        (0.12, "Alta Calidad", "Figuras / Acabado Premium", 1.62),
+        (0.16, "Detalle Óptimo", "Piezas Visibles", 1.25),
+        (0.20, "Estándar Equilibrado", "Uso General", 1.00),
+        (0.24, "Rápido Funcional", "Piezas Medianas / Soportes", 0.82 * flow_slowdown_024),
+        (0.28, "Extra Rápido", "Piezas Grandes / Blindado", 0.71 * flow_slowdown_028),
+    ]
+
+    rec_set = {round(h, 2) for h in recommended_heights}
+    groups: list[AILayerResolutionGroup] = []
+    for lh, title, subtitle, mult in specs:
+        base_h_sec = max(120, int(round(base_seconds * mult)))
+        spd_group, temp_group = _calibrated_speed_and_temp_for_layer(
+            printer_id, mat, nozzle_diameter, lh, high_speed=high_speed
+        )
+        if lh <= 0.16:
+            sub_specs = [
+                ("aesthetic_max", "Acabado Estético Máximo", "Pared externa lenta y primera capa segura 0.16–0.20 mm.", 1.04, 0.75),
+                ("anti_support_angle", "Detalle + Ángulo Anti-Soportes", "Busca inclinación óptima para reducir marcas de soporte.", 0.96, 0.85),
+            ]
+        elif abs(lh - 0.20) < 0.01:
+            sub_specs = [
+                ("balanced", "Equilibrado General", "Balance óptimo de resistencia, calidad y velocidad.", 1.00, 0.85),
+                ("fuzzy_skin", "Piel Difusa (Fuzzy Skin)", "Textura mate exterior que disimula líneas de capa.", 1.08, 0.75),
+                ("anti_support_angle", "Ángulo Anti-Soportes", "Evalúa rotación para eliminar o reducir soportes.", 0.93, 0.85),
+            ]
+        else:
+            sub_specs = [
+                ("safe_fast", "Rápido Seguro (Anti-Delaminación)", f"Velocidad <= 0.90·Q_max ({q_max:.0f} mm³/s) + comp. térmica.", 1.00, 0.95),
+                ("fuzzy_fast", "Rápido + Piel Difusa", "Disimula líneas de capa gruesa con textura exterior.", 1.06, 0.85),
+                ("structural_fast", "Rápido Estructural", "Mayor solapamiento de línea y relleno reforzado.", 1.03, 0.90),
+            ]
+
+        options = []
+        for pid, lbl, desc, sub_mult, spd_fac in sub_specs:
+            sec = max(120, int(round(base_h_sec * sub_mult)))
+            sub_spd, sub_temp = _calibrated_speed_and_temp_for_layer(
+                printer_id, mat, nozzle_diameter, lh, high_speed=high_speed, speed_factor=spd_fac
+            )
+            options.append(
+                AISubOption(
+                    id=f"{lh:.2f}__{pid}",
+                    label=lbl,
+                    description=desc,
+                    preset_id=pid,
+                    layer_height=lh,
+                    calibrated_speed_mms=sub_spd,
+                    calibrated_temp_c=sub_temp,
+                    estimated_time_str=_format_est_time(sec),
+                    estimated_time_seconds=sec,
+                )
+            )
+        groups.append(
+            AILayerResolutionGroup(
+                layer_height=lh,
+                title=title,
+                subtitle=subtitle,
+                calibrated_speed_mms=spd_group,
+                calibrated_temp_c=temp_group,
+                estimated_time_str=_format_est_time(base_h_sec),
+                estimated_time_seconds=base_h_sec,
+                is_recommended=(round(lh, 2) in rec_set),
+                options=options,
+            )
+        )
+    return groups
+
+
+def _build_contextual_fixed_options(
+    *,
+    category: str,
+    base_seconds: int,
+    printer_id: str,
+    material: str,
+    nozzle_diameter: float,
+    high_speed: bool,
+) -> list[AISubOption]:
+    mat = material if material in ("pla", "petg", "abs", "tpu") else "pla"
+    limits = get_machine_thermal_kinematic_limits(printer_id)
+    q_max = float(limits["max_volumetric_speed"].get(mat, 12.0))
+
+    if category == "lithophane_flat":
+        specs = [
+            ("litho_ultra", "Litofanía Ultra HD (0.08 mm)", "Relleno 100% rectilíneo · Máxima escala de grises.", 0.08, 2.25, 0.70),
+            ("litho_hd", "Litofanía Alta Definición (0.12 mm)", "Relleno 100% rectilíneo · Equilibrada y nítida.", 0.12, 1.62, 0.75),
+            ("litho_vertical", "Litofanía Vertical Estable (0.12 mm)", "Balsa/Brim reforzado anti-oscilación + 5 paredes.", 0.12, 1.66, 0.72),
+        ]
+    elif category == "character_organic":
+        specs = [
+            ("char_premium", "Personaje Premium + Soportes Orgánicos", "0.12 mm · Soportes árbol suaves y pared fina.", 0.12, 1.62, 0.75),
+            ("char_ultra", "Ultra Detalle Rostro / Miniatura", "0.08 mm · Máxima definición facial y líneas invisibles.", 0.08, 2.20, 0.70),
+            ("char_smooth", "Figura Suave Equilibrada", "0.16 mm · Gran definición con tiempo moderado.", 0.16, 1.25, 0.85),
+            ("fuzzy_skin", "Figura Mate / Piel Difusa", "0.20 mm · Textura orgánica mate exterior.", 0.20, 1.08, 0.75),
+        ]
+    elif category == "large_enclosure":
+        specs = [
+            ("turbo_shielded", "Turbo Blindado Pieza Grande (0.28 mm)", f"Ancho 0.48 mm, +6–8°C y velocidad <= 90% Q_max ({q_max:.0f} mm³/s).", 0.28, 0.73, 0.95),
+            ("fuzzy_fast", "Rápido con Piel Difusa (0.24 mm)", "Disimula capas gruesas con acabado texturizado.", 0.24, 0.86, 0.85),
+            ("balanced", "Estándar Limpio (0.20 mm)", "Acabado uniforme para cajas y organizadores.", 0.20, 1.00, 0.85),
+        ]
+    else:
+        specs = [
+            ("structural", "Estructural Reforzado (0.20 mm)", "4 paredes + Gyroid 25% para máxima rigidez.", 0.20, 1.08, 0.80),
+            ("anti_support_fast", "Rápido Funcional Anti-Soportes (0.24 mm)", "Orientación óptima y ahorro de material.", 0.24, 0.82, 0.90),
+            ("turbo_shielded", "Turbo Blindado Pieza Grande (0.28 mm)", f"Seguro anti-delaminación calibrado a Q_max ({q_max:.0f} mm³/s).", 0.28, 0.73, 0.95),
+            ("fuzzy_skin", "Acabado Limpio + Piel Difusa (0.20 mm)", "Textura mate antideslizante en paredes externas.", 0.20, 1.08, 0.75),
+        ]
+
+    out: list[AISubOption] = []
+    for pid, lbl, desc, lh, mult, spd_fac in specs:
+        sec = max(120, int(round(base_seconds * mult)))
+        spd, temp = _calibrated_speed_and_temp_for_layer(
+            printer_id, mat, nozzle_diameter, lh, high_speed=high_speed, speed_factor=spd_fac
+        )
+        out.append(
+            AISubOption(
+                id=f"ctx_{lh:.2f}__{pid}",
+                label=lbl,
+                description=desc,
+                preset_id=pid,
+                layer_height=lh,
+                calibrated_speed_mms=spd,
+                calibrated_temp_c=temp,
+                estimated_time_str=_format_est_time(sec),
+                estimated_time_seconds=sec,
+            )
+        )
+    return out
+
+
+def analyze_model_for_ai(req: AIAnalyzeModelRequest) -> AIAnalyzeModelResponse:
+    """Fase 1 de Análisis IA: clasifica estrictamente el modelo y filtra resoluciones y opciones."""
+    dims = req.dimensions_mm
+    max_xy = max(dims.x, dims.y, 1.0)
+    min_xy = min(dims.x, dims.y)
+    aspect_z = dims.z / max_xy
+    fname_low = (req.filename or "").lower()
+    printer = get_printer_config(req.printer_id)
+    eff_mat = "pla" if req.lithophane_mode else req.material
+
+    is_litho = (
+        req.lithophane_mode
+        or any(tok in fname_low for tok in ("litho", "litof", "photo", "relieve"))
+        or (min_xy < 12.0 and dims.z >= 40.0)
+        or (dims.z <= 8.0 and max_xy >= 60.0 and req.overhang_ratio < 0.05)
+    )
+    is_large_box = (
+        not is_litho
+        and not req.is_multicolor
+        and (
+            any(tok in fname_low for tok in ("box", "caja", "tray", "bandeja", "organizador", "organizer", "bin", "drawer", "enclosure"))
+            or (req.volume_cm3 >= 450.0 and req.overhang_ratio < 0.12)
+        )
+    )
+    is_character = (
+        not is_litho
+        and (
+            req.is_multicolor
+            or any(tok in fname_low for tok in ("monty", "char", "fig", "head", "dragon", "cat", "dog", "body", "mask", "bust", "mini", "statue", "toy", "personaje", "figura"))
+            or (req.overhang_ratio >= 0.12 and max(dims.x, dims.y, dims.z) < 200.0)
+        )
+    )
+
+    if is_litho:
+        category = "lithophane_flat"
+        default_summary = "Detectado: Litofanía / relieve fotográfico de alta precisión Z"
+    elif is_character:
+        category = "character_organic"
+        default_summary = "Detectado: Personaje / figura orgánica con detalles superficiales"
+    elif is_large_box:
+        category = "large_enclosure"
+        default_summary = "Detectado: Caja / organizador o prototipo voluminoso"
+    else:
+        category = "mechanical_functional"
+        default_summary = "Detectado: Pieza mecánica funcional / soporte estructural"
+
+    allowed_by_cat: dict[str, tuple[float, ...]] = {
+        "lithophane_flat": (0.08, 0.12),
+        "character_organic": (0.08, 0.12, 0.16, 0.20),
+        "mechanical_functional": (0.16, 0.20, 0.24, 0.28),
+        "large_enclosure": (0.20, 0.24, 0.28),
+    }
+    rec_by_cat: dict[str, list[float]] = {
+        "lithophane_flat": [0.08, 0.12],
+        "character_organic": [0.12, 0.16],
+        "mechanical_functional": [0.20, 0.24],
+        "large_enclosure": [0.24, 0.28],
+    }
+
+    prompt_ctx = {
+        "filename": req.filename,
+        "printer_id": req.printer_id,
+        "material": eff_mat,
+        "detected_category": category,
+        "allowed_heights": allowed_by_cat[category],
+        "dimensions_mm": dims.model_dump(),
+        "aspect_z": round(aspect_z, 2),
+        "volume_cm3": round(req.volume_cm3, 2),
+        "overhang_ratio": round(req.overhang_ratio, 3),
+        "is_multicolor": req.is_multicolor,
+    }
+    prompt = (
+        "Eres un ingeniero experto en impresión 3D FDM.\n"
+        "Redacta un resumen corto y elige 1 o 2 alturas recomendadas DENTRO de `allowed_heights`.\n"
+        "Responde SOLO JSON válido con:\n"
+        "- detected_type_summary (string en español <= 12 palabras)\n"
+        "- recommended_heights (array de 1 o 2 números de `allowed_heights`)\n"
+        f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
+    )
+    raw_json, provider = _call_ai_json(prompt)
+    summary = default_summary
+    rec_heights = list(rec_by_cat[category])
+
+    allowed_set = set(allowed_by_cat[category])
+    if raw_json:
+        raw_sum = str(raw_json.get("detected_type_summary") or "").strip()
+        if raw_sum:
+            summary = raw_sum[:110]
+        raw_heights = raw_json.get("recommended_heights")
+        if isinstance(raw_heights, list) and raw_heights:
+            valid_h = [round(float(h), 2) for h in raw_heights if round(float(h), 2) in allowed_set]
+            if valid_h:
+                rec_heights = valid_h[:2]
+
+    base_sec = _parse_time_seconds_from_metrics(req.current_slice_metrics)
+    all_resolutions = _build_6_layer_resolutions(
+        base_seconds=base_sec,
+        printer_id=req.printer_id,
+        material=eff_mat,
+        nozzle_diameter=req.nozzle_diameter,
+        high_speed=req.high_speed_filament,
+        recommended_heights=rec_heights,
+    )
+    filtered_resolutions = [g for g in all_resolutions if round(g.layer_height, 2) in allowed_set]
+    contextual_options = _build_contextual_fixed_options(
+        category=category,
+        base_seconds=base_sec,
+        printer_id=req.printer_id,
+        material=eff_mat,
+        nozzle_diameter=req.nozzle_diameter,
+        high_speed=req.high_speed_filament,
+    )
+
+    min_h = min(allowed_by_cat[category])
+    max_h = max(allowed_by_cat[category])
+    cat_labels = {
+        "lithophane_flat": "Modo Litofanía",
+        "character_organic": "Modo Personaje/Orgánico",
+        "mechanical_functional": "Modo Pieza Mecánica",
+        "large_enclosure": "Modo Caja/Prototipo Grande",
+    }
+    filter_note = (
+        f"{cat_labels[category]} detectado: mostrando exclusivamente resoluciones "
+        f"{min_h:.2f}–{max_h:.2f} mm para {printer.display_name} + {eff_mat.upper()}."
+    )
+
+    presets = [
+        AIPresetOption(
+            id=opt.preset_id,
+            label=opt.label,
+            description=opt.description,
+            badge=f"{opt.layer_height:.2f} mm",
+        )
+        for opt in contextual_options
+    ]
+
+    return AIAnalyzeModelResponse(
+        detected_type_summary=summary,
+        model_category=category,  # type: ignore[arg-type]
+        filter_note=filter_note,
+        contextual_options=contextual_options,
+        recommended_presets=presets,
+        layer_resolutions=filtered_resolutions,
+        all_layer_resolutions=all_resolutions,
+        provider=provider,  # type: ignore[arg-type]
+    )
+
+
+def optimize_slice_with_ai(
+    req: AIOptimizeSliceRequest,
+    best_euler: tuple[float, float, float] | None = None,
+) -> AIOptimizeSliceResponse:
+    """Fase 2 de Análisis IA: calcula ángulo, soportes, capa, velocidad, flujo y fuzzy_skin."""
+    printer = get_printer_config(req.printer_id)
+    eff_mat = "pla" if req.lithophane_mode else req.material
+    temps = compute_optimal_temperatures(
+        req.printer_id,
+        eff_mat,
+        high_speed=req.high_speed_filament,
+        nozzle_diameter=req.nozzle_diameter,
+    )
+    base_z = DEFAULT_SUPPORT_Z_BY_MATERIAL.get(eff_mat, 0.20)
+    base_xy = compute_default_support_xy(eff_mat, req.nozzle_diameter)
+    adh_type, brim_w, _ = _compute_adhesion_recommendation(
+        eff_mat, req.dimensions_mm.z, req.base_contact_area_mm2
+    )
+
+    preset = (req.preset_id or "balanced").strip().lower()
+    notes_low = (req.user_notes or "").lower()
+    want_fuzzy = (
+        preset in ("fuzzy_skin", "fuzzy_fast")
+        or "difus" in notes_low
+        or "textur" in notes_low
+        or "fuzzy" in notes_low
+    )
+
+    # Heurística base según estrategia elegida
+    strategy_labels = {
+        "aesthetic_max": "Acabado Estético Máximo",
+        "premium_finish": "Acabado Premium",
+        "fuzzy_skin": "Piel Difusa (Fuzzy Skin)",
+        "fuzzy_fast": "Rápido + Piel Difusa",
+        "safe_fast": "Rápido Seguro (Anti-Delaminación)",
+        "structural_fast": "Rápido Estructural",
+        "structural": "Estructural Reforzado",
+        "turbo_shielded": "Turbo Blindado Pieza Grande",
+        "anti_support_fast": "Rápido Funcional Anti-Soportes",
+        "litho_ultra": "Litofanía Ultra HD",
+        "litho_hd": "Litofanía Alta Definición",
+        "litho_vertical": "Litofanía Vertical Estable",
+        "char_premium": "Personaje Premium + Soportes Orgánicos",
+        "char_ultra": "Ultra Detalle Rostro / Miniatura",
+        "char_smooth": "Figura Suave Equilibrada",
+        "balanced": "Equilibrado General",
+        "speed_opt": "Optimizar Velocidad",
+        "anti_support_angle": "Ángulo Anti-Soporte",
+    }
+    target_lh = float(req.target_layer_height) if req.target_layer_height is not None else None
+    base_label = strategy_labels.get(preset, "Optimización IA")
+    strategy_label = f"{base_label} ({target_lh:.2f} mm)" if target_lh is not None else base_label
+
+    max_printer_speed = compute_heterogeneous_speed_cap(
+        [printer.max_volumetric_flow_mm3_s],
+        [eff_mat],
+        nozzle_diameter=req.nozzle_diameter,
+    )["max_linear_speed"]
+    machine_limits = get_machine_thermal_kinematic_limits(req.printer_id)
+    profile_id = resolve_profile_id(req.printer_id)
+    q_max_mat = float(machine_limits["max_volumetric_speed"].get(eff_mat, 12.0))
+    outer_range = machine_limits["outer_wall_speed_range"].get(eff_mat, (55, 110))
+    line_w = round(req.nozzle_diameter * 1.05, 2)
+
+    max_lh = round(min(0.28, req.nozzle_diameter * 0.7), 2)
+    min_lh = round(max(0.08, req.nozzle_diameter * 0.2), 2)
+    layer_height = round(max(min_lh, min(max_lh, target_lh)), 2) if target_lh is not None else 0.20
+    outer_speed = min(outer_range[1], max(outer_range[0], int(round(max_printer_speed * 0.65))))
+    flow_ratio = 0.98 if eff_mat in ("petg", "abs") else 1.00
+    infill_density = 15
+    nozzle_temp = int(temps["nozzle_temp"])
+    apply_rot = False
+    rx, ry, rz = req.rot_x, req.rot_y, req.rot_z
+    supports_req = req.overhang_ratio >= 0.08
+    sup_type = "tree(auto)"
+    z_dist = base_z
+    explanation = f"Capa {layer_height:.2f} mm calibrada con límites físicos de {printer.display_name}."
+
+    if preset in ("litho_ultra", "litho_hd", "litho_vertical"):
+        if target_lh is None:
+            layer_height = 0.08 if preset == "litho_ultra" else 0.12
+        outer_speed = max(35, min(60, int(round(outer_range[0] * 0.72))))
+        infill_density = 100
+        supports_req = False
+        if preset == "litho_vertical":
+            adh_type = "brim"
+            brim_w = 10.0
+        explanation = f"Litofanía {layer_height:.2f} mm, relleno 100% rectilíneo y {outer_speed} mm/s anti-ghosting."
+    elif preset in ("premium_finish", "aesthetic_max", "char_premium", "char_ultra", "char_smooth"):
+        if target_lh is None:
+            layer_height = 0.08 if preset == "char_ultra" else (0.16 if preset == "char_smooth" else 0.12)
+        outer_speed = max(35, min(outer_range[1], int(round(outer_range[0] * 0.85))))
+        z_dist = round(max(0.14, base_z - 0.04), 2)
+        if preset == "char_premium":
+            supports_req = req.overhang_ratio >= 0.06
+            sup_type = "tree(auto)"
+        explanation = f"Capa {layer_height:.2f} mm, pared externa a {outer_speed} mm/s y Z de soporte reducido para detalle fino."
+    elif preset in ("fuzzy_skin", "fuzzy_fast"):
+        if target_lh is None:
+            layer_height = 0.24 if preset == "fuzzy_fast" else 0.20
+        outer_speed = max(45, min(outer_range[1], int(round(outer_range[0] * 0.95))))
+        explanation = f"Piel Difusa exterior en {layer_height:.2f} mm para disimular líneas de capa con textura uniforme."
+    elif preset in ("speed_opt", "safe_fast", "structural_fast", "structural", "turbo_shielded"):
+        if target_lh is None:
+            layer_height = 0.28 if preset == "turbo_shielded" else (0.20 if preset == "structural" else 0.24)
+        outer_speed = outer_range[1]
+        infill_density = 25 if preset == "structural" else (20 if preset == "structural_fast" else 12)
+        supports_req = req.overhang_ratio >= 0.14
+        explanation = f"Capa {layer_height:.2f} mm protegida por 0.90·Q_max ({q_max_mat:.0f} mm³/s) y compensación térmica."
+    elif preset in ("anti_support_angle", "anti_support_fast"):
+        if best_euler is not None and (
+            abs(best_euler[0] - req.rot_x) > 3.0 or abs(best_euler[1] - req.rot_y) > 3.0
+        ):
+            apply_rot = True
+            rx, ry, rz = best_euler
+            supports_req = req.overhang_ratio >= 0.18
+            explanation = f"Orientación optimizada a ({rx:.1f}°, {ry:.1f}°, {rz:.1f}°) en {layer_height:.2f} mm para reducir soportes."
+        else:
+            apply_rot = True
+            rx = round((req.rot_x + 35.0) % 360.0, 1)
+            supports_req = False if req.overhang_ratio < 0.14 else True
+            explanation = f"Inclinación estratégica ({rx:.1f}°) en {layer_height:.2f} mm para evitar voladizos."
+
+    prompt_ctx = {
+        "printer_id": req.printer_id,
+        "profile_id": profile_id,
+        "printer_max_speed": max_printer_speed,
+        "machine_limits": {
+            "q_max_mm3_s": q_max_mat,
+            "outer_wall_speed_range_mms": outer_range,
+            "default_acceleration": machine_limits["default_acceleration"],
+            "outer_wall_acceleration": machine_limits["outer_wall_acceleration"],
+            "v_max_at_0_20mm": round(q_max_mat / (0.20 * line_w), 1),
+            "v_max_at_0_28mm": round(q_max_mat / (0.28 * line_w), 1),
+        },
+        "material": eff_mat,
+        "nozzle_diameter": req.nozzle_diameter,
+        "preset_id": preset,
+        "user_notes": req.user_notes,
+        "current_rotation": {"rot_x": req.rot_x, "rot_y": req.rot_y, "rot_z": req.rot_z},
+        "best_euler_candidate": best_euler,
+        "dimensions_mm": req.dimensions_mm.model_dump(),
+        "overhang_ratio": round(req.overhang_ratio, 3),
+        "base_contact_area_mm2": round(req.base_contact_area_mm2, 1),
+        "current_support_config": req.current_support_config,
+        "current_slice_metrics": req.current_slice_metrics,
+        "default_temp": nozzle_temp,
+    }
+    prompt = (
+        "Eres el ingeniero jefe de laminado FDM. Optimiza conjuntamente rotación, soportes y calidad.\n"
+        "RESPETA OBLIGATORIAMENTE `machine_limits` (`q_max_mm3_s` y `outer_wall_speed_range_mms`): "
+        "nunca sugieras velocidades de T1 Pro para V400, Creator 5 Pro, Super Racer o Ender 3 S1 Pro.\n"
+        "Si el usuario pide sin soportes o preset 'anti_support_angle', evalúa inclinar 30-45° o usar best_euler_candidate.\n"
+        "Responde SOLO JSON válido con:\n"
+        "strategy_label (string), explanation (string en español max 180 chars), "
+        "apply_rotation (bool), rot_x (float), rot_y (float), rot_z (float), "
+        "supports_required (bool), support_type ('tree(auto)'|'normal(auto)'), "
+        "support_on_build_plate_only (bool), support_z_distance (float 0.12..0.35), "
+        "layer_height (float 0.12..0.28), outer_wall_speed (int 35..260), "
+        "flow_ratio (float 0.90..1.05), nozzle_temp (int), infill_density (int 8..40), "
+        "fuzzy_skin (bool), fuzzy_skin_thickness (float 0.15..0.35), fuzzy_skin_point_distance (float 0.3..0.8).\n"
+        f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
+    )
+    raw_json, provider = _call_ai_json(prompt)
+    fuzzy_thick = 0.25
+    fuzzy_dist = 0.40
+    sup_plate_only = True
+    if raw_json:
+        if raw_json.get("strategy_label"):
+            strategy_label = str(raw_json["strategy_label"])[:60]
+        if raw_json.get("explanation"):
+            explanation = str(raw_json["explanation"])[:220]
+        if isinstance(raw_json.get("apply_rotation"), bool):
+            apply_rot = raw_json["apply_rotation"]
+        for key, default_val in (("rot_x", rx), ("rot_y", ry), ("rot_z", rz)):
+            try:
+                if raw_json.get(key) is not None:
+                    val = float(raw_json[key])
+                    if key == "rot_x":
+                        rx = val
+                    elif key == "rot_y":
+                        ry = val
+                    else:
+                        rz = val
+            except (TypeError, ValueError):
+                pass
+        if isinstance(raw_json.get("supports_required"), bool):
+            supports_req = raw_json["supports_required"]
+        if raw_json.get("support_type") in ("tree(auto)", "normal(auto)", "tree(manual)", "normal(manual)"):
+            sup_type = str(raw_json["support_type"])
+        if isinstance(raw_json.get("support_on_build_plate_only"), bool):
+            sup_plate_only = raw_json["support_on_build_plate_only"]
+        try:
+            if raw_json.get("support_z_distance") is not None:
+                z_dist = round(max(0.10, min(0.40, float(raw_json["support_z_distance"]))), 2)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if target_lh is None and raw_json.get("layer_height") is not None:
+                layer_height = round(max(min_lh, min(max_lh, float(raw_json["layer_height"]))), 2)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if raw_json.get("outer_wall_speed") is not None:
+                outer_speed = max(30, min(max_printer_speed, int(round(float(raw_json["outer_wall_speed"])))))
+        except (TypeError, ValueError):
+            pass
+        try:
+            if raw_json.get("flow_ratio") is not None:
+                flow_ratio = round(max(0.88, min(1.08, float(raw_json["flow_ratio"]))), 2)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if raw_json.get("nozzle_temp") is not None:
+                nozzle_temp = max(175, min(300, int(round(float(raw_json["nozzle_temp"])))))
+        except (TypeError, ValueError):
+            pass
+        try:
+            if raw_json.get("infill_density") is not None:
+                infill_density = max(5, min(100, int(round(float(raw_json["infill_density"])))))
+        except (TypeError, ValueError):
+            pass
+        if isinstance(raw_json.get("fuzzy_skin"), bool):
+            want_fuzzy = raw_json["fuzzy_skin"] or preset == "fuzzy_skin"
+        try:
+            if raw_json.get("fuzzy_skin_thickness") is not None:
+                fuzzy_thick = round(max(0.10, min(0.50, float(raw_json["fuzzy_skin_thickness"]))), 2)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if raw_json.get("fuzzy_skin_point_distance") is not None:
+                fuzzy_dist = round(max(0.20, min(1.20, float(raw_json["fuzzy_skin_point_distance"]))), 2)
+        except (TypeError, ValueError):
+            pass
+
+    # Seguro físico obligatorio de caudal volumétrico Q_max = h * w * v
+    flow_guard = clamp_speed_by_volumetric_flow(
+        req.printer_id,
+        eff_mat,
+        layer_height,
+        line_w,
+        {"outer_wall_speed": outer_speed},
+        high_speed=req.high_speed_filament,
+    )
+    outer_speed = int(flow_guard["clamped_speeds"]["outer_wall_speed"])
+    temp_boost = int(flow_guard.get("temp_boost_c") or 0)
+    if temp_boost > 0:
+        nozzle_temp = min(300, nozzle_temp + temp_boost)
+
+    return AIOptimizeSliceResponse(
+        strategy_label=strategy_label,
+        explanation=explanation,
+        apply_rotation=apply_rot,
+        rot_x=round(rx, 2),
+        rot_y=round(ry, 2),
+        rot_z=round(rz, 2),
+        supports_required=supports_req,
+        support_type=sup_type,  # type: ignore[arg-type]
+        support_on_build_plate_only=sup_plate_only,
+        support_z_distance=z_dist,
+        support_xy_distance=base_xy,
+        adhesion_type=adh_type,  # type: ignore[arg-type]
+        brim_width_mm=brim_w,
+        layer_height=layer_height,
+        outer_wall_speed=outer_speed,
+        flow_ratio=flow_ratio,
+        nozzle_temp=nozzle_temp,
+        infill_density=infill_density,
+        fuzzy_skin=want_fuzzy,
+        fuzzy_skin_thickness=fuzzy_thick,
+        fuzzy_skin_point_distance=fuzzy_dist,
+        provider=provider,  # type: ignore[arg-type]
+    )
+
+
+def diagnose_print_defect(
+    req: AIDefectDiagnoseRequest,
+    project_data: dict[str, Any],
+) -> AIDefectDiagnoseResponse:
+    """Analiza un defecto físico reportado tras imprimir usando los parámetros exactos del proyecto."""
+    params = project_data.get("params") if isinstance(project_data.get("params"), dict) else {}
+    defect = req.defect_description.strip()
+    defect_low = defect.lower()
+
+    cur_lh = float(params.get("layer_height") or 0.20)
+    cur_speed = int(params.get("outer_wall_speed") or 120)
+    cur_temp = int(params.get("nozzle_temp") or 215)
+    cur_bed = int(params.get("bed_temp") or 60)
+    cur_flow = float(params.get("flow_ratio") or 1.0)
+    cur_z = float(params.get("support_z_distance") or 0.20)
+    cur_xy = float(params.get("support_xy_distance") or 0.50)
+
+    proj_pid = str(project_data.get("printer_id") or "creator5_pro_1")
+    proj_mat = str(project_data.get("material") or "pla").lower()
+    proj_nozzle = float(project_data.get("nozzle_diameter") or 0.4)
+    line_w = round(proj_nozzle * 1.05, 2)
+    machine_limits = get_machine_thermal_kinematic_limits(proj_pid)
+    q_max = float(machine_limits["max_volumetric_speed"].get(proj_mat, 12.0))
+    q_real = round(cur_lh * line_w * cur_speed, 2)
+    v_max_safe = round(q_max / max(0.02, cur_lh * line_w), 1)
+    exceeded_hotend = q_real > (q_max * 0.95)
+
+    corrected: dict[str, Any] = {}
+    root_cause = "Desajuste de velocidad/flujo respecto a la geometría del modelo."
+    explanation = "Se ajustaron velocidad de pared externa y flujo para estabilizar la extrusión."
+
+    if exceeded_hotend and any(k in defect_low for k in ("delamin", "despeg", "capas", "band", "línea", "linea", "sub", "extrus")):
+        safe_speed = max(40, min(int(v_max_safe * 0.85), machine_limits["outer_wall_speed_range"].get(proj_mat, (55, 100))[1]))
+        new_temp = min(295, cur_temp + 5)
+        corrected = {
+            "outer_wall_speed_override": safe_speed,
+            "nozzle_temp": new_temp,
+            "layer_height_override": cur_lh,
+            "flow_ratio_override": round(min(1.03, cur_flow + 0.02), 2),
+        }
+        root_cause = (
+            f"Caudal volumétrico excedido ({q_real:.1f} mm³/s > Q_max {q_max:.1f} mm³/s de {proj_pid} "
+            f"a {cur_lh:.2f} mm), causando sub-extrusión/delaminación."
+        )
+        explanation = (
+            f"Recortada pared externa a {safe_speed} mm/s (<= v_max {v_max_safe} mm/s) y +5°C en boquilla ({new_temp}°C)."
+        )
+    elif any(k in defect_low for k in ("band", "línea", "linea", "capa", "z", "ring", "vibrac", "ghost", "delamin")):
+        new_speed = max(45, int(round(cur_speed * 0.68)))
+        new_lh = round(max(0.12, cur_lh - 0.04), 2)
+        corrected = {
+            "outer_wall_speed_override": new_speed,
+            "layer_height_override": new_lh,
+            "flow_ratio_override": round(max(0.94, cur_flow - 0.02), 2),
+        }
+        root_cause = f"Velocidad de pared externa ({cur_speed} mm/s) o vibración mecánica generando banding/ringing."
+        explanation = f"Reducida pared externa a {new_speed} mm/s, capa a {new_lh} mm y flujo a {corrected['flow_ratio_override']}."
+    elif any(k in defect_low for k in ("soport", "cicatriz", "marca", "pegad")):
+        new_z = round(min(0.32, cur_z + 0.06), 2)
+        new_xy = round(min(1.00, cur_xy + 0.15), 2)
+        corrected = {
+            "supports": True,
+            "support_type": "tree(auto)",
+            "support_z_distance": new_z,
+            "support_xy_distance": new_xy,
+        }
+        root_cause = f"Distancia Z de soporte ({cur_z} mm) demasiado pegada al modelo."
+        explanation = f"Incrementada separación Z a {new_z} mm y XY a {new_xy} mm con soporte árbol orgánico."
+    elif any(k in defect_low for k in ("hilo", "string", "telara", "babeo")):
+        new_temp = max(185, cur_temp - 8)
+        corrected = {
+            "nozzle_temp": new_temp,
+            "flow_ratio_override": round(max(0.93, cur_flow - 0.03), 2),
+        }
+        root_cause = f"Temperatura de boquilla elevada ({cur_temp}°C) provocando rezume en viajes."
+        explanation = f"Reducida temperatura de boquilla a {new_temp}°C y flujo a {corrected['flow_ratio_override']}."
+    elif any(k in defect_low for k in ("despeg", "warp", "adher", "primera capa")):
+        new_bed = min(110, cur_bed + 5)
+        corrected = {
+            "bed_temp": new_bed,
+            "adhesion_type": "brim",
+            "brim_width_mm": 8.0,
+        }
+        root_cause = f"Adherencia insuficiente en primera capa (cama {cur_bed}°C sin brim amplio)."
+        explanation = f"Elevada cama a {new_bed}°C y activado Brim exterior de 8 mm."
+    else:
+        corrected = {
+            "outer_wall_speed_override": max(50, int(round(cur_speed * 0.75))),
+            "flow_ratio_override": round(max(0.95, cur_flow - 0.02), 2),
+        }
+
+    prompt_ctx = {
+        "defect_description": defect,
+        "volumetric_audit": {
+            "q_real_mm3_s": q_real,
+            "q_max_mm3_s": q_max,
+            "v_max_safe_mms": v_max_safe,
+            "exceeded_hotend": exceeded_hotend,
+            "machine_limits": machine_limits,
+        },
+        "project": {
+            "printer_id": project_data.get("printer_id"),
+            "material": project_data.get("material"),
+            "nozzle_diameter": project_data.get("nozzle_diameter"),
+            "params": params,
+            "metrics": project_data.get("metrics"),
+        },
+    }
+    prompt = (
+        "Eres un especialista en control de calidad de impresión 3D FDM.\n"
+        "Inspecciona los parámetros exactos del proyecto y el defecto reportado por el usuario.\n"
+        "Responde SOLO JSON válido con:\n"
+        "- root_cause (string en español citando el parámetro exacto causante)\n"
+        "- explanation (string en español max 200 chars con la corrección aplicada)\n"
+        "- corrected_params (objeto JSON usando solo claves válidas de: "
+        "layer_height_override, outer_wall_speed_override, flow_ratio_override, infill_density_override, "
+        "nozzle_temp, bed_temp, supports, support_type, support_z_distance, support_xy_distance, "
+        "adhesion_type, brim_width_mm, fuzzy_skin).\n"
+        f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
+    )
+    raw_json, provider = _call_ai_json(prompt)
+    if raw_json:
+        if raw_json.get("root_cause"):
+            root_cause = str(raw_json["root_cause"])[:220]
+        if raw_json.get("explanation"):
+            explanation = str(raw_json["explanation"])[:240]
+        raw_corr = raw_json.get("corrected_params")
+        if isinstance(raw_corr, dict) and raw_corr:
+            allowed_keys = {
+                "layer_height_override",
+                "outer_wall_speed_override",
+                "flow_ratio_override",
+                "infill_density_override",
+                "nozzle_temp",
+                "bed_temp",
+                "supports",
+                "support_type",
+                "support_z_distance",
+                "support_xy_distance",
+                "adhesion_type",
+                "brim_width_mm",
+                "fuzzy_skin",
+            }
+            filtered = {k: v for k, v in raw_corr.items() if k in allowed_keys}
+            if filtered:
+                corrected = filtered
+
+    return AIDefectDiagnoseResponse(
+        root_cause=root_cause,
+        explanation=explanation,
+        corrected_params=corrected,
+        provider=provider,  # type: ignore[arg-type]
+    )
+
+
+def evaluate_orientations_with_ai(
+    geom_result: dict[str, Any],
+    *,
+    printer_name: str,
+    material: str,
+) -> AIOrientationsResponse:
+    """Enriquece con DeepSeek IA las 5 orientaciones geométricas calculadas con trimesh."""
+    raw_options: list[dict[str, Any]] = list(geom_result.get("options") or [])
+    recommended_id = str(geom_result.get("recommended_id") or "original")
+    is_multicolor = bool(geom_result.get("is_multicolor"))
+    multicolor_parts = int(geom_result.get("multicolor_parts_count") or 1)
+    model_name = str(geom_result.get("model_name") or "modelo")
+
+    prompt_ctx = {
+        "model_name": model_name,
+        "printer": printer_name,
+        "material": material.upper(),
+        "is_multicolor": is_multicolor,
+        "multicolor_parts_count": multicolor_parts,
+        "options": [
+            {
+                "id": o["id"],
+                "title": o["title"],
+                "rotation": o["rotation"],
+                "z_height_mm": o["z_height_mm"],
+                "overhang_ratio_pct": o["overhang_ratio_pct"],
+                "contact_area_mm2": o["contact_area_mm2"],
+                "stability_warning": o.get("stability_warning"),
+                "estimated_time_delta_pct": o["estimated_time_delta_pct"],
+                "fits_bed": o["fits_bed"],
+            }
+            for o in raw_options
+        ],
+    }
+    prompt = (
+        "Eres un experto en impresión 3D FDM y laminado multicolor (OrcaSlicer). "
+        "Analiza estas 5 orientaciones candidatas medidas con trimesh y devuelve JSON estricto con:\n"
+        "- recommended_id: el id de la mejor orientación ('original', 'back_down', 'tilted_45', 'min_z' o 'max_stability'). "
+        "NUNCA recomiendes una opción que tenga stability_warning o fits_bed=false si existe una estable. "
+        "Si es una figura/personaje vertical o modelo multicolor T0-T3 donde acostarlo sobre la espalda reduce Z y purgas dejando la cara libre, prioriza 'back_down'.\n"
+        "- explanations: objeto {id: frase_corta_max_150_chars} explicando en español qué mejora y dónde caerán los soportes.\n"
+        f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
+    )
+
+    raw_json, provider = _call_ai_json(prompt)
+    opt_by_id = {str(o["id"]): o for o in raw_options}
+    valid_ids = set(opt_by_id.keys())
+    ai_explanations: dict[str, str] = {}
+    if raw_json:
+        cand_rec = str(raw_json.get("recommended_id") or "")
+        if cand_rec in valid_ids:
+            cand_obj = opt_by_id[cand_rec]
+            has_stable_alt = any(
+                bool(o["fits_bed"]) and not o.get("stability_warning")
+                for o in raw_options
+            )
+            if (bool(cand_obj["fits_bed"]) and not cand_obj.get("stability_warning")) or not has_stable_alt:
+                recommended_id = cand_rec
+        raw_exp = raw_json.get("explanations")
+        if isinstance(raw_exp, dict):
+            for k, v in raw_exp.items():
+                if str(k) in valid_ids and isinstance(v, str) and v.strip():
+                    ai_explanations[str(k)] = v.strip()[:180]
+
+    options_models: list[OrientationOption] = []
+    for o in raw_options:
+        oid = str(o["id"])
+        rot = o["rotation"]
+        options_models.append(
+            OrientationOption(
+                id=oid,
+                title=str(o["title"]),
+                badge=str(o["badge"]),
+                rotation=OrientationRotation(
+                    rx=float(rot["rx"]),
+                    ry=float(rot["ry"]),
+                    rz=float(rot["rz"]),
+                ),
+                z_height_mm=float(o["z_height_mm"]),
+                overhang_ratio_pct=float(o["overhang_ratio_pct"]),
+                contact_area_mm2=float(o["contact_area_mm2"]),
+                estimated_time_delta_pct=str(o["estimated_time_delta_pct"]),
+                explanation=ai_explanations.get(oid, str(o["explanation"])),
+                stability_warning=o.get("stability_warning"),
+                fits_bed=bool(o["fits_bed"]),
+                is_recommended=(oid == recommended_id),
+            )
+        )
+
+    options_models.sort(
+        key=lambda m: (
+            0 if m.is_recommended else 1,
+            0 if m.fits_bed else 1,
+            1 if m.stability_warning else 0,
+        )
+    )
+
+    return AIOrientationsResponse(
+        mesh_id=str(geom_result.get("mesh_id") or ""),
+        model_name=model_name,
+        is_multicolor=is_multicolor,
+        multicolor_parts_count=multicolor_parts,
+        ai_provider=provider,  # type: ignore[arg-type]
+        recommended_id=recommended_id,
+        options=options_models,
     )

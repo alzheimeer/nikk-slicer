@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -42,6 +42,22 @@ class MultimaterialPartInfo(BaseModel):
     color_hex: str | None = None
     triangle_count: int = 0
     paint_percentage: float | None = None
+    z_min_mm: float = 0.0
+    z_max_mm: float = 0.0
+    suggested_slot: int | None = None
+
+
+class DetectedColorInfo(BaseModel):
+    """Color detectado en un `.3mf` (1..N) con su porcentaje y rango vertical Z."""
+
+    index: int
+    zone_key: str
+    name: str
+    hex_color: str = "#94A3B8"
+    percentage: float = 0.0
+    z_min_mm: float = 0.0
+    z_max_mm: float = 0.0
+    suggested_slot: int = 0
 
 
 class MeshAnalysisResponse(BaseModel):
@@ -63,6 +79,7 @@ class MeshAnalysisResponse(BaseModel):
     is_multicolor: bool = False
     extruder_triangle_percentages: dict[str, float] = Field(default_factory=dict)
     detected_filament_colors: list[str] = Field(default_factory=list)
+    detected_colors: list[DetectedColorInfo] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -188,6 +205,15 @@ class SliceRequest(BaseModel):
     adhesion_type: AdhesionType = "none"
     brim_width_mm: float = Field(default=6.0, ge=0.0, le=20.0)
     chamber_temp_target: int | None = Field(default=None, ge=25, le=55)
+    layer_height_override: float | None = Field(default=None, ge=0.08, le=0.36)
+    outer_wall_speed_override: int | None = Field(default=None, ge=15, le=400)
+    flow_ratio_override: float | None = Field(default=None, ge=0.7, le=1.3)
+    infill_density_override: int | None = Field(default=None, ge=0, le=100)
+    fuzzy_skin: bool = False
+    fuzzy_skin_thickness: float = Field(default=0.25, ge=0.05, le=1.0)
+    fuzzy_skin_point_distance: float = Field(default=0.4, ge=0.1, le=2.0)
+    ai_strategy_label: str | None = None
+    model_filename: str | None = None
     prime_tower_mode: Literal["auto", "off", "ultra_save"] = "auto"
     enable_prime_tower: bool | None = None
     enable_timelapse: bool = False
@@ -211,6 +237,35 @@ class SliceRequest(BaseModel):
     support_extruder: int = Field(default=0, ge=0, le=3)
     z_color_ranges: list[ZColorRange] = Field(default_factory=list)
     part_extruder_map: dict[str, int] = Field(default_factory=dict)
+    layer_pauses: list["LayerPauseItem"] = Field(default_factory=list)
+
+
+class LayerPauseItem(BaseModel):
+    """Pausa programada en una capa específica del G-code."""
+
+    layer: int = Field(ge=1)
+    note: str = ""
+    z_mm: float | None = None
+    source: Literal["manual", "auto_multicolor"] = "manual"
+    slot: int | None = None
+    outgoing_color: str | None = None
+    incoming_color: str | None = None
+
+
+class ApplyPausesRequest(BaseModel):
+    """Solicitud para inyectar/actualizar pausas en un G-code ya laminado sin re-laminar."""
+
+    job_id: str
+    printer_id: PrinterId
+    pauses: list[LayerPauseItem] = Field(default_factory=list)
+
+
+class ApplyPausesResponse(BaseModel):
+    """Resultado de inyección instantánea de pausas en el G-code."""
+
+    job_id: str
+    applied_pauses: list[LayerPauseItem] = Field(default_factory=list)
+    gcode_text: str
 
 
 class SliceResponse(BaseModel):
@@ -231,6 +286,7 @@ class SliceResponse(BaseModel):
     support_xy_distance: float | None = None
     mesh_warnings: list[str] = Field(default_factory=list)
     dimensions_mm: DimensionsMM
+    applied_pauses: list[LayerPauseItem] = Field(default_factory=list)
 
 
 class AIRecommendRequest(BaseModel):
@@ -306,6 +362,185 @@ class AISupportOrientResponse(BaseModel):
     reasoning: str
     provider: Literal["GEMINI_API", "DEEPSEEK_API", "HEURISTICA_LOCAL"]
     analysis: MeshAnalysisResponse
+
+
+class AIAnalyzeModelRequest(BaseModel):
+    """Fase 1 de Análisis IA: detección rápida de geometría y opciones dinámicas."""
+
+    printer_id: PrinterId
+    material: MaterialType
+    filename: str = "modelo.stl"
+    nozzle_diameter: float = 0.4
+    high_speed_filament: bool = False
+    lithophane_mode: bool = False
+    dimensions_mm: DimensionsMM
+    volume_cm3: float = 0.0
+    base_contact_area_mm2: float = 0.0
+    overhang_ratio: float = 0.0
+    parts_count: int = 1
+    is_multicolor: bool = False
+    detected_extruder_count: int = 1
+    current_slice_metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class AIPresetOption(BaseModel):
+    """Opción de estrategia dinámica sugerida al usuario tras detectar el tipo de pieza."""
+
+    id: str
+    label: str
+    description: str
+    badge: str | None = None
+
+
+class AISubOption(BaseModel):
+    """Sub-opción específica dentro de una categoría de altura de capa."""
+
+    id: str
+    label: str
+    description: str
+    preset_id: str
+    layer_height: float
+    calibrated_speed_mms: int = 80
+    calibrated_temp_c: int = 215
+    estimated_time_str: str
+    estimated_time_seconds: int
+
+
+class AILayerResolutionGroup(BaseModel):
+    """Categoría de resolución (0.08..0.28 mm) con sus variantes desplegables."""
+
+    layer_height: float
+    title: str
+    subtitle: str
+    calibrated_speed_mms: int = 80
+    calibrated_temp_c: int = 215
+    estimated_time_str: str
+    estimated_time_seconds: int
+    is_recommended: bool = False
+    options: list[AISubOption] = Field(default_factory=list)
+
+
+class AIAnalyzeModelResponse(BaseModel):
+    """Respuesta de Fase 1 con clasificación estricta, opciones fijas y resoluciones filtradas."""
+
+    detected_type_summary: str
+    model_category: Literal[
+        "lithophane_flat",
+        "character_organic",
+        "mechanical_functional",
+        "large_enclosure",
+    ] = "mechanical_functional"
+    filter_note: str = ""
+    contextual_options: list[AISubOption] = Field(default_factory=list)
+    recommended_presets: list[AIPresetOption] = Field(default_factory=list)
+    layer_resolutions: list[AILayerResolutionGroup] = Field(default_factory=list)
+    all_layer_resolutions: list[AILayerResolutionGroup] = Field(default_factory=list)
+    provider: Literal["GEMINI_API", "DEEPSEEK_API", "HEURISTICA_LOCAL"] = "HEURISTICA_LOCAL"
+
+
+class AIOptimizeSliceRequest(BaseModel):
+    """Fase 2 de Análisis IA: optimización integral según estrategia elegida."""
+
+    printer_id: PrinterId
+    material: MaterialType
+    filename: str = "modelo.stl"
+    nozzle_diameter: float = 0.4
+    high_speed_filament: bool = False
+    lithophane_mode: bool = False
+    preset_id: str = "balanced"
+    target_layer_height: float | None = Field(default=None, ge=0.08, le=0.32)
+    user_notes: str = ""
+    mesh_id: str | None = None
+    scale_percent: float = 100.0
+    rot_x: float = 0.0
+    rot_y: float = 0.0
+    rot_z: float = 0.0
+    dimensions_mm: DimensionsMM
+    overhang_ratio: float = 0.0
+    base_contact_area_mm2: float = 0.0
+    current_support_config: dict[str, Any] = Field(default_factory=dict)
+    current_slice_metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class AIOptimizeSliceResponse(BaseModel):
+    """Parámetros completos optimizados por DeepSeek IA listos para re-laminar."""
+
+    strategy_label: str
+    explanation: str
+    apply_rotation: bool = False
+    rot_x: float = 0.0
+    rot_y: float = 0.0
+    rot_z: float = 0.0
+    supports_required: bool = False
+    support_type: SupportType = "tree(auto)"
+    support_on_build_plate_only: bool = True
+    support_z_distance: float = 0.20
+    support_xy_distance: float = 0.50
+    adhesion_type: AdhesionType = "none"
+    brim_width_mm: float = 6.0
+    layer_height: float = 0.20
+    outer_wall_speed: int | None = None
+    flow_ratio: float | None = None
+    nozzle_temp: int | None = None
+    infill_density: int | None = None
+    fuzzy_skin: bool = False
+    fuzzy_skin_thickness: float = 0.25
+    fuzzy_skin_point_distance: float = 0.4
+    provider: Literal["GEMINI_API", "DEEPSEEK_API", "HEURISTICA_LOCAL"] = "HEURISTICA_LOCAL"
+
+
+class AIDefectDiagnoseRequest(BaseModel):
+    """Solicitud de diagnóstico de defecto post-impresión sobre un proyecto guardado."""
+
+    project_id: str | None = None
+    project_data: dict[str, Any] | None = None
+    defect_description: str = Field(min_length=2)
+
+
+class AIDefectDiagnoseResponse(BaseModel):
+    """Diagnóstico de causa raíz y parámetros corregidos listos para re-laminar."""
+
+    root_cause: str
+    explanation: str
+    corrected_params: dict[str, Any] = Field(default_factory=dict)
+    provider: Literal["GEMINI_API", "DEEPSEEK_API", "HEURISTICA_LOCAL"] = "HEURISTICA_LOCAL"
+
+
+class OrientationRotation(BaseModel):
+    """Ángulos Euler en grados para previsualización 3D y laminado."""
+
+    rx: float = 0.0
+    ry: float = 0.0
+    rz: float = 0.0
+
+
+class OrientationOption(BaseModel):
+    """Opción de orientación evaluada geométricamente y enriquecida por IA."""
+
+    id: str
+    title: str
+    badge: str
+    rotation: OrientationRotation
+    z_height_mm: float
+    overhang_ratio_pct: float
+    contact_area_mm2: float
+    estimated_time_delta_pct: str
+    explanation: str
+    stability_warning: str | None = None
+    fits_bed: bool = True
+    is_recommended: bool = False
+
+
+class AIOrientationsResponse(BaseModel):
+    """Respuesta multi-orientación de POST /api/ai/orientations."""
+
+    mesh_id: str
+    model_name: str = "modelo"
+    is_multicolor: bool = False
+    multicolor_parts_count: int = 1
+    ai_provider: Literal["GEMINI_API", "DEEPSEEK_API", "HEURISTICA_LOCAL"] = "HEURISTICA_LOCAL"
+    recommended_id: str = "original"
+    options: list[OrientationOption] = Field(default_factory=list)
 
 
 class PrinterNetworkEntry(BaseModel):

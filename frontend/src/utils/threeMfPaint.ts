@@ -86,7 +86,100 @@ function extractAttr(tag: string, attrName: string): string | null {
 
 interface ParsedObjectTriangles {
   slots: Uint8Array;
+  splitCodes: Map<number, string>;
   hasMulticolorPaint: boolean;
+}
+
+function isSplitPaintCode(code: string): boolean {
+  if (!code || FAST_PAINT_SLOT[code] !== undefined) return false;
+  const lastNib = parseInt(code[code.length - 1], 16);
+  if (Number.isNaN(lastNib)) return false;
+  return (lastNib & 0x3) !== 0;
+}
+
+interface SubTri {
+  ax: number; ay: number; az: number;
+  bx: number; by: number; bz: number;
+  cx: number; cy: number; cz: number;
+  slot: number;
+}
+
+function subdividePaintedTriangle(
+  ax: number, ay: number, az: number,
+  bx: number, by: number, bz: number,
+  cx: number, cy: number, cz: number,
+  paintHex: string,
+  maxDepth = 8,
+): SubTri[] {
+  const code = paintHex.trim().toUpperCase();
+  const out: SubTri[] = [];
+  let idx = code.length - 1;
+
+  const rec = (
+    p0x: number, p0y: number, p0z: number,
+    p1x: number, p1y: number, p1z: number,
+    p2x: number, p2y: number, p2z: number,
+    depth: number,
+  ) => {
+    if (idx < 0) {
+      out.push({ ax: p0x, ay: p0y, az: p0z, bx: p1x, by: p1y, bz: p1z, cx: p2x, cy: p2y, cz: p2z, slot: 0 });
+      return;
+    }
+    const nib = parseInt(code[idx], 16);
+    idx -= 1;
+    if (Number.isNaN(nib)) return;
+
+    const splitSides = nib & 0x3;
+    if (splitSides === 0) {
+      let state = nib >> 2;
+      if (state === 3 && idx >= 0) {
+        const extOff = parseInt(code[idx], 16);
+        idx -= 1;
+        if (!Number.isNaN(extOff)) state = 3 + extOff;
+      }
+      const slot = state >= 1 && state <= 4 ? state - 1 : 0;
+      out.push({ ax: p0x, ay: p0y, az: p0z, bx: p1x, by: p1y, bz: p1z, cx: p2x, cy: p2y, cz: p2z, slot });
+      return;
+    }
+
+    if (depth >= maxDepth) {
+      // Límite de seguridad: consumir subárbol y emitir color dominante
+      const fallbackSlot = decodePaintColorSlot(code);
+      out.push({ ax: p0x, ay: p0y, az: p0z, bx: p1x, by: p1y, bz: p1z, cx: p2x, cy: p2y, cz: p2z, slot: fallbackSlot });
+      return;
+    }
+
+    const m01x = (p0x + p1x) * 0.5, m01y = (p0y + p1y) * 0.5, m01z = (p0z + p1z) * 0.5;
+    const m12x = (p1x + p2x) * 0.5, m12y = (p1y + p2y) * 0.5, m12z = (p1z + p2z) * 0.5;
+    const m20x = (p2x + p0x) * 0.5, m20y = (p2y + p0y) * 0.5, m20z = (p2z + p0z) * 0.5;
+
+    if (splitSides === 3) {
+      // Orden inverso de serialización Orca/PrusaSlicer: [centro, v2, v1, v0]
+      rec(m01x, m01y, m01z, m12x, m12y, m12z, m20x, m20y, m20z, depth + 1);
+      rec(p2x, p2y, p2z, m20x, m20y, m20z, m12x, m12y, m12z, depth + 1);
+      rec(p1x, p1y, p1z, m12x, m12y, m12z, m01x, m01y, m01z, depth + 1);
+      rec(p0x, p0y, p0z, m01x, m01y, m01z, m20x, m20y, m20z, depth + 1);
+    } else if (splitSides === 1) {
+      const sp = (nib >> 2) & 0x3;
+      if (sp === 1) {
+        rec(p1x, p1y, p1z, m12x, m12y, m12z, p0x, p0y, p0z, depth + 1);
+        rec(p2x, p2y, p2z, p0x, p0y, p0z, m12x, m12y, m12z, depth + 1);
+      } else if (sp === 2) {
+        rec(p2x, p2y, p2z, m20x, m20y, m20z, p1x, p1y, p1z, depth + 1);
+        rec(p0x, p0y, p0z, p1x, p1y, p1z, m20x, m20y, m20z, depth + 1);
+      } else {
+        rec(p1x, p1y, p1z, p2x, p2y, p2z, m01x, m01y, m01z, depth + 1);
+        rec(p0x, p0y, p0z, m01x, m01y, m01z, p2x, p2y, p2z, depth + 1);
+      }
+    } else {
+      rec(p0x, p0y, p0z, m01x, m01y, m01z, m20x, m20y, m20z, depth + 1);
+      rec(p1x, p1y, p1z, p2x, p2y, p2z, m01x, m01y, m01z, depth + 1);
+      rec(p2x, p2y, p2z, m20x, m20y, m20z, m01x, m01y, m01z, depth + 1);
+    }
+  };
+
+  rec(ax, ay, az, bx, by, bz, cx, cy, cz, 0);
+  return out;
 }
 
 function parseTrianglesBlock(trisBody: string): ParsedObjectTriangles {
@@ -99,8 +192,9 @@ function parseTrianglesBlock(trisBody: string): ParsedObjectTriangles {
   }
 
   const slots = new Uint8Array(triCount);
+  const splitCodes = new Map<number, string>();
   if (triCount === 0) {
-    return { slots, hasMulticolorPaint: false };
+    return { slots, splitCodes, hasMulticolorPaint: false };
   }
 
   const seenSlots = [false, false, false, false];
@@ -120,12 +214,16 @@ function parseTrianglesBlock(trisBody: string): ParsedObjectTriangles {
     let slot = 0;
     if (pc !== null) {
       hasPaintAttr = true;
-      const cached = paintCache.get(pc);
+      const cleanPc = pc.trim().toUpperCase();
+      if (isSplitPaintCode(cleanPc)) {
+        splitCodes.set(tIdx, cleanPc);
+      }
+      const cached = paintCache.get(cleanPc);
       if (cached !== undefined) {
         slot = cached;
       } else {
-        slot = decodePaintColorSlot(pc);
-        if (paintCache.size < 4096) paintCache.set(pc, slot);
+        slot = decodePaintColorSlot(cleanPc);
+        if (paintCache.size < 4096) paintCache.set(cleanPc, slot);
       }
     } else {
       const pid = extractAttr(tag, 'pid');
@@ -145,6 +243,7 @@ function parseTrianglesBlock(trisBody: string): ParsedObjectTriangles {
   const distinctSlots = seenSlots.filter(Boolean).length;
   return {
     slots,
+    splitCodes,
     hasMulticolorPaint: distinctSlots >= 2 && (hasPaintAttr || hasPidAttr),
   };
 }
@@ -289,7 +388,72 @@ export function applyThreeMfTrianglePaintGroups(
     const geo = m.geometry;
     const counts = [0, 0, 0, 0];
 
-    if (geo.index) {
+    if (paint.splitCodes.size > 0) {
+      // Subdividir únicamente triángulos de borde con árbol `paint_color` para bordes curvos nítidos
+      const posAttr = geo.getAttribute('position');
+      if (!posAttr) continue;
+      const srcPos = posAttr.array as Float32Array;
+      const srcIdx = geo.index ? geo.index.array : null;
+      const triCount = srcIdx
+        ? Math.min(paint.slots.length, Math.floor(srcIdx.length / 3))
+        : Math.min(paint.slots.length, Math.floor(posAttr.count / 3));
+
+      const buckets: [number[], number[], number[], number[]] = [[], [], [], []];
+      for (let t = 0; t < triCount; t += 1) {
+        let i0: number, i1: number, i2: number;
+        if (srcIdx) {
+          const base = t * 3;
+          i0 = srcIdx[base] * 3;
+          i1 = srcIdx[base + 1] * 3;
+          i2 = srcIdx[base + 2] * 3;
+        } else {
+          const base = t * 9;
+          i0 = base;
+          i1 = base + 3;
+          i2 = base + 6;
+        }
+        const ax = srcPos[i0], ay = srcPos[i0 + 1], az = srcPos[i0 + 2];
+        const bx = srcPos[i1], by = srcPos[i1 + 1], bz = srcPos[i1 + 2];
+        const cx = srcPos[i2], cy = srcPos[i2 + 1], cz = srcPos[i2 + 2];
+
+        const splitCode = paint.splitCodes.get(t);
+        if (splitCode) {
+          const subTris = subdividePaintedTriangle(ax, ay, az, bx, by, bz, cx, cy, cz, splitCode);
+          for (const st of subTris) {
+            buckets[st.slot].push(st.ax, st.ay, st.az, st.bx, st.by, st.bz, st.cx, st.cy, st.cz);
+            counts[st.slot] += 1;
+          }
+        } else {
+          const s = paint.slots[t];
+          buckets[s].push(ax, ay, az, bx, by, bz, cx, cy, cz);
+          counts[s] += 1;
+        }
+      }
+
+      const totalTris = counts[0] + counts[1] + counts[2] + counts[3];
+      const nextPos = new Float32Array(totalTris * 9);
+      let cursor = 0;
+      for (let s = 0; s < 4; s += 1) {
+        if (buckets[s].length > 0) {
+          nextPos.set(buckets[s], cursor);
+          cursor += buckets[s].length;
+        }
+      }
+
+      if (geo.index) geo.setIndex(null);
+      geo.setAttribute('position', new THREE.BufferAttribute(nextPos, 3));
+      geo.deleteAttribute('color');
+      geo.computeVertexNormals();
+      geo.clearGroups();
+      let start = 0;
+      for (let s = 0; s < 4; s += 1) {
+        const cnt = counts[s] * 3;
+        if (cnt > 0) {
+          geo.addGroup(start, cnt, s);
+          start += cnt;
+        }
+      }
+    } else if (geo.index) {
       const srcIdx = geo.index.array;
       const triCount = Math.min(paint.slots.length, Math.floor(srcIdx.length / 3));
       for (let t = 0; t < triCount; t += 1) {

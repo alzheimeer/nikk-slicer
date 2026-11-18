@@ -61,9 +61,18 @@ from app.connectors import (
     upload_and_start_moonraker,
 )
 from app.core.ai_copilot import (
+    analyze_model_for_ai,
     diagnose_live_telemetry,
+    diagnose_print_defect,
+    evaluate_orientations_with_ai,
     generate_ai_recommendation,
     generate_ai_support_decision,
+    optimize_slice_with_ai,
+)
+from app.core.project_store import (
+    get_saved_project,
+    list_saved_projects,
+    save_slice_project,
 )
 from app.core.error_journal import (
     ERROR_JOURNAL_LOG_PATH,
@@ -72,6 +81,7 @@ from app.core.error_journal import (
     record_error,
 )
 from app.core.gcode_3mf_packager import package_gcode_as_3mf, prepare_flashforge_gcode
+from app.core.gcode_postprocessor import apply_layer_pauses_to_file
 from app.core.json_patcher import patch_profiles_for_job
 from app.core.print_telemetry_recorder import (
     get_machine_material_learnings,
@@ -84,6 +94,7 @@ from app.core.mesh_analyzer import (
     auto_orient_mesh,
     compute_lay_on_face_candidates,
     cut_mesh_by_plane,
+    evaluate_orientation_candidates,
     find_optimal_anti_support_orientation,
     load_and_transform_mesh,
     prepare_painted_3mf_for_slicer,
@@ -92,16 +103,26 @@ from app.core.mesh_analyzer import (
 )
 from app.core.slicer_router import run_slicer_cli
 from app.models.schemas import (
+    AIAnalyzeModelRequest,
+    AIAnalyzeModelResponse,
+    AIDefectDiagnoseRequest,
+    AIDefectDiagnoseResponse,
+    AIOptimizeSliceRequest,
+    AIOptimizeSliceResponse,
+    AIOrientationsResponse,
     AIRecommendRequest,
     AIRecommendResponse,
     AISupportOrientResponse,
     AITelemetryDiagnosisResponse,
     AdhesionType,
+    ApplyPausesRequest,
+    ApplyPausesResponse,
     AutoArrangeRequest,
     AutoArrangeResponse,
     AutoOrientResponse,
     CutMeshResponse,
     ExtruderSlotConfig,
+    LayerPauseItem,
     LayOnFaceResponse,
     MachineMaterialLearningsResponse,
     MaterialType,
@@ -605,6 +626,34 @@ def auto_orient_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/ai/orientations", response_model=AIOrientationsResponse)
+def ai_orientations_endpoint(
+    printer_id: PrinterId = Form(...),
+    material: MaterialType = Form("pla"),
+    mesh_id: str | None = Form(None),
+    scale_percent: float = Form(100.0),
+    file: UploadFile | None = File(None),
+) -> AIOrientationsResponse:
+    """Evalúa 5 orientaciones óptimas (trimesh + DeepSeek IA) previsualizables en vivo."""
+    printer = _resolve_printer_or_400(printer_id)
+    resolved_id, cached_path = _resolve_cached_stl(file, mesh_id)
+    try:
+        geom_result = evaluate_orientation_candidates(
+            cached_path,
+            printer=printer,
+            mesh_id=resolved_id,
+            scale_percent=scale_percent,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return evaluate_orientations_with_ai(
+        geom_result,
+        printer_name=printer.display_name,
+        material=material,
+    )
+
+
 @app.post("/api/ai-recommend", response_model=AIRecommendResponse)
 def ai_recommend_endpoint(req: AIRecommendRequest) -> AIRecommendResponse:
     """Recomienda soportes, Z-distance, balsa y temperaturas usando Gemini/DeepSeek o heurística."""
@@ -845,6 +894,49 @@ def _execute_slice_job_sync(
     except Exception:
         pass
 
+    pauses_to_apply: list[dict[str, Any]] = [p.model_dump() for p in req.layer_pauses]
+    if printer.profile_id == "creator5_pro" and len(analysis.detected_colors) > 4:
+        slot_groups: dict[int, list[Any]] = {}
+        for col in analysis.detected_colors:
+            assigned = req.part_extruder_map.get(col.zone_key, col.suggested_slot)
+            slot_groups.setdefault(int(assigned), []).append(col)
+        eff_lh = float(req.layer_height_override or 0.20)
+        existing_layers = {int(p["layer"]) for p in pauses_to_apply}
+        for slot_idx, grp in slot_groups.items():
+            if len(grp) < 2:
+                continue
+            grp_sorted = sorted(grp, key=lambda x: (x.z_min_mm, x.z_max_mm))
+            for i in range(len(grp_sorted) - 1):
+                prev_c = grp_sorted[i]
+                next_c = grp_sorted[i + 1]
+                if prev_c.z_max_mm < next_c.z_min_mm:
+                    trans_z = round(float(next_c.z_min_mm), 2)
+                    trans_layer = max(2, round(trans_z / max(0.08, eff_lh)))
+                    if trans_layer not in existing_layers:
+                        existing_layers.add(trans_layer)
+                        pauses_to_apply.append(
+                            {
+                                "layer": trans_layer,
+                                "note": f"Cambio T{slot_idx}: {prev_c.name} -> {next_c.name}",
+                                "z_mm": trans_z,
+                                "source": "auto_multicolor",
+                                "slot": slot_idx,
+                                "outgoing_color": prev_c.name,
+                                "incoming_color": next_c.name,
+                            }
+                        )
+
+    applied_pauses_raw: list[dict[str, Any]] = []
+    if pauses_to_apply:
+        try:
+            _, applied_pauses_raw = apply_layer_pauses_to_file(
+                result.gcode_path,
+                req.printer_id,
+                pauses_to_apply,
+            )
+        except Exception:
+            applied_pauses_raw = []
+
     if printer.profile_id == "creator5_pro":
         try:
             tool_entries: list[dict[str, Any]] = []
@@ -896,6 +988,60 @@ def _execute_slice_job_sync(
         except Exception:
             pass
 
+    try:
+        save_slice_project(
+            project_id=job_id,
+            gcode_filename=result.gcode_path.name,
+            model_filename=req.model_filename or cached_path.name,
+            mesh_id=resolved_id,
+            printer_id=req.printer_id,
+            material=req.material,
+            nozzle_diameter=req.nozzle_diameter,
+            quality_preset=req.quality_preset,
+            ai_strategy=req.ai_strategy_label,
+            transform={
+                "scale_percent": req.scale_percent,
+                "rot_x": req.rot_x,
+                "rot_y": req.rot_y,
+                "rot_z": req.rot_z,
+                "offset_x": req.offset_x,
+                "offset_y": req.offset_y,
+                "offset_z": req.offset_z,
+            },
+            params={
+                "nozzle_temp": req.nozzle_temp,
+                "bed_temp": req.bed_temp,
+                "chamber_temp_target": req.chamber_temp_target,
+                "layer_height": req.layer_height_override,
+                "outer_wall_speed": req.outer_wall_speed_override,
+                "flow_ratio": req.flow_ratio_override,
+                "infill_density": req.infill_density_override,
+                "fuzzy_skin": req.fuzzy_skin,
+                "fuzzy_skin_thickness": req.fuzzy_skin_thickness,
+                "fuzzy_skin_point_distance": req.fuzzy_skin_point_distance,
+                "supports": eff_supports_enabled,
+                "support_type": eff_support_type,
+                "support_on_build_plate_only": req.support_on_build_plate_only,
+                "support_z_distance": eff_support_z,
+                "support_xy_distance": eff_support_xy,
+                "adhesion_type": req.adhesion_type,
+                "brim_width_mm": req.brim_width_mm,
+                "volumetric_guard": patched.volumetric_guard,
+                "extruders_config": [s.model_dump() for s in req.extruders_config] if req.extruders_config else None,
+                "part_extruder_map": req.part_extruder_map,
+            },
+            metrics={
+                "estimated_time": result.estimated_time,
+                "estimated_time_seconds": result.estimated_time_seconds,
+                "filament_grams": result.filament_grams,
+                "filament_meters": result.filament_meters,
+                "support_weight_g": result.support_weight_g,
+                "support_percentage": result.support_percentage,
+            },
+        )
+    except Exception:
+        pass
+
     return SliceResponse(
         job_id=job_id,
         gcode_url=f"/api/download/{job_id}",
@@ -912,6 +1058,47 @@ def _execute_slice_job_sync(
         support_xy_distance=eff_support_xy,
         mesh_warnings=analysis.warnings,
         dimensions_mm=analysis.dimensions_mm,
+        applied_pauses=[LayerPauseItem(**p) for p in applied_pauses_raw],
+    )
+
+
+@app.post("/api/slicer/apply-pauses", response_model=ApplyPausesResponse)
+def apply_pauses_endpoint(req: ApplyPausesRequest) -> ApplyPausesResponse:
+    """Inyecta o actualiza pausas por capa sobre un `.gcode` ya laminado (< 50 ms)."""
+    out_dir = TEMP_DIR / req.job_id / "output"
+    if not out_dir.exists():
+        raise HTTPException(status_code=404, detail="Trabajo de laminado no encontrado.")
+
+    gcode_candidates = [
+        p
+        for p in sorted(out_dir.glob("*.gcode"))
+        if p.name != "model.flashforge.gcode"
+    ]
+    if not gcode_candidates:
+        raise HTTPException(status_code=404, detail="Archivo .gcode no encontrado.")
+
+    gcode_path = gcode_candidates[0]
+    updated_text, applied_raw = apply_layer_pauses_to_file(
+        gcode_path,
+        req.printer_id,
+        [p.model_dump() for p in req.pauses],
+    )
+
+    ff_gcode = out_dir / "model.flashforge.gcode"
+    if ff_gcode.exists():
+        try:
+            apply_layer_pauses_to_file(
+                ff_gcode,
+                req.printer_id,
+                [p.model_dump() for p in req.pauses],
+            )
+        except Exception:
+            pass
+
+    return ApplyPausesResponse(
+        job_id=req.job_id,
+        applied_pauses=[LayerPauseItem(**p) for p in applied_raw],
+        gcode_text=updated_text,
     )
 
 
@@ -933,6 +1120,15 @@ async def slice_endpoint(
     adhesion_type: AdhesionType = Form("none"),
     brim_width_mm: float = Form(6.0),
     chamber_temp_target: int | None = Form(None),
+    layer_height_override: float | None = Form(None),
+    outer_wall_speed_override: int | None = Form(None),
+    flow_ratio_override: float | None = Form(None),
+    infill_density_override: int | None = Form(None),
+    fuzzy_skin: bool = Form(False),
+    fuzzy_skin_thickness: float = Form(0.25),
+    fuzzy_skin_point_distance: float = Form(0.4),
+    ai_strategy_label: str | None = Form(None),
+    model_filename: str | None = Form(None),
     prime_tower_mode: str = Form("auto"),
     enable_prime_tower: bool | None = Form(None),
     enable_timelapse: bool = Form(False),
@@ -956,6 +1152,7 @@ async def slice_endpoint(
     support_extruder: int = Form(0),
     z_color_ranges_json: str | None = Form(None),
     part_extruder_map_json: str | None = Form(None),
+    layer_pauses_json: str | None = Form(None),
     file: UploadFile | None = File(None),
 ) -> SliceResponse:
     """Lamina `.stl` o `.3mf` multicolor usando caché `mesh_id`, bloqueo por malla y escritura atómica."""
@@ -990,6 +1187,17 @@ async def slice_endpoint(
                 status_code=400, detail=f"part_extruder_map_json inválido: {exc}"
             ) from exc
 
+    parsed_layer_pauses: list[LayerPauseItem] = []
+    if layer_pauses_json:
+        try:
+            raw_pauses = json.loads(layer_pauses_json)
+            if isinstance(raw_pauses, list):
+                parsed_layer_pauses = [LayerPauseItem(**item) for item in raw_pauses]
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"layer_pauses_json inválido: {exc}"
+            ) from exc
+
     parsed_instances = _parse_instances_json(instances_json)
     clean_rx, clean_ry, clean_rz = sanitize_euler_rotation(rot_x, rot_y, rot_z)
     eff_material: MaterialType = "pla" if lithophane_mode else material
@@ -1008,6 +1216,7 @@ async def slice_endpoint(
             high_speed_filament=high_speed_filament,
             lithophane_mode=lithophane_mode,
             supports=eff_supports,
+            layer_pauses=parsed_layer_pauses,
             support_type=support_type,
             support_on_build_plate_only=support_on_build_plate_only,
             support_z_distance=support_z_distance,
@@ -1015,6 +1224,15 @@ async def slice_endpoint(
             adhesion_type=eff_adhesion,
             brim_width_mm=eff_brim_w,
             chamber_temp_target=chamber_temp_target,
+            layer_height_override=layer_height_override,
+            outer_wall_speed_override=outer_wall_speed_override,
+            flow_ratio_override=flow_ratio_override,
+            infill_density_override=infill_density_override,
+            fuzzy_skin=fuzzy_skin,
+            fuzzy_skin_thickness=fuzzy_skin_thickness,
+            fuzzy_skin_point_distance=fuzzy_skin_point_distance,
+            ai_strategy_label=ai_strategy_label,
+            model_filename=model_filename,
             prime_tower_mode=prime_tower_mode if prime_tower_mode in ("auto", "off", "ultra_save") else "auto",  # type: ignore[arg-type]
             enable_prime_tower=enable_prime_tower,
             enable_timelapse=enable_timelapse,
@@ -1793,6 +2011,72 @@ async def get_telemetry_learnings_endpoint(
 ) -> MachineMaterialLearningsResponse:
     """Devuelve aprendizajes acumulados desde compendios previos para máquina + material."""
     return get_machine_material_learnings(printer_id, material, limit=limit)
+
+
+@app.post("/api/ai/analyze-model", response_model=AIAnalyzeModelResponse)
+async def ai_analyze_model_endpoint(req: AIAnalyzeModelRequest) -> AIAnalyzeModelResponse:
+    """Fase 1 de Análisis IA: detecta tipo de modelo y devuelve 4-5 estrategias."""
+    return await asyncio.to_thread(analyze_model_for_ai, req)
+
+
+@app.post("/api/ai/optimize-slice", response_model=AIOptimizeSliceResponse)
+async def ai_optimize_slice_endpoint(req: AIOptimizeSliceRequest) -> AIOptimizeSliceResponse:
+    """Fase 2 de Análisis IA: calcula ángulo, soportes, capa, velocidad y piel difusa."""
+    best_euler: tuple[float, float, float] | None = None
+    if req.mesh_id and req.preset_id == "anti_support_angle":
+        try:
+            cached = _resolve_cached_model_path(req.mesh_id)
+            printer = get_printer_config(req.printer_id)
+            best_euler, _ = await asyncio.to_thread(
+                find_optimal_anti_support_orientation,
+                cached,
+                printer,
+                req.scale_percent,
+            )
+        except Exception:
+            best_euler = None
+    return await asyncio.to_thread(optimize_slice_with_ai, req, best_euler)
+
+
+@app.get("/api/projects")
+async def list_projects_endpoint() -> dict[str, Any]:
+    """Lista los proyectos guardados en `backend/temp/projects/`."""
+    return {"projects": list_saved_projects()}
+
+
+@app.get("/api/projects/{project_id}")
+async def get_project_endpoint(project_id: str) -> dict[str, Any]:
+    """Devuelve el JSON completo de un proyecto guardado."""
+    proj = get_saved_project(project_id)
+    if proj is None:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
+    return proj
+
+
+@app.get("/api/desktop/open-file")
+async def desktop_open_local_model_endpoint(path: str) -> FileResponse:
+    """Sirve un `.stl` o `.3mf` local abierto desde macOS Finder/Dock hacia el WebView."""
+    target = Path(path).expanduser()
+    if target.suffix.lower() not in (".stl", ".3mf"):
+        raise HTTPException(status_code=400, detail="Solo se admiten archivos .stl o .3mf.")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Archivo no encontrado en disco.")
+    return FileResponse(path=target, media_type="application/octet-stream", filename=target.name)
+
+
+@app.post("/api/ai/diagnose-defect", response_model=AIDefectDiagnoseResponse)
+async def ai_diagnose_defect_endpoint(req: AIDefectDiagnoseRequest) -> AIDefectDiagnoseResponse:
+    """Analiza un defecto físico post-impresión sobre los parámetros exactos de un proyecto."""
+    proj_data: dict[str, Any] = {}
+    if req.project_id:
+        loaded = get_saved_project(req.project_id)
+        if loaded is not None:
+            proj_data = loaded
+    if not proj_data and req.project_data:
+        proj_data = req.project_data
+    if not proj_data:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado para diagnosticar.")
+    return await asyncio.to_thread(diagnose_print_defect, req, proj_data)
 
 
 FRONTEND_DIST_DIR = PROJECT_ROOT / "frontend" / "dist"

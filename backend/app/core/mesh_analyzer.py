@@ -19,6 +19,7 @@ from app.config import MESH_CACHE_DIR, PrinterConfig
 from app.models.schemas import (
     AutoArrangeResponse,
     AutoOrientResponse,
+    DetectedColorInfo,
     DimensionsMM,
     LayOnFaceCandidate,
     LayOnFaceResponse,
@@ -108,7 +109,7 @@ _PAINT_FAST_MAP: dict[str, int] = {
 
 
 def decode_paint_color_extruder(paint_hex: str | None) -> int:
-    """Decodifica el atributo `paint_color` (árbol nibbles Orca/Bambu) a extrusor 1..4."""
+    """Decodifica el atributo `paint_color` (árbol nibbles Orca/Bambu) a extrusor 1..16."""
     if not paint_hex:
         return 1
     code = paint_hex.strip().upper()
@@ -120,7 +121,7 @@ def decode_paint_color_extruder(paint_hex: str | None) -> int:
 
     # Recorrido derecha->izquierda del árbol cuaternario codificado en nibbles hex
     idx = len(code) - 1
-    counts = [0, 0, 0, 0, 0]  # índice 0 = sin pintar, 1..4 = T0..T3
+    counts: dict[int, int] = {}  # índice 0 = sin pintar, 1..N = T0..T(N-1)
     stack = [1]  # número de hijos restantes en el nodo actual (raíz = 1)
     while idx >= 0 and stack:
         ch = code[idx]
@@ -139,8 +140,8 @@ def decode_paint_color_extruder(paint_hex: str | None) -> int:
                     state = 3 + ext_off
                 except ValueError:
                     state = 3
-            slot = max(0, min(4, state))
-            counts[slot] += 1
+            slot = max(0, min(16, state))
+            counts[slot] = counts.get(slot, 0) + 1
         else:
             # Nodo dividido en 4 sub-triángulos
             stack.append(4)
@@ -153,13 +154,15 @@ def decode_paint_color_extruder(paint_hex: str | None) -> int:
             else:
                 break
 
-    best_ext = max(range(1, 5), key=lambda e: counts[e])
-    return best_ext if counts[best_ext] > 0 else 1
+    painted_keys = [k for k in counts if k >= 1 and counts[k] > 0]
+    if not painted_keys:
+        return 1
+    return max(painted_keys, key=lambda e: counts[e])
 
 
 def inspect_3mf_multicolor_info(threemf_path: Path) -> dict[str, object]:
-    """Inspecciona pintado por triángulo (`paint_color` o `pid`/`p1`) y paleta embebida en `.3mf`."""
-    counts = [0, 0, 0, 0]  # T0..T3
+    """Inspecciona pintado por triángulo (`paint_color` o `pid`/`p1`) y paleta embebida en `.3mf` (1..N colores)."""
+    counts: dict[int, int] = {}  # 0..N-1 (T0..T(N-1))
     total_paint_tris = 0
     has_paint_color_attr = False
     has_tri_pid_attr = False
@@ -237,7 +240,7 @@ def inspect_3mf_multicolor_info(threemf_path: Path) -> dict[str, object]:
                                 if pc is not None:
                                     has_paint_color_attr = True
                                     ext = decode_paint_color_extruder(pc)
-                                    counts[ext - 1] += 1
+                                    counts[ext - 1] = counts.get(ext - 1, 0) + 1
                                 elif "pid" in tri.attrib and "p1" in tri.attrib:
                                     has_tri_pid_attr = True
                                     try:
@@ -245,9 +248,9 @@ def inspect_3mf_multicolor_info(threemf_path: Path) -> dict[str, object]:
                                     except ValueError:
                                         p1_idx = 0
                                     tri_pids_seen.add(p1_idx)
-                                    counts[p1_idx % 4] += 1
+                                    counts[p1_idx] = counts.get(p1_idx, 0) + 1
                                 else:
-                                    counts[0] += 1
+                                    counts[0] = counts.get(0, 0) + 1
                     elif tn == "components":
                         for comp in ch:
                             c_id = comp.attrib.get("objectid")
@@ -268,12 +271,13 @@ def inspect_3mf_multicolor_info(threemf_path: Path) -> dict[str, object]:
 
             if not project_palette and colors_by_group:
                 first_group = next(iter(colors_by_group.values()))
-                project_palette = first_group[:4]
+                project_palette = list(first_group)
 
-    active_slots = sum(1 for c in counts if c > 0)
+    active_slots = sum(1 for c in counts.values() if c > 0)
     percentages: dict[str, float] = {}
     if total_paint_tris > 0 and (has_paint_color_attr or (has_tri_pid_attr and active_slots > 1)):
-        for i, c in enumerate(counts):
+        for i in sorted(counts.keys()):
+            c = counts[i]
             if c > 0:
                 percentages[f"T{i}"] = round((c / total_paint_tris) * 100.0, 1)
 
@@ -283,7 +287,7 @@ def inspect_3mf_multicolor_info(threemf_path: Path) -> dict[str, object]:
         ),
         "active_painted_extruders": active_slots,
         "extruder_triangle_percentages": percentages,
-        "detected_filament_colors": project_palette[:4],
+        "detected_filament_colors": project_palette,
     }
 
 
@@ -777,11 +781,14 @@ def prepare_painted_3mf_for_slicer(
     """Reempaqueta un `.3mf` pintado por triángulo transformado al plato, preservando o remapeando `paint_color`."""
     zone_map: dict[int, int] = {}
     if part_extruder_map:
-        for z_idx in range(4):
-            key = f"zone_{z_idx}"
-            if key in part_extruder_map:
-                target_ext = max(0, min(3, int(part_extruder_map[key]))) + 1
-                zone_map[z_idx + 1] = target_ext
+        for key, val in part_extruder_map.items():
+            if key.startswith("zone_"):
+                try:
+                    z_idx = int(key.split("_", 1)[1])
+                    target_ext = max(0, min(3, int(val))) + 1
+                    zone_map[z_idx + 1] = target_ext
+                except (ValueError, TypeError):
+                    pass
 
     raw_parts: list[tuple[str, np.ndarray, list[tuple[int, int, int, str | None]]]] = []
 
@@ -1107,6 +1114,7 @@ def analyze_mesh_object(
     is_multicolor: bool = False,
     extruder_triangle_percentages: dict[str, float] | None = None,
     detected_filament_colors: list[str] | None = None,
+    detected_colors: list[DetectedColorInfo] | None = None,
 ) -> MeshAnalysisResponse:
     """Evalúa dimensiones, encaje en cama, auto-escala 95%, área base y voladizos > 50°."""
     extents = mesh.extents
@@ -1237,8 +1245,127 @@ def analyze_mesh_object(
         is_multicolor=is_multicolor,
         extruder_triangle_percentages=extruder_triangle_percentages or {},
         detected_filament_colors=detected_filament_colors or [],
+        detected_colors=detected_colors or [],
         warnings=warnings,
     )
+
+
+def _compute_3mf_color_z_ranges(
+    threemf_path: Path,
+    rot_mat: np.ndarray,
+    s_vec: np.ndarray,
+) -> dict[int, tuple[float, float]]:
+    """Calcula `(z_min_mm, z_max_mm)` relativo a la cama por cada zona de color `0..N-1` en `.3mf`."""
+    z_bounds: dict[int, list[float]] = {}
+    global_z_min = float("inf")
+
+    with zipfile.ZipFile(threemf_path, "r") as zf:
+        names = zf.namelist()
+        objects_by_key: dict[tuple[str, str], ET.Element] = {}
+        root_model_path: str | None = None
+        root_tree: ET.Element | None = None
+
+        for mf in [n for n in names if n.lower().endswith(".model")]:
+            norm_mf = _norm_zip_path(mf)
+            el_root = ET.fromstring(zf.read(mf))
+            if norm_mf.lower() == "3d/3dmodel.model" or root_model_path is None:
+                root_model_path = norm_mf
+                root_tree = el_root
+            for res_el in el_root:
+                if _strip_ns(res_el.tag) != "resources":
+                    continue
+                for child in res_el:
+                    if _strip_ns(child.tag) == "object" and child.attrib.get("id"):
+                        objects_by_key[(norm_mf, child.attrib["id"])] = child
+
+        if root_tree is None or root_model_path is None:
+            return {}
+
+        def walk_z(model_path: str, obj_id: str, cur_mat: np.ndarray) -> None:
+            nonlocal global_z_min
+            obj_el = objects_by_key.get((model_path, obj_id))
+            if obj_el is None:
+                return
+            for ch in obj_el:
+                tn = _strip_ns(ch.tag)
+                if tn == "mesh":
+                    verts_raw: list[list[float]] = []
+                    tris_el: ET.Element | None = None
+                    for sub in ch:
+                        stn = _strip_ns(sub.tag)
+                        if stn == "vertices":
+                            for v in sub:
+                                verts_raw.append(
+                                    [
+                                        float(v.attrib.get("x", 0.0)),
+                                        float(v.attrib.get("y", 0.0)),
+                                        float(v.attrib.get("z", 0.0)),
+                                    ]
+                                )
+                        elif stn == "triangles":
+                            tris_el = sub
+                    if not verts_raw or tris_el is None:
+                        continue
+                    v_arr = np.asarray(verts_raw, dtype=np.float64)
+                    ones = np.ones((len(v_arr), 1), dtype=np.float64)
+                    v_world = (np.hstack([v_arr, ones]) @ cur_mat.T)[:, :3]
+                    z_vals = ((v_world * s_vec) @ rot_mat[2, :].T)
+                    if len(z_vals) > 0:
+                        g_min = float(z_vals.min())
+                        if g_min < global_z_min:
+                            global_z_min = g_min
+                    for tri in tris_el:
+                        v1 = int(tri.attrib["v1"])
+                        v2 = int(tri.attrib["v2"])
+                        v3 = int(tri.attrib["v3"])
+                        pc = tri.attrib.get("paint_color")
+                        if pc is not None:
+                            c_idx = decode_paint_color_extruder(pc) - 1
+                        elif "pid" in tri.attrib and "p1" in tri.attrib:
+                            try:
+                                c_idx = int(tri.attrib["p1"])
+                            except ValueError:
+                                c_idx = 0
+                        else:
+                            c_idx = 0
+                        t_z0 = float(min(z_vals[v1], z_vals[v2], z_vals[v3]))
+                        t_z1 = float(max(z_vals[v1], z_vals[v2], z_vals[v3]))
+                        if c_idx not in z_bounds:
+                            z_bounds[c_idx] = [t_z0, t_z1]
+                        else:
+                            if t_z0 < z_bounds[c_idx][0]:
+                                z_bounds[c_idx][0] = t_z0
+                            if t_z1 > z_bounds[c_idx][1]:
+                                z_bounds[c_idx][1] = t_z1
+                elif tn == "components":
+                    for comp in ch:
+                        c_id = comp.attrib.get("objectid")
+                        if not c_id:
+                            continue
+                        comp_mat = cur_mat @ _parse_3mf_transform(comp.attrib.get("transform"))
+                        p_attr = next(
+                            (v for k, v in comp.attrib.items() if k == "path" or k.endswith("}path")),
+                            None,
+                        )
+                        next_mp = _norm_zip_path(p_attr) if p_attr else model_path
+                        walk_z(next_mp, c_id, comp_mat)
+
+        for child in root_tree:
+            if _strip_ns(child.tag) == "build":
+                for item in child:
+                    if _strip_ns(item.tag) == "item" and item.attrib.get("objectid"):
+                        item_mat = _parse_3mf_transform(item.attrib.get("transform"))
+                        walk_z(root_model_path, item.attrib["objectid"], item_mat)
+
+    if not math.isfinite(global_z_min):
+        global_z_min = 0.0
+    return {
+        c_idx: (
+            round(max(0.0, b[0] - global_z_min), 2),
+            round(max(0.0, b[1] - global_z_min), 2),
+        )
+        for c_idx, b in z_bounds.items()
+    }
 
 
 def analyze_model_file(
@@ -1265,6 +1392,7 @@ def analyze_model_file(
     is_multicolor = False
     extruder_triangle_percentages: dict[str, float] = {}
     detected_filament_colors: list[str] = []
+    detected_colors_list: list[DetectedColorInfo] = []
 
     if is_3mf:
         extracted = extract_3mf_parts_and_meshes(model_path)
@@ -1291,6 +1419,116 @@ def analyze_model_file(
                 if p.color_hex and 1 <= p.extruder <= 4 and not slot_colors[p.extruder - 1]:
                     slot_colors[p.extruder - 1] = p.color_hex
             detected_filament_colors = [c for c in slot_colors if c]
+
+        # Calcular rangos verticales [z_min_mm, z_max_mm] por parte tras rotación/escala activa
+        if extracted:
+            eff_inst = instances[0] if (instances and len(instances) > 0) else None
+            p_rx = eff_inst.rot_x if eff_inst else rot_x
+            p_ry = eff_inst.rot_y if eff_inst else rot_y
+            p_rz = eff_inst.rot_z if eff_inst else rot_z
+            p_sp = eff_inst.scale_percent if eff_inst else scale_percent
+            p_sx = eff_inst.scale_x if eff_inst else scale_x
+            p_sy = eff_inst.scale_y if eff_inst else scale_y
+            p_sz = eff_inst.scale_z if eff_inst else scale_z
+            rot_mat = trimesh.transformations.euler_matrix(
+                math.radians(p_rx),
+                math.radians(p_ry),
+                math.radians(p_rz),
+                axes="sxyz",
+            )[:3, :3]
+            s_vec = _resolve_scale_vec(p_sp, p_sx, p_sy, p_sz)
+            raw_z_bounds: list[tuple[float, float]] = []
+            global_z_min = float("inf")
+            for _, p_mesh in extracted:
+                if len(p_mesh.vertices) == 0:
+                    raw_z_bounds.append((0.0, 0.0))
+                    continue
+                pts = (p_mesh.vertices * s_vec) @ rot_mat.T
+                z0 = float(pts[:, 2].min())
+                z1 = float(pts[:, 2].max())
+                raw_z_bounds.append((z0, z1))
+                if z0 < global_z_min:
+                    global_z_min = z0
+            if not math.isfinite(global_z_min):
+                global_z_min = 0.0
+            for idx, (z0, z1) in enumerate(raw_z_bounds):
+                parts_info[idx].z_min_mm = round(max(0.0, z0 - global_z_min), 2)
+                parts_info[idx].z_max_mm = round(max(0.0, z1 - global_z_min), 2)
+
+            if len(parts_info) > 4:
+                slot_intervals: dict[int, list[tuple[float, float]]] = {0: [], 1: [], 2: [], 3: []}
+                for idx, p in enumerate(parts_info):
+                    if idx < 4:
+                        base_slot = max(0, min(3, p.extruder - 1))
+                        p.suggested_slot = base_slot
+                        slot_intervals[base_slot].append((p.z_min_mm, p.z_max_mm))
+                    else:
+                        chosen_slot: int | None = None
+                        for cand in range(4):
+                            if all(ex_max < p.z_min_mm for _, ex_max in slot_intervals[cand]):
+                                chosen_slot = cand
+                                break
+                        if chosen_slot is None:
+                            chosen_slot = 0
+                        p.suggested_slot = chosen_slot
+                        slot_intervals[chosen_slot].append((p.z_min_mm, p.z_max_mm))
+
+            # Construir lista unificada `detected_colors` (Color #1 .. Color #N) con rangos Z
+            color_z_map = _compute_3mf_color_z_ranges(model_path, rot_mat, s_vec) if has_tri_paint else {}
+            if extruder_triangle_percentages:
+                sorted_zones = sorted(
+                    extruder_triangle_percentages.items(),
+                    key=lambda kv: int(kv[0][1:]) if kv[0].startswith("T") and kv[0][1:].isdigit() else 999,
+                )
+                slot_int_colors: dict[int, list[tuple[float, float]]] = {0: [], 1: [], 2: [], 3: []}
+                for order_idx, (t_key, pct_val) in enumerate(sorted_zones):
+                    z_num = int(t_key[1:]) if t_key.startswith("T") and t_key[1:].isdigit() else order_idx
+                    z_min_c, z_max_c = color_z_map.get(z_num, (0.0, round(float(max((p.z_max_mm for p in parts_info), default=0.0)), 2)))
+                    hex_c = (
+                        detected_filament_colors[z_num]
+                        if z_num < len(detected_filament_colors)
+                        else "#94A3B8"
+                    )
+                    if order_idx < 4:
+                        sug_slot = order_idx
+                    else:
+                        sug_slot = next(
+                            (
+                                cand
+                                for cand in range(4)
+                                if all(ex_max + 0.4 <= z_min_c for _, ex_max in slot_int_colors[cand])
+                            ),
+                            0,
+                        )
+                    slot_int_colors[sug_slot].append((z_min_c, z_max_c))
+                    detected_colors_list.append(
+                        DetectedColorInfo(
+                            index=order_idx + 1,
+                            zone_key=f"zone_{z_num}",
+                            name=f"Color #{order_idx + 1}",
+                            hex_color=hex_c,
+                            percentage=float(pct_val),
+                            z_min_mm=z_min_c,
+                            z_max_mm=z_max_c,
+                            suggested_slot=sug_slot,
+                        )
+                    )
+            elif len(parts_info) > 1:
+                total_tris = max(1, sum(p.triangle_count for p in parts_info))
+                for order_idx, p in enumerate(parts_info):
+                    sug = p.suggested_slot if p.suggested_slot is not None else min(3, max(0, p.extruder - 1))
+                    detected_colors_list.append(
+                        DetectedColorInfo(
+                            index=order_idx + 1,
+                            zone_key=p.part_id,
+                            name=p.name or f"Color #{order_idx + 1}",
+                            hex_color=p.color_hex or "#94A3B8",
+                            percentage=round((p.triangle_count / total_tris) * 100.0, 1),
+                            z_min_mm=p.z_min_mm,
+                            z_max_mm=p.z_max_mm,
+                            suggested_slot=sug,
+                        )
+                    )
     else:
         raw = load_raw_mesh(model_path)
 
@@ -1344,6 +1582,7 @@ def analyze_model_file(
         is_multicolor=is_multicolor,
         extruder_triangle_percentages=extruder_triangle_percentages,
         detected_filament_colors=detected_filament_colors,
+        detected_colors=detected_colors_list,
     )
 
 
@@ -2182,3 +2421,356 @@ def find_optimal_anti_support_orientation(
         multimaterial_parts=parts_info,
     )
     return best_euler, effective_scale, best_metrics, analysis
+
+
+def _normalize_deg_signed(deg: float) -> float:
+    """Normaliza ángulo a [-180, 180] redondeado a 1 decimal."""
+    val = ((deg + 180.0) % 360.0) - 180.0
+    val = round(val, 1)
+    if abs(val) < 0.05:
+        return 0.0
+    if val <= -179.95:
+        return 180.0
+    return val
+
+
+def evaluate_orientation_candidates(
+    model_path: Path,
+    printer: PrinterConfig,
+    mesh_id: str,
+    scale_percent: float = 100.0,
+) -> dict[str, Any]:
+    """Evalúa 5 orientaciones clave sobre la malla STL/3MF para previsualización en vivo."""
+    is_3mf = model_path.suffix.lower() == ".3mf"
+    parts_info: list[MultimaterialPartInfo] = []
+    is_multicolor = False
+    multicolor_parts_count = 1
+    if is_3mf:
+        mc_info = inspect_3mf_multicolor_info(model_path)
+        extracted = extract_3mf_parts_and_meshes(model_path)
+        parts_info = [p for p, _ in extracted]
+        multicolor_parts_count = max(len(parts_info), int(mc_info.get("parts_count") or 1))
+        is_multicolor = (
+            len(parts_info) > 1
+            or bool(mc_info.get("has_paint_colors"))
+            or bool(mc_info.get("is_multicolor"))
+        )
+        raw_mesh = (
+            extracted[0][1]
+            if len(extracted) == 1
+            else trimesh.util.concatenate([m for _, m in extracted])
+        )
+    else:
+        raw_mesh = load_raw_mesh(model_path)
+
+    hull = raw_mesh.convex_hull
+    hull_verts = hull.vertices.copy()
+    to_origin, _ = trimesh.bounds.oriented_bounds(hull)
+    r_obb = to_origin[:3, :3]
+
+    n_faces = len(raw_mesh.faces)
+    step = max(1, n_faces // 18000)
+    normals_sub = raw_mesh.face_normals[::step].copy()
+    areas_sub = raw_mesh.area_faces[::step].copy()
+    centers_sub = raw_mesh.triangles_center[::step].copy()
+    tot_area = float(areas_sub.sum()) or 1.0
+
+    scale_factor = max(0.05, scale_percent / 100.0)
+    base_hull = hull_verts * scale_factor
+    base_centers = centers_sub * scale_factor
+    oh_45_cos = math.cos(math.radians(45.0))
+
+    try:
+        raw_vol_cm3 = abs(float(raw_mesh.volume)) * (scale_factor ** 3) / 1000.0
+    except Exception:
+        raw_vol_cm3 = 0.0
+    if raw_vol_cm3 <= 0.1:
+        b_ext = (hull_verts.max(axis=0) - hull_verts.min(axis=0)) * scale_factor
+        raw_vol_cm3 = float(b_ext[0] * b_ext[1] * b_ext[2]) * 0.25 / 1000.0
+
+    def _eval_r_mat(r_mat: np.ndarray, explicit_euler: tuple[float, float, float] | None = None) -> dict[str, Any]:
+        if explicit_euler is not None:
+            rx, ry, rz = (_normalize_deg_signed(a) for a in explicit_euler)
+        else:
+            m4 = np.eye(4)
+            m4[:3, :3] = r_mat
+            rx, ry, rz = (
+                _normalize_deg_signed(math.degrees(a))
+                for a in trimesh.transformations.euler_from_matrix(m4, axes="sxyz")
+            )
+
+        rot_hull = base_hull @ r_mat.T
+        p_min = rot_hull.min(axis=0)
+        p_max = rot_hull.max(axis=0)
+        ext = p_max - p_min
+        dx, dy, dz = float(ext[0]), float(ext[1]), float(ext[2])
+
+        if printer.kinematics == "delta" and printer.diameter_mm is not None:
+            max_rad = printer.diameter_mm / 2.0
+            xy_c = (p_min[:2] + p_max[:2]) / 2.0
+            rad = float(np.linalg.norm(rot_hull[:, :2] - xy_c, axis=1).max())
+            fits = rad <= max_rad and dz <= printer.height_mm
+        elif printer.bed_mm is not None:
+            bx, by, bz = printer.bed_mm
+            fits = dx <= bx and dy <= by and dz <= bz
+        else:
+            fits = True
+
+        rot_n = normals_sub @ r_mat.T
+        rot_cz = base_centers @ r_mat[2, :].T
+        z_rel = rot_cz - float(rot_cz.min())
+        z_bed_rel = rot_cz - float(p_min[2])
+
+        oh_mask = (rot_n[:, 2] < -oh_45_cos) & (z_rel > 0.35)
+        oh_ratio = float(areas_sub[oh_mask].sum()) / tot_area
+
+        bed_contact_mask = (z_bed_rel <= 0.25) & (rot_n[:, 2] < -0.5)
+        base_contact_area_mm2 = float(areas_sub[bed_contact_mask].sum()) * (scale_factor ** 2) * float(step)
+        if base_contact_area_mm2 < 1.0:
+            bed_pts = rot_hull[rot_hull[:, 2] <= float(p_min[2]) + 0.25]
+            if len(bed_pts) >= 3:
+                b_ext_2d = bed_pts[:, :2].max(axis=0) - bed_pts[:, :2].min(axis=0)
+                base_contact_area_mm2 = max(1.0, float(b_ext_2d[0] * b_ext_2d[1]) * 0.5)
+            else:
+                base_contact_area_mm2 = 1.0
+
+        stability_warning: str | None = None
+        if base_contact_area_mm2 < 120.0 and dz > 80.0:
+            stability_warning = "Base muy pequeña · Requiere Brim/Balsa y Soportes"
+
+        purge_weight = 0.55 if is_multicolor else 0.0
+        est_time_proxy = (
+            dz * (1.0 + oh_ratio * 0.45 + purge_weight)
+            + raw_vol_cm3 * 0.55
+        )
+        return {
+            "rx": rx,
+            "ry": ry,
+            "rz": rz,
+            "dx": round(dx, 1),
+            "dy": round(dy, 1),
+            "dz": round(dz, 1),
+            "fits_bed": bool(fits),
+            "overhang_ratio_pct": round(oh_ratio * 100.0, 1),
+            "contact_area_mm2": round(base_contact_area_mm2, 1),
+            "stability_warning": stability_warning,
+            "est_time_proxy": est_time_proxy,
+        }
+
+    orig_eval = _eval_r_mat(np.eye(3), (0.0, 0.0, 0.0))
+    back_eval = _eval_r_mat(_rot_x_mat(-90.0), (-90.0, 0.0, 0.0))
+    tilt_eval = _eval_r_mat(_rot_x_mat(-45.0), (-45.0, 0.0, 0.0))
+
+    # Pool de candidatos para Mínimo Tiempo (Z) y Máxima Estabilidad
+    pool_mats: list[np.ndarray] = [
+        _rot_x_mat(90.0),
+        _rot_x_mat(-90.0),
+        _rot_y_mat(90.0),
+        _rot_y_mat(-90.0),
+        _rot_x_mat(180.0),
+        _rot_x_mat(45.0),
+        _rot_x_mat(-45.0),
+        _rot_y_mat(45.0),
+        _rot_y_mat(-45.0),
+    ]
+    if len(hull.faces) > 0:
+        hull_area_order = np.argsort(hull.area_faces)[::-1][:8]
+        down_vec = np.array([0.0, 0.0, -1.0])
+        for f_idx in hull_area_order:
+            n_vec = hull.face_normals[f_idx]
+            rot_4x4 = trimesh.geometry.align_vectors(n_vec, down_vec)
+            pool_mats.append(rot_4x4[:3, :3])
+
+    for perm in itertools.permutations([0, 1, 2]):
+        for sx, sy, sz in itertools.product([-1.0, 1.0], repeat=3):
+            p_mat = np.zeros((3, 3))
+            p_mat[0, perm[0]] = sx
+            p_mat[1, perm[1]] = sy
+            p_mat[2, perm[2]] = sz
+            if round(float(np.linalg.det(p_mat))) == 1:
+                pool_mats.append(p_mat @ r_obb)
+
+    pool_evals: list[dict[str, Any]] = []
+    seen_keys: set[tuple[float, float, float]] = set()
+    for r_m in pool_mats:
+        ev = _eval_r_mat(r_m)
+        key = (ev["rx"], ev["ry"], ev["rz"])
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        pool_evals.append(ev)
+
+    fitting_pool = [e for e in pool_evals if e["fits_bed"]] or pool_evals
+    used_keys = {
+        (orig_eval["rx"], orig_eval["ry"], orig_eval["rz"]),
+        (back_eval["rx"], back_eval["ry"], back_eval["rz"]),
+        (tilt_eval["rx"], tilt_eval["ry"], tilt_eval["rz"]),
+    }
+
+    min_z_sorted = sorted(
+        fitting_pool,
+        key=lambda e: (e["dz"], e["overhang_ratio_pct"], -e["contact_area_mm2"]),
+    )
+    min_z_eval = next(
+        (e for e in min_z_sorted if (e["rx"], e["ry"], e["rz"]) not in used_keys),
+        min_z_sorted[0],
+    )
+    used_keys.add((min_z_eval["rx"], min_z_eval["ry"], min_z_eval["rz"]))
+
+    stab_sorted = sorted(
+        fitting_pool,
+        key=lambda e: (
+            -(e["contact_area_mm2"] / (1.0 + e["overhang_ratio_pct"] / 45.0)),
+            e["dz"],
+        ),
+    )
+    stab_eval = next(
+        (e for e in stab_sorted if (e["rx"], e["ry"], e["rz"]) not in used_keys),
+        stab_sorted[0],
+    )
+
+    orig_time = max(orig_eval["est_time_proxy"], 1e-6)
+    orig_dz = max(orig_eval["dz"], 1.0)
+
+    def _time_delta_label(ev: dict[str, Any], is_orig: bool = False) -> str:
+        if is_orig:
+            return "Base de referencia"
+        pct = round(((ev["est_time_proxy"] - orig_time) / orig_time) * 100)
+        suffix = " · menos purgas Z" if is_multicolor and ev["dz"] < orig_dz * 0.85 else ""
+        return f"{pct:+d}% tiempo{suffix}"
+
+    def _dynamic_badge(oid: str, ev: dict[str, Any]) -> str:
+        oh = float(ev["overhang_ratio_pct"])
+        warn = ev.get("stability_warning")
+        if oh <= 2.0 and not warn and float(ev["contact_area_mm2"]) >= 20.0:
+            return "Sin Soportes"
+        if oid == "original":
+            return "Original"
+        if oid == "back_down":
+            return "Cara Libre · Soportes Atrás" if oh > 2.0 else "Cara Limpia"
+        if oid == "tilted_45":
+            return "Requiere Soportes" if warn else "Soportes en Espalda"
+        if oid == "min_z":
+            return "Menos Tiempo"
+        if oid == "max_stability":
+            return "Requiere Soportes" if warn else "Estable"
+        return "Requiere Soportes"
+
+    is_vertical_figure = (
+        orig_eval["dz"] > max(orig_eval["dx"], orig_eval["dy"]) * 1.25
+        and orig_eval["dz"] > 80.0
+    )
+
+    raw_options = [
+        {
+            "id": "original",
+            "title": "Posición Original",
+            "badge": _dynamic_badge("original", orig_eval),
+            "ev": orig_eval,
+            "is_orig": True,
+            "explanation": (
+                f"Orientación de archivo ({orig_eval['dz']} mm en Z, {orig_eval['overhang_ratio_pct']}% voladizos)."
+            ),
+        },
+        {
+            "id": "back_down",
+            "title": "Espalda en Cama / Cara Libre",
+            "badge": _dynamic_badge("back_down", back_eval),
+            "ev": back_eval,
+            "is_orig": False,
+            "explanation": (
+                f"Acuesta el modelo sobre la espalda: pasa de {orig_eval['dz']} mm a {back_eval['dz']} mm en Z, "
+                f"soportes ocultos atrás y rostro libre."
+            ),
+        },
+        {
+            "id": "tilted_45",
+            "title": (
+                "Inclinado 45° Sin Soportes"
+                if tilt_eval["overhang_ratio_pct"] <= 2.0 and not tilt_eval.get("stability_warning")
+                else "Inclinado 45°"
+            ),
+            "badge": _dynamic_badge("tilted_45", tilt_eval),
+            "ev": tilt_eval,
+            "is_orig": False,
+            "explanation": (
+                f"Inclinación a -45° con {tilt_eval['overhang_ratio_pct']}% de voladizos; "
+                + (
+                    "apoyo mínimo en talones, requiere Brim y soportes."
+                    if tilt_eval.get("stability_warning")
+                    else "los soportes caen en la cara posterior."
+                )
+            ),
+        },
+        {
+            "id": "min_z",
+            "title": "Mínimo Tiempo / Menor Altura Z",
+            "badge": _dynamic_badge("min_z", min_z_eval),
+            "ev": min_z_eval,
+            "is_orig": False,
+            "explanation": (
+                f"Minimiza la altura Z a {min_z_eval['dz']} mm para reducir capas"
+                + (" y cambios de color T0–T3." if is_multicolor else " y tiempo total.")
+            ),
+        },
+        {
+            "id": "max_stability",
+            "title": "Máxima Estabilidad / Base Amplia",
+            "badge": _dynamic_badge("max_stability", stab_eval),
+            "ev": stab_eval,
+            "is_orig": False,
+            "explanation": (
+                f"Maximiza el área de apoyo en cama ({stab_eval['contact_area_mm2']} mm²) ideal para alta velocidad."
+            ),
+        },
+    ]
+
+    def _rank_score(o: dict[str, Any]) -> tuple[int, int, float]:
+        ev = o["ev"]
+        fits_pen = 0 if ev["fits_bed"] else 1
+        stab_pen = 1 if ev.get("stability_warning") else 0
+        base_score = ev["est_time_proxy"] * (1.0 + ev["overhang_ratio_pct"] / 120.0)
+        if is_vertical_figure and o["id"] == "back_down" and fits_pen == 0 and stab_pen == 0:
+            base_score *= 0.85
+        return (fits_pen, stab_pen, base_score)
+
+    best_opt = min(raw_options, key=_rank_score)
+    recommended_id = best_opt["id"]
+
+    # Ordenar colocando primero la recomendada, luego viables y al final opciones con stability_warning
+    raw_options_sorted = sorted(
+        raw_options,
+        key=lambda o: (
+            0 if o["id"] == recommended_id else 1,
+            _rank_score(o),
+        ),
+    )
+
+    options_out: list[dict[str, Any]] = []
+    for item in raw_options_sorted:
+        ev = item["ev"]
+        options_out.append(
+            {
+                "id": item["id"],
+                "title": item["title"],
+                "badge": item["badge"],
+                "rotation": {"rx": ev["rx"], "ry": ev["ry"], "rz": ev["rz"]},
+                "z_height_mm": ev["dz"],
+                "overhang_ratio_pct": ev["overhang_ratio_pct"],
+                "contact_area_mm2": ev["contact_area_mm2"],
+                "estimated_time_delta_pct": _time_delta_label(ev, item["is_orig"]),
+                "explanation": item["explanation"],
+                "stability_warning": ev.get("stability_warning"),
+                "fits_bed": ev["fits_bed"],
+                "is_recommended": item["id"] == recommended_id,
+            }
+        )
+
+    return {
+        "mesh_id": mesh_id,
+        "model_name": model_path.stem,
+        "is_multicolor": is_multicolor,
+        "multicolor_parts_count": multicolor_parts_count,
+        "recommended_id": recommended_id,
+        "options": options_out,
+    }

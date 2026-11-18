@@ -78,32 +78,32 @@
   },
   "volumetric_limits_mm3_s": {
     "pla_master": {
-      "flsun_t1_pro": 48.0,
-      "flsun_v400": 37.0,
-      "creator5_pro": 32.0,
-      "flsun_sr": 15.0,
-      "ender3_s1_pro": 14.0
-    },
-    "petg_master": {
-      "flsun_t1_pro": 20.0,
-      "flsun_v400": 20.0,
-      "creator5_pro": 18.0,
-      "flsun_sr": 12.0,
-      "ender3_s1_pro": 10.0
-    },
-    "abs_master": {
-      "flsun_t1_pro": 32.0,
-      "flsun_v400": 24.0,
-      "creator5_pro": 24.0,
+      "flsun_t1_pro": 26.0,
+      "flsun_v400": 17.0,
+      "creator5_pro": 19.0,
       "flsun_sr": 12.0,
       "ender3_s1_pro": 11.0
     },
-    "tpu_master": {
-      "flsun_t1_pro": 12.0,
-      "flsun_v400": 10.0,
-      "creator5_pro": 10.0,
-      "flsun_sr": 6.0,
+    "petg_master": {
+      "flsun_t1_pro": 17.0,
+      "flsun_v400": 12.0,
+      "creator5_pro": 13.0,
+      "flsun_sr": 8.5,
       "ender3_s1_pro": 8.0
+    },
+    "abs_master": {
+      "flsun_t1_pro": 20.0,
+      "flsun_v400": 13.0,
+      "creator5_pro": 14.0,
+      "flsun_sr": 9.5,
+      "ender3_s1_pro": 9.0
+    },
+    "tpu_master": {
+      "flsun_t1_pro": 10.0,
+      "flsun_v400": 8.0,
+      "creator5_pro": 8.0,
+      "flsun_sr": 6.0,
+      "ender3_s1_pro": 6.5
     }
   },
   "petg_support_overrides": {
@@ -114,45 +114,45 @@
     "support_interface_spacing": "0.25"
   },
   "default_support_z_distance": {
-    "pla": 0.20,
-    "petg": 0.30,
+    "pla": 0.2,
+    "petg": 0.3,
     "abs": 0.24,
     "tpu": 0.28
   },
   "default_support_xy_distance": {
-    "pla": 0.50,
-    "petg": 0.60,
+    "pla": 0.5,
+    "petg": 0.6,
     "abs": 0.55,
-    "tpu": 0.60
+    "tpu": 0.6
   },
   "high_speed_volumetric_limits_mm3_s": {
     "pla_master": {
-      "flsun_t1_pro": 52.0,
-      "flsun_v400": 42.0,
-      "creator5_pro": 38.0,
-      "flsun_sr": 20.0,
-      "ender3_s1_pro": 18.0
+      "flsun_t1_pro": 30.0,
+      "flsun_v400": 19.0,
+      "creator5_pro": 22.0,
+      "flsun_sr": 14.0,
+      "ender3_s1_pro": 13.0
     },
     "petg_master": {
-      "flsun_t1_pro": 28.0,
-      "flsun_v400": 26.0,
-      "creator5_pro": 24.0,
-      "flsun_sr": 15.0,
-      "ender3_s1_pro": 14.0
+      "flsun_t1_pro": 20.0,
+      "flsun_v400": 14.0,
+      "creator5_pro": 15.0,
+      "flsun_sr": 10.0,
+      "ender3_s1_pro": 9.5
     },
     "abs_master": {
-      "flsun_t1_pro": 38.0,
-      "flsun_v400": 30.0,
-      "creator5_pro": 30.0,
-      "flsun_sr": 16.0,
-      "ender3_s1_pro": 14.0
+      "flsun_t1_pro": 24.0,
+      "flsun_v400": 15.0,
+      "creator5_pro": 16.0,
+      "flsun_sr": 11.0,
+      "ender3_s1_pro": 10.5
     },
     "tpu_master": {
-      "flsun_t1_pro": 15.0,
-      "flsun_v400": 13.0,
-      "creator5_pro": 13.0,
-      "flsun_sr": 8.0,
-      "ender3_s1_pro": 10.0
+      "flsun_t1_pro": 12.0,
+      "flsun_v400": 9.0,
+      "creator5_pro": 9.0,
+      "flsun_sr": 7.0,
+      "ender3_s1_pro": 7.5
     }
   },
   "material_temp_ranges": {

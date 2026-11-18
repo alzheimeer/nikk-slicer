@@ -187,8 +187,91 @@ def _set_macos_dock_icon(logger: logging.Logger) -> None:
         logger.debug("No se pudo asignar icono del Dock: %s", exc)
 
 
+_PENDING_OPEN_FILES: list[str] = [
+    arg for arg in sys.argv[1:] if arg.lower().endswith((".stl", ".3mf")) and Path(arg).is_file()
+]
+
+
+def _queue_open_file(path_str: str, logger: logging.Logger) -> bool:
+    p = Path(path_str)
+    if p.suffix.lower() not in (".stl", ".3mf") or not p.is_file():
+        return False
+    _PENDING_OPEN_FILES.append(str(p))
+    try:
+        import webview  # type: ignore[import-not-found]
+
+        win = webview.active_window()
+        if win is not None:
+            win.evaluate_js("window.dispatchEvent(new CustomEvent('nikk-open-pending-file'));")
+    except Exception as exc:
+        logger.debug("No se pudo notificar archivo pendiente al WebView: %s", exc)
+    return True
+
+
+def _install_macos_open_file_handler(logger: logging.Logger) -> None:
+    """Registra application:openFile:/openFiles:/openURLs: en BrowserView.AppDelegate antes de iniciar."""
+    try:
+        import objc  # type: ignore[import-not-found]
+        from webview.platforms import cocoa  # type: ignore[import-not-found]
+
+        app_del = cocoa.BrowserView.AppDelegate
+
+        def application_openFile_(self, sender, filename):  # type: ignore[no-untyped-def]
+            return _queue_open_file(str(filename), logger)
+
+        def application_openFiles_(self, sender, filenames):  # type: ignore[no-untyped-def]
+            handled = False
+            for fn in list(filenames or []):
+                if _queue_open_file(str(fn), logger):
+                    handled = True
+            try:
+                sender.replyToOpenOrPrint_(0 if handled else 1)
+            except Exception:
+                pass
+
+        def application_openURLs_(self, sender, urls):  # type: ignore[no-untyped-def]
+            for url in list(urls or []):
+                try:
+                    path = url.path() if hasattr(url, "path") else str(url)
+                    if path:
+                        _queue_open_file(str(path), logger)
+                except Exception:
+                    pass
+
+        objc.classAddMethod(
+            app_del,
+            b"application:openFile:",
+            objc.selector(application_openFile_, selector=b"application:openFile:", signature=b"B@:@@"),
+        )
+        objc.classAddMethod(
+            app_del,
+            b"application:openFiles:",
+            objc.selector(application_openFiles_, selector=b"application:openFiles:", signature=b"v@:@@"),
+        )
+        objc.classAddMethod(
+            app_del,
+            b"application:openURLs:",
+            objc.selector(application_openURLs_, selector=b"application:openURLs:", signature=b"v@:@@"),
+        )
+    except Exception as exc:
+        logger.warning("No se pudo instalar handler openFiles en AppKit: %s", exc)
+
+
 class DesktopApi:
-    """Puente JS -> Python para diálogo nativo de guardado en macOS (pywebview)."""
+    """Puente JS -> Python para diálogo nativo de guardado y apertura de archivos en macOS."""
+
+    def has_pending_open_file(self) -> bool:
+        return any(Path(p).is_file() for p in _PENDING_OPEN_FILES)
+
+    def get_pending_open_file(self) -> dict[str, str] | None:
+        while _PENDING_OPEN_FILES:
+            p = Path(_PENDING_OPEN_FILES.pop(0))
+            if p.is_file():
+                return {
+                    "name": p.name,
+                    "path": str(p),
+                }
+        return None
 
     def save_file(self, url: str, suggested_name: str) -> dict[str, object]:
         import webview  # type: ignore[import-not-found]
@@ -214,12 +297,14 @@ def open_desktop_window(logger: logging.Logger) -> None:
         import webview  # type: ignore[import-not-found]
 
         logger.info("Abriendo ventana nativa con pywebview...")
+        _install_macos_open_file_handler(logger)
         webview.create_window(
             "Nikk Slicer",
             BASE_URL,
             width=1440,
             height=920,
             min_size=(1100, 720),
+            background_color="#020617",
             js_api=DesktopApi(),
         )
         _set_macos_dock_icon(logger)

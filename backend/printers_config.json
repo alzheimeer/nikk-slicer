@@ -8,7 +8,7 @@
     "fallback_ips": [
       "192.168.40.39"
     ],
-    "port": 7125,
+    "port": 80,
     "http_port": 8080,
     "access_code": "",
     "serial_number": "",
@@ -27,7 +27,7 @@
     "fallback_ips": [
       "192.168.40.40"
     ],
-    "port": 80,
+    "port": 7125,
     "http_port": 8080,
     "access_code": "",
     "serial_number": "",
@@ -66,7 +66,7 @@
     "fallback_ips": [
       "192.168.40.42"
     ],
-    "port": 80,
+    "port": 7125,
     "http_port": 8080,
     "access_code": "",
     "serial_number": "",

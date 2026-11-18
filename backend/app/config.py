@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -389,6 +390,135 @@ def compute_heterogeneous_speed_cap(
         "outer_wall_cap": max(25, min(raw_linear, 55 if has_tpu else raw_linear)),
         "inner_wall_cap": max(30, min(raw_linear, 75 if has_tpu else raw_linear)),
         "infill_cap": max(35, min(raw_linear, 85 if has_tpu else raw_linear)),
+    }
+
+
+MACHINE_THERMAL_KINEMATIC_LIMITS: dict[str, dict[str, Any]] = {
+    "flsun_t1_pro": {
+        "max_volumetric_speed": {"pla": 26.0, "petg": 17.0, "abs": 20.0, "tpu": 10.0},
+        "outer_wall_speed_range": {"pla": (140, 220), "petg": (90, 140), "abs": (110, 160), "tpu": (45, 70)},
+        "inner_wall_speed_range": {"pla": (230, 350), "petg": (140, 200), "abs": (160, 230), "tpu": (60, 85)},
+        "sparse_infill_speed_range": {"pla": (260, 380), "petg": (160, 220), "abs": (180, 250), "tpu": (65, 95)},
+        "default_acceleration": 15000,
+        "outer_wall_acceleration": 6000,
+        "thick_layer_temp_boost_c": 0,
+        "petg_fan_range": None,
+    },
+    "flsun_v400": {
+        "max_volumetric_speed": {"pla": 17.0, "petg": 12.0, "abs": 13.0, "tpu": 8.0},
+        "outer_wall_speed_range": {"pla": (85, 100), "petg": (65, 75), "abs": (70, 85), "tpu": (35, 50)},
+        "inner_wall_speed_range": {"pla": (120, 140), "petg": (85, 100), "abs": (90, 110), "tpu": (45, 60)},
+        "sparse_infill_speed_range": {"pla": (140, 160), "petg": (95, 110), "abs": (105, 125), "tpu": (50, 65)},
+        "default_acceleration": 3200,
+        "outer_wall_acceleration": 2000,
+        "thick_layer_temp_boost_c": 5,
+        "petg_fan_range": (15, 35),
+    },
+    "creator5_pro": {
+        "max_volumetric_speed": {"pla": 19.0, "petg": 13.0, "abs": 14.0, "tpu": 8.0},
+        "outer_wall_speed_range": {"pla": (90, 110), "petg": (70, 80), "abs": (75, 90), "tpu": (35, 50)},
+        "inner_wall_speed_range": {"pla": (130, 150), "petg": (90, 110), "abs": (100, 120), "tpu": (45, 65)},
+        "sparse_infill_speed_range": {"pla": (150, 180), "petg": (110, 130), "abs": (120, 145), "tpu": (50, 70)},
+        "default_acceleration": 4500,
+        "outer_wall_acceleration": 2500,
+        "thick_layer_temp_boost_c": 5,
+        "petg_fan_range": None,
+    },
+    "flsun_sr": {
+        "max_volumetric_speed": {"pla": 12.0, "petg": 8.5, "abs": 9.5, "tpu": 6.0},
+        "outer_wall_speed_range": {"pla": (60, 85), "petg": (50, 65), "abs": (55, 70), "tpu": (30, 45)},
+        "inner_wall_speed_range": {"pla": (75, 95), "petg": (60, 75), "abs": (65, 85), "tpu": (35, 55)},
+        "sparse_infill_speed_range": {"pla": (85, 110), "petg": (65, 85), "abs": (75, 95), "tpu": (40, 60)},
+        "default_acceleration": 2200,
+        "outer_wall_acceleration": 1500,
+        "thick_layer_temp_boost_c": 5,
+        "petg_fan_range": None,
+    },
+    "ender3_s1_pro": {
+        "max_volumetric_speed": {"pla": 11.0, "petg": 8.0, "abs": 9.0, "tpu": 6.5},
+        "outer_wall_speed_range": {"pla": (55, 80), "petg": (45, 60), "abs": (50, 65), "tpu": (30, 45)},
+        "inner_wall_speed_range": {"pla": (70, 90), "petg": (55, 70), "abs": (60, 75), "tpu": (35, 50)},
+        "sparse_infill_speed_range": {"pla": (80, 100), "petg": (60, 80), "abs": (70, 85), "tpu": (40, 55)},
+        "default_acceleration": 1500,
+        "outer_wall_acceleration": 1000,
+        "thick_layer_temp_boost_c": 5,
+        "petg_fan_range": None,
+    },
+}
+
+
+def get_machine_thermal_kinematic_limits(printer_id: str) -> dict[str, Any]:
+    """Devuelve los límites térmicos y cinemáticos auditados para `printer_id`."""
+    profile_id = resolve_profile_id(printer_id)
+    return MACHINE_THERMAL_KINEMATIC_LIMITS.get(
+        profile_id, MACHINE_THERMAL_KINEMATIC_LIMITS["creator5_pro"]
+    )
+
+
+def clamp_speed_by_volumetric_flow(
+    printer_id: str,
+    material: str,
+    layer_height: float,
+    line_width: float,
+    requested_speeds: dict[str, float],
+    high_speed: bool = False,
+) -> dict[str, Any]:
+    """Recorta velocidades que excedan v_max = Q_max / (h * w) y aplica compensación térmica."""
+    profile_id = resolve_profile_id(printer_id)
+    limits = get_machine_thermal_kinematic_limits(profile_id)
+    mat = str(material).strip().lower()
+    if mat not in ("pla", "petg", "abs", "tpu"):
+        mat = "pla"
+
+    q_max = float(limits["max_volumetric_speed"].get(mat, 12.0))
+    if high_speed:
+        q_max = round(q_max * 1.12, 2)
+
+    h = max(0.08, float(layer_height))
+    w = max(0.20, float(line_width))
+    eff_q = q_max * 0.90 if h >= 0.24 else q_max
+    v_max = eff_q / (h * w)
+
+    role_ceilings = {
+        "outer_wall_speed": limits["outer_wall_speed_range"].get(mat, (55, 110))[1],
+        "top_surface_speed": limits["outer_wall_speed_range"].get(mat, (55, 110))[1],
+        "inner_wall_speed": limits["inner_wall_speed_range"].get(mat, (75, 150))[1],
+        "sparse_infill_speed": limits["sparse_infill_speed_range"].get(mat, (90, 180))[1],
+        "internal_solid_infill_speed": limits["sparse_infill_speed_range"].get(mat, (90, 180))[1],
+    }
+
+    clamped: dict[str, int] = {}
+    notes: list[str] = []
+    was_clamped = False
+    for key, req_v in requested_speeds.items():
+        val = float(req_v)
+        # En capas gruesas (>= 0.24 mm) o cuando excede v_max, aplicar también el techo cinemático auditado
+        role_cap = float(role_ceilings.get(key, v_max))
+        eff_cap = min(v_max, role_cap) if (h >= 0.24 or profile_id != "flsun_t1_pro") else v_max
+        if val > eff_cap:
+            new_v = max(25, int(math.floor(eff_cap)))
+            if new_v < int(round(val)):
+                was_clamped = True
+                notes.append(f"{key}: {int(round(val))} -> {new_v} mm/s (Q_max={q_max} mm3/s)")
+            clamped[key] = new_v
+        else:
+            clamped[key] = max(25, int(round(val)))
+
+    temp_boost = 0
+    if h >= 0.27 and profile_id != "flsun_t1_pro":
+        temp_boost = 8
+    elif was_clamped or (profile_id == "flsun_v400" and h >= 0.24):
+        temp_boost = int(limits.get("thick_layer_temp_boost_c", 5) or 5)
+
+    return {
+        "profile_id": profile_id,
+        "material": mat,
+        "q_max_mm3_s": q_max,
+        "v_max_mms": round(v_max, 1),
+        "clamped_speeds": clamped,
+        "was_clamped": was_clamped,
+        "temp_boost_c": temp_boost,
+        "notes": notes,
     }
 
 

@@ -15,10 +15,12 @@ from app.config import (
     MATERIAL_TO_PROFILE,
     PRESET_TO_PROFILE,
     PROCESS_DIR,
+    clamp_speed_by_volumetric_flow,
     compute_default_support_xy,
     compute_heterogeneous_speed_cap,
     compute_lithophane_process_overrides,
     compute_optimal_temperatures,
+    get_machine_thermal_kinematic_limits,
     get_optimal_chamber_config,
     get_printer_config,
     get_slot_volumetric_limit,
@@ -67,6 +69,7 @@ class PatchedProfileSet:
     filament_jsons: list[Path]
     process_json: Path
     filament_slots: int
+    volumetric_guard: dict[str, Any] | None = None
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -336,6 +339,8 @@ def patch_profiles_for_job(
 
             if slot_cfg.flow_ratio is not None:
                 slot_data["filament_flow_ratio"] = [f"{slot_cfg.flow_ratio:.2f}"]
+            elif request.flow_ratio_override is not None:
+                slot_data["filament_flow_ratio"] = [f"{request.flow_ratio_override:.2f}"]
 
             if slot_cfg.retraction_length is not None:
                 slot_data["filament_retraction_length"] = [f"{slot_cfg.retraction_length:.2f}"]
@@ -368,6 +373,10 @@ def patch_profiles_for_job(
         if request.lithophane_mode:
             filament_data["fan_min_speed"] = ["85"]
             filament_data["fan_max_speed"] = ["100"]
+        elif profile_id == "flsun_v400" and filament_key == "petg_master":
+            # En V400 con PETG limitar ventilador de capa a 15-35% para garantizar fusión
+            filament_data["fan_min_speed"] = ["15"]
+            filament_data["fan_max_speed"] = ["35"]
         _apply_bed_temps(filament_data, request.bed_temp)
 
         volumetric_limit = (
@@ -376,6 +385,8 @@ def patch_profiles_for_job(
             .get(profile_id, printer.max_volumetric_flow_mm3_s)
         )
         filament_data["filament_max_volumetric_speed"] = [str(volumetric_limit)]
+        if request.flow_ratio_override is not None:
+            filament_data["filament_flow_ratio"] = [f"{request.flow_ratio_override:.2f}"]
         _save_json(dst_filament, filament_data)
         filament_jsons = [dst_filament] * slots
 
@@ -509,6 +520,92 @@ def patch_profiles_for_job(
         )
         process_data.update(litho_overrides)
 
+    if request.layer_height_override is not None:
+        lh_clamped = max(0.08, min(max_lh_for_nozzle, float(request.layer_height_override)))
+        process_data["layer_height"] = f"{lh_clamped:.2f}"
+    if request.outer_wall_speed_override is not None:
+        process_data["outer_wall_speed"] = str(int(request.outer_wall_speed_override))
+    if request.infill_density_override is not None:
+        process_data["sparse_infill_density"] = f"{int(request.infill_density_override)}%"
+        if int(request.infill_density_override) >= 98:
+            process_data["sparse_infill_pattern"] = "rectilinear"
+            process_data["wall_loops"] = "5"
+    if request.ai_strategy_label and "estructural" in request.ai_strategy_label.lower():
+        process_data["wall_loops"] = "4"
+    if request.fuzzy_skin:
+        process_data["fuzzy_skin"] = "outside"
+        process_data["fuzzy_skin_first_layer"] = "0"
+        process_data["fuzzy_skin_thickness"] = f"{float(request.fuzzy_skin_thickness):.2f}"
+        process_data["fuzzy_skin_point_distance"] = f"{float(request.fuzzy_skin_point_distance):.2f}"
+
+    # 4. Aceleraciones, blindaje en capas extremas y seguro matemático de caudal volumétrico
+    machine_limits = get_machine_thermal_kinematic_limits(request.printer_id)
+    default_accel = int(machine_limits["default_acceleration"])
+    outer_accel = int(machine_limits["outer_wall_acceleration"])
+
+    eff_lh = float(process_data.get("layer_height", "0.20") or 0.20)
+    if eff_lh <= 0.12:
+        # Capas ultra finas (0.08 / 0.12 mm): primera capa segura >= 0.16 mm y menor aceleración anti-ringing
+        cur_init = float(process_data.get("initial_layer_print_height", "0.20") or 0.20)
+        process_data["initial_layer_print_height"] = f"{max(0.16, min(0.20, cur_init)):.2f}"
+        outer_accel = max(800, int(round(outer_accel * 0.65)))
+    elif eff_lh >= 0.24 and nozzle_d <= 0.45:
+        # Capas gruesas (0.24 / 0.28 mm): ancho 0.46-0.48 mm para mayor solapamiento
+        thick_lw = 0.48 if eff_lh >= 0.27 else 0.46
+        process_data["line_width"] = f"{thick_lw:.2f}"
+        process_data["outer_wall_line_width"] = f"{thick_lw:.2f}"
+        process_data["inner_wall_line_width"] = f"{thick_lw + 0.02:.2f}"
+
+    process_data["default_acceleration"] = str(default_accel)
+    process_data["outer_wall_acceleration"] = str(outer_accel)
+
+    eff_lw = float(process_data.get("line_width", f"{nozzle_d * 1.05:.2f}") or (nozzle_d * 1.05))
+    speed_keys = (
+        "outer_wall_speed",
+        "inner_wall_speed",
+        "sparse_infill_speed",
+        "internal_solid_infill_speed",
+        "top_surface_speed",
+    )
+    requested_speeds: dict[str, float] = {}
+    for sk in speed_keys:
+        raw_sv = str(process_data.get(sk, "120")).strip().rstrip("%")
+        try:
+            requested_speeds[sk] = float(raw_sv)
+        except ValueError:
+            requested_speeds[sk] = 120.0
+
+    flow_guard = clamp_speed_by_volumetric_flow(
+        request.printer_id,
+        "pla" if request.lithophane_mode else request.material,
+        eff_lh,
+        eff_lw,
+        requested_speeds,
+        high_speed=bool(request.high_speed_filament),
+    )
+    for sk, clamped_v in flow_guard["clamped_speeds"].items():
+        process_data[sk] = str(clamped_v)
+
+    temp_boost = int(flow_guard.get("temp_boost_c") or 0)
+    if (temp_boost > 0 or (eff_lh >= 0.24 and profile_id in ("flsun_v400", "creator5_pro"))) and profile_id != "creator5_pro" and filament_jsons:
+        try:
+            f_data = _load_json(filament_jsons[0])
+            if temp_boost > 0:
+                cur_t = int(float(f_data.get("nozzle_temperature", [str(request.nozzle_temp)])[0]))
+                cur_init_t = int(float(f_data.get("nozzle_temperature_initial_layer", [str(cur_t)])[0]))
+                f_data["nozzle_temperature"] = [str(min(300, cur_t + temp_boost))]
+                f_data["nozzle_temperature_initial_layer"] = [str(min(300, cur_init_t + temp_boost))]
+            if eff_lh >= 0.24 and profile_id == "flsun_v400":
+                if filament_key == "petg_master":
+                    f_data["fan_min_speed"] = ["15"]
+                    f_data["fan_max_speed"] = ["30"]
+                elif filament_key == "pla_master":
+                    f_data["fan_min_speed"] = ["65"]
+                    f_data["fan_max_speed"] = ["80"]
+            _save_json(filament_jsons[0], f_data)
+        except Exception:
+            pass
+
     _validate_and_normalize_process_data(process_data)
     _save_json(dst_process, process_data)
 
@@ -519,4 +616,5 @@ def patch_profiles_for_job(
         filament_jsons=filament_jsons,
         process_json=dst_process,
         filament_slots=slots,
+        volumetric_guard=flow_guard,
     )

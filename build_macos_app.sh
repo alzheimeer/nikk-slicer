@@ -89,6 +89,58 @@ cat > "${CONTENTS_DIR}/Info.plist" <<'PLIST'
   <string>Nikk Slicer requiere acceso a volúmenes externos (tarjetas SD/USB) para guardar archivos G-code.</string>
   <key>NSDocumentsFolderUsageDescription</key>
   <string>Nikk Slicer requiere acceso a tus modelos STL y 3MF para laminarlos.</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>stl</string>
+        <string>STL</string>
+      </array>
+      <key>CFBundleTypeName</key>
+      <string>STL 3D Model</string>
+      <key>CFBundleTypeOSTypes</key>
+      <array>
+        <string>****</string>
+      </array>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.standard-tesselated-geometry-format</string>
+        <string>public.3d-content</string>
+        <string>public.data</string>
+        <string>public.item</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>3mf</string>
+        <string>3MF</string>
+      </array>
+      <key>CFBundleTypeName</key>
+      <string>3MF 3D Manufacturing Format</string>
+      <key>CFBundleTypeOSTypes</key>
+      <array>
+        <string>****</string>
+      </array>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.microsoft.3dmanufacturing-format</string>
+        <string>public.3d-content</string>
+        <string>public.zip-archive</string>
+        <string>public.data</string>
+        <string>public.item</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST
@@ -108,6 +160,11 @@ chmod +x "${PROJECT_DIR}/desktop_launcher.py"
 if [[ -w "/Applications" ]]; then
   ln -sfn "${APP_BUNDLE}" "/Applications/Nikk Slicer.app"
   echo "==> Enlace simbólico actualizado: /Applications/Nikk Slicer.app -> ${APP_BUNDLE}"
+fi
+
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "${LSREGISTER}" ]]; then
+  "${LSREGISTER}" -f "${APP_BUNDLE}" >/dev/null 2>&1 || true
 fi
 
 echo "==> Nikk Slicer.app generado exitosamente en ${APP_BUNDLE}"

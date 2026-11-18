@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Cpu, Settings, Sliders } from 'lucide-react';
+import { Activity, AlertTriangle, Box, Calculator, Cpu, Settings, Sliders } from 'lucide-react';
 import { ErrorJournalModal } from './components/ErrorJournalModal';
+import { QuoteCalculatorModal } from './components/QuoteCalculatorModal';
 import {
   analyzeMesh,
+  applyLayerPauses,
   autoArrangeModels,
-  autoOrientMesh,
   clearLastSession,
   cutMeshByPlane,
   fetchAIRecommendation,
@@ -13,14 +14,23 @@ import {
   fetchGcodeText,
   fetchLayOnFaceCandidates,
   fetchPrintersConfig,
+  fetchSavedProjects,
   fetchUserPrefs,
+  requestAIAnalyzeModel,
+  requestAIOrientations,
+  requestAIOptimizeSlice,
   requestAISupportOrient,
   saveUserPrefs,
   sliceModel,
   uploadJobToPrinter,
+  type AIAnalyzeModelResponse,
+  type AIOrientationsResponse,
+  type AIOptimizeSliceResponse,
   type AISupportOrientResponse,
+  type OrientationOption,
   type AdhesionType,
   type ExtruderSlotConfig,
+  type LayerPauseItem,
   type LayOnFaceCandidate,
   type MachineProfileInfo,
   type MaterialType,
@@ -33,6 +43,7 @@ import {
   type PrintersConfigResponse,
   type ProfileId,
   type QualityPreset,
+  type SavedProjectRecord,
   type SliceResponse,
   type SupportType,
   type ZColorRange,
@@ -154,8 +165,13 @@ export function App() {
       : 0.4;
 
   const [activeTab, setActiveTab] = useState<'wizard' | 'monitor'>('wizard');
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [isLoadingExternalFile, setIsLoadingExternalFile] = useState<string | null>(null);
+  const dragCounterRef = useRef(0);
+  const suppressRestorePromptRef = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [journalOpen, setJournalOpen] = useState(false);
+  const [quoteCalculatorOpen, setQuoteCalculatorOpen] = useState(false);
 
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [machineProfiles, setMachineProfiles] = useState<MachineProfileInfo[]>([]);
@@ -180,6 +196,11 @@ export function App() {
   const [isAutoArranging, setIsAutoArranging] = useState(false);
   const [isCuttingMesh, setIsCuttingMesh] = useState(false);
   const [autoOrientMsg, setAutoOrientMsg] = useState<string | null>(null);
+  const [orientationsData, setOrientationsData] =
+    useState<AIOrientationsResponse | null>(null);
+  const [selectedOrientationId, setSelectedOrientationId] = useState<string | null>(
+    null,
+  );
 
   const [material, setMaterial] = useState<MaterialType>(initMat);
   const [nozzleDiameter, setNozzleDiameter] = useState<NozzleDiameter>(initNozzle);
@@ -231,6 +252,16 @@ export function App() {
   const [qualityPreset, setQualityPreset] = useState<QualityPreset>(
     initialPrefs.qualityPreset || 'estandar',
   );
+  const [specializedProfileId, setSpecializedProfileId] = useState<
+    | 'none'
+    | 'detalle_fino'
+    | 'detalle_optimo'
+    | 'piel_difusa'
+    | 'rapido_funcional'
+    | 'litofania_hd'
+    | 'litofania_ultra'
+    | 'litofania_vertical'
+  >('none');
 
   const [isOptimizingAI, setIsOptimizingAI] = useState(false);
   const [aiReasoning, setAiReasoning] = useState<string | null>(null);
@@ -238,6 +269,57 @@ export function App() {
   const [isOptimizingSupportAI, setIsOptimizingSupportAI] = useState(false);
   const [aiSupportStatus, setAiSupportStatus] =
     useState<AISupportOrientResponse | null>(null);
+  const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
+  const [aiAnalysisResult, setAiAnalysisResult] =
+    useState<AIAnalyzeModelResponse | null>(null);
+  const [isOptimizingSliceAI, setIsOptimizingSliceAI] = useState(false);
+  const [aiOptimizeComparison, setAiOptimizeComparison] = useState<{
+    strategyLabel: string;
+    explanation: string;
+    before: { time: string; grams: number; supportGrams: number; rot: string };
+    after: {
+      time: string;
+      grams: number;
+      supportGrams: number;
+      rot: string;
+      layerHeight: number;
+      fuzzySkin: boolean;
+    };
+  } | null>(null);
+
+  const [layerHeightOverride, setLayerHeightOverride] = useState<number | null>(null);
+  const [outerWallSpeedOverride, setOuterWallSpeedOverride] = useState<number | null>(null);
+  const [flowRatioOverride, setFlowRatioOverride] = useState<number | null>(null);
+  const [infillDensityOverride, setInfillDensityOverride] = useState<number | null>(null);
+  const [fuzzySkin, setFuzzySkin] = useState(false);
+  const [fuzzySkinThickness, setFuzzySkinThickness] = useState(0.25);
+  const [fuzzySkinPointDistance, setFuzzySkinPointDistance] = useState(0.4);
+  const [aiStrategyLabel, setAiStrategyLabel] = useState<string | null>(null);
+
+  const [initialSliceSnapshot, setInitialSliceSnapshot] = useState<{
+    sliceResult: SliceResponse;
+    gcodeText: string | null;
+    transform: ModelTransform;
+    analysis: MeshAnalysisResponse | null;
+    supports: boolean;
+    supportType: SupportType;
+    supportOnBuildPlateOnly: boolean;
+    supportZDistance: number;
+    supportXyDistance: number;
+    adhesionType: AdhesionType;
+    brimWidthMm: number;
+    nozzleTemp: number;
+    bedTemp: number;
+    layerHeightOverride: number | null;
+    outerWallSpeedOverride: number | null;
+    flowRatioOverride: number | null;
+    infillDensityOverride: number | null;
+    fuzzySkin: boolean;
+    aiStrategyLabel: string | null;
+  } | null>(null);
+
+  const [savedProjects, setSavedProjects] = useState<SavedProjectRecord[]>([]);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(false);
 
   const [isSlicing, setIsSlicing] = useState(false);
   const [sliceResult, setSliceResult] = useState<SliceResponse | null>(null);
@@ -277,6 +359,7 @@ export function App() {
       : 0,
   );
   const [zColorRanges, setZColorRanges] = useState<ZColorRange[]>([]);
+  const [layerPauses, setLayerPauses] = useState<LayerPauseItem[]>([]);
   const [partExtruderMap, setPartExtruderMap] = useState<Record<string, number>>({});
   const [chamberTempTarget, setChamberTempTarget] = useState<number | null>(null);
   const [pendingRestoreSession, setPendingRestoreSession] =
@@ -361,6 +444,7 @@ export function App() {
           setSupportExtruder(p.supportExtruder);
         }
         if (
+          !suppressRestorePromptRef.current &&
           p.last_session &&
           typeof p.last_session.mesh_id === 'string' &&
           p.last_session.mesh_id &&
@@ -665,6 +749,32 @@ export function App() {
     }
   };
 
+  const applyRotationToTransform = (
+    prev: ModelTransform,
+    rx: number,
+    ry: number,
+    rz: number,
+  ): ModelTransform => ({
+    ...prev,
+    rotX: rx,
+    rotY: ry,
+    rotZ: rz,
+    offsetZ: 0,
+    dropToBed: true,
+    ...(prev.instances && prev.instances.length > 0
+      ? {
+          instances: prev.instances.map((inst) => ({
+            ...inst,
+            rot_x: rx,
+            rot_y: ry,
+            rot_z: rz,
+            offset_z: 0,
+            drop_to_bed: true,
+          })),
+        }
+      : {}),
+  });
+
   const handleAutoOrient = async () => {
     if (!meshId && !stlFile) return;
     setIsAutoOrienting(true);
@@ -674,31 +784,52 @@ export function App() {
     setGcodeText(null);
     const seq = ++analyzeSeqRef.current;
     try {
-      const res = await autoOrientMesh({
+      const res = await requestAIOrientations({
         printerId: selectedPrinterId,
+        material,
         meshId,
         file: meshId ? null : stlFile,
-        scalePercent: 100,
+        scalePercent: transform.scalePercent || 100,
       });
       if (seq !== analyzeSeqRef.current) return;
       setMeshId(res.mesh_id);
-      setTransform({
-        scalePercent: 100,
-        rotX: res.rot_x,
-        rotY: res.rot_y,
-        rotZ: res.rot_z,
-      });
-      setAnalysis(res.analysis);
-      setSupports(res.analysis.suggests_supports);
-      setAdhesionType(res.analysis.suggests_raft ? 'raft' : 'none');
-      setAutoOrientMsg(res.message);
+      setOrientationsData(res);
+      const rec =
+        res.options.find((o) => o.id === res.recommended_id) ?? res.options[0];
+      if (rec) {
+        setSelectedOrientationId(rec.id);
+        handleChangeTransform(
+          applyRotationToTransform(
+            transform,
+            rec.rotation.rx,
+            rec.rotation.ry,
+            rec.rotation.rz,
+          ),
+        );
+        setAutoOrientMsg(`${rec.title}: ${rec.explanation}`);
+      }
     } catch (err: unknown) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Error al auto-orientar el STL.',
+        err instanceof Error
+          ? err.message
+          : 'Error al calcular orientaciones con IA.',
       );
     } finally {
       setIsAutoOrienting(false);
     }
+  };
+
+  const handleSelectOrientation = (opt: OrientationOption) => {
+    setSelectedOrientationId(opt.id);
+    setAutoOrientMsg(`${opt.title}: ${opt.explanation}`);
+    handleChangeTransform(
+      applyRotationToTransform(
+        transform,
+        opt.rotation.rx,
+        opt.rotation.ry,
+        opt.rotation.rz,
+      ),
+    );
   };
 
   const handleAutoArrange = async (instances: ModelInstanceTransform[]) => {
@@ -823,6 +954,9 @@ export function App() {
       setAdhesionType('brim');
       setBrimWidthMm(8);
       setAdhesionLabel('Brim Exterior 8 mm · Gap 0.12 mm (Litofanía)');
+      handleSelectDynamicProfile('litofania_hd');
+    } else if (specializedProfileId.startsWith('litofania_')) {
+      handleSelectDynamicProfile('estandar');
     }
   };
 
@@ -844,11 +978,24 @@ export function App() {
     xyDistOverride?: number;
     adhesionOverride?: AdhesionType;
     brimWidthOverride?: number;
+    nozzleTempOverride?: number;
+    bedTempOverride?: number;
+    layerHeightOverride?: number | null;
+    outerWallSpeedOverride?: number | null;
+    flowRatioOverride?: number | null;
+    infillDensityOverride?: number | null;
+    fuzzySkinOverride?: boolean;
+    fuzzySkinThicknessOverride?: number;
+    fuzzySkinPointDistanceOverride?: number;
+    aiStrategyLabelOverride?: string | null;
   }): Promise<{ res: SliceResponse; rawGcode: string }> => {
     const minBound = Math.min(spoolMinTemp, spoolMaxTemp - 5);
     const maxBound = Math.max(spoolMaxTemp, minBound + 5);
     const safeInitial = Math.min(maxBound, Math.max(minBound, nozzleTempInitial));
-    const safeNormal = Math.min(maxBound, Math.max(minBound, nozzleTemp));
+    const safeNormal =
+      overrides?.nozzleTempOverride !== undefined
+        ? overrides.nozzleTempOverride
+        : Math.min(maxBound, Math.max(minBound, nozzleTemp));
 
     const effSupports = lithophaneMode
       ? false
@@ -864,12 +1011,33 @@ export function App() {
 
     const effMeshId =
       overrides?.meshIdOverride !== undefined ? overrides.meshIdOverride : meshId;
+    const effLh =
+      overrides?.layerHeightOverride !== undefined ? overrides.layerHeightOverride : layerHeightOverride;
+    const effOuterSpeed =
+      overrides?.outerWallSpeedOverride !== undefined
+        ? overrides.outerWallSpeedOverride
+        : outerWallSpeedOverride;
+    const effFlow =
+      overrides?.flowRatioOverride !== undefined ? overrides.flowRatioOverride : flowRatioOverride;
+    const effInfill =
+      overrides?.infillDensityOverride !== undefined
+        ? overrides.infillDensityOverride
+        : infillDensityOverride;
+    const effFuzzy =
+      overrides?.fuzzySkinOverride !== undefined ? overrides.fuzzySkinOverride : fuzzySkin;
+    const effFuzzyThick = overrides?.fuzzySkinThicknessOverride ?? fuzzySkinThickness;
+    const effFuzzyDist = overrides?.fuzzySkinPointDistanceOverride ?? fuzzySkinPointDistance;
+    const effStrategy =
+      overrides?.aiStrategyLabelOverride !== undefined
+        ? overrides.aiStrategyLabelOverride
+        : aiStrategyLabel;
+
     const res = await sliceModel({
       printer_id: selectedPrinterId,
       material: lithophaneMode ? 'pla' : material,
       nozzle_temp: safeNormal,
       nozzle_temp_initial_layer: safeInitial,
-      bed_temp: bedTemp,
+      bed_temp: overrides?.bedTempOverride !== undefined ? overrides.bedTempOverride : bedTemp,
       nozzle_diameter: nozzleDiameter,
       high_speed_filament: highSpeedFilament,
       lithophane_mode: lithophaneMode,
@@ -885,6 +1053,15 @@ export function App() {
         overrides?.xyDistOverride !== undefined ? overrides.xyDistOverride : supportXyDistance,
       adhesion_type: effAdhesion,
       brim_width_mm: effBrim,
+      ...(effLh !== null ? { layer_height_override: effLh } : {}),
+      ...(effOuterSpeed !== null ? { outer_wall_speed_override: effOuterSpeed } : {}),
+      ...(effFlow !== null ? { flow_ratio_override: effFlow } : {}),
+      ...(effInfill !== null ? { infill_density_override: effInfill } : {}),
+      fuzzy_skin: effFuzzy,
+      fuzzy_skin_thickness: effFuzzyThick,
+      fuzzy_skin_point_distance: effFuzzyDist,
+      ...(effStrategy ? { ai_strategy_label: effStrategy } : {}),
+      ...(stlFile?.name ? { model_filename: stlFile.name } : {}),
       prime_tower_mode: primeTowerEnabled ? 'ultra_save' : 'off',
       enable_prime_tower: primeTowerEnabled,
       enable_timelapse: enableTimelapse,
@@ -893,6 +1070,7 @@ export function App() {
       mesh_id: effMeshId,
       file: effMeshId ? null : stlFile,
       transform: overrides?.transformOverride ?? transform,
+      layer_pauses: layerPauses,
       ...(activeProfileId === 'creator5_pro'
         ? {
           extruders_config: extrudersConfig,
@@ -905,7 +1083,469 @@ export function App() {
         : {}),
     }, sliceAbortRef.current?.signal);
     const rawGcode = await fetchGcodeText(res.gcode_url);
+    if (res.applied_pauses && res.applied_pauses.length > 0) {
+      setLayerPauses(res.applied_pauses);
+    }
     return { res, rawGcode };
+  };
+
+  const syncPausesToGcode = async (nextPauses: LayerPauseItem[]) => {
+    if (!sliceResult?.job_id) return;
+    try {
+      const res = await applyLayerPauses({
+        jobId: sliceResult.job_id,
+        printerId: selectedPrinterId,
+        pauses: nextPauses,
+      });
+      setLayerPauses(res.applied_pauses);
+      setGcodeText(res.gcode_text);
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Error al inyectar pausas en el G-code.',
+      );
+    }
+  };
+
+  const handleAddLayerPause = (layer: number, zMm: number | null, note: string) => {
+    const effLayer = Math.max(1, Math.round(layer));
+    const next = [
+      ...layerPauses.filter((p) => p.layer !== effLayer),
+      { layer: effLayer, z_mm: zMm, note, source: 'manual' as const },
+    ].sort((a, b) => a.layer - b.layer);
+    setLayerPauses(next);
+    void syncPausesToGcode(next);
+  };
+
+  const handleRemoveLayerPause = (layer: number) => {
+    const next = layerPauses.filter((p) => p.layer !== layer);
+    setLayerPauses(next);
+    void syncPausesToGcode(next);
+  };
+
+  const refreshSavedProjects = async () => {
+    setIsLoadingProjects(true);
+    try {
+      const list = await fetchSavedProjects();
+      setSavedProjects(list);
+    } catch {
+      // Silencioso si backend aún no tiene proyectos
+    } finally {
+      setIsLoadingProjects(false);
+    }
+  };
+
+  const handleSelectDynamicProfile = (
+    id:
+      | QualityPreset
+      | 'detalle_fino'
+      | 'detalle_optimo'
+      | 'piel_difusa'
+      | 'rapido_funcional'
+      | 'litofania_hd'
+      | 'litofania_ultra'
+      | 'litofania_vertical',
+    speedHintMmS?: number,
+    layerHeightHintMm?: number,
+  ) => {
+    const effLh = typeof layerHeightHintMm === 'number' ? layerHeightHintMm : null;
+    if (
+      id === 'estandar' ||
+      id === 'mecanico_resistente' ||
+      id === 'alta_velocidad' ||
+      id === 'rapidez_extrema'
+    ) {
+      setSpecializedProfileId('none');
+      setQualityPreset(id);
+      setLayerHeightOverride(effLh);
+      setOuterWallSpeedOverride(speedHintMmS ?? null);
+      setInfillDensityOverride(id === 'mecanico_resistente' ? 25 : null);
+      setFuzzySkin(false);
+      setAiStrategyLabel(
+        effLh !== null ? `${id === 'mecanico_resistente' ? 'Mecánico / Estructural' : 'Estándar'} (${effLh.toFixed(2)} mm)` : null,
+      );
+      return;
+    }
+
+    setQualityPreset('estandar');
+    setSpecializedProfileId(id);
+    if (id === 'detalle_fino') {
+      setLayerHeightOverride(effLh ?? 0.12);
+      setOuterWallSpeedOverride(speedHintMmS ?? 55);
+      setInfillDensityOverride(15);
+      setFuzzySkin(false);
+      setAiStrategyLabel(`Detalle Fino (${(effLh ?? 0.12).toFixed(2)} mm)`);
+    } else if (id === 'detalle_optimo') {
+      setLayerHeightOverride(effLh ?? 0.16);
+      setOuterWallSpeedOverride(speedHintMmS ?? null);
+      setInfillDensityOverride(15);
+      setFuzzySkin(false);
+      setAiStrategyLabel(`Detalle Óptimo (${(effLh ?? 0.16).toFixed(2)} mm)`);
+    } else if (id === 'rapido_funcional') {
+      setLayerHeightOverride(effLh ?? 0.24);
+      setOuterWallSpeedOverride(speedHintMmS ?? null);
+      setInfillDensityOverride(12);
+      setFuzzySkin(false);
+      setAiStrategyLabel(`Rápido Funcional (${(effLh ?? 0.24).toFixed(2)} mm)`);
+    } else if (id === 'piel_difusa') {
+      setLayerHeightOverride(effLh ?? 0.2);
+      setOuterWallSpeedOverride(speedHintMmS ?? null);
+      setInfillDensityOverride(12);
+      setFuzzySkin(true);
+      setFuzzySkinPointDistance(0.15);
+      setFuzzySkinThickness(0.4);
+      setAiStrategyLabel(`Piel Difusa / Textura (${(effLh ?? 0.2).toFixed(2)} mm)`);
+    } else if (id === 'litofania_ultra') {
+      setLayerHeightOverride(effLh ?? 0.08);
+      setOuterWallSpeedOverride(speedHintMmS ?? 45);
+      setInfillDensityOverride(100);
+      setFuzzySkin(false);
+      setSupports(false);
+      setAiStrategyLabel(`Litofanía Ultra HD (${(effLh ?? 0.08).toFixed(2)} mm)`);
+    } else if (id === 'litofania_hd') {
+      setLayerHeightOverride(effLh ?? 0.12);
+      setOuterWallSpeedOverride(speedHintMmS ?? 50);
+      setInfillDensityOverride(100);
+      setFuzzySkin(false);
+      setSupports(false);
+      setAiStrategyLabel(`Litofanía HD (${(effLh ?? 0.12).toFixed(2)} mm)`);
+    } else if (id === 'litofania_vertical') {
+      setLayerHeightOverride(effLh ?? 0.12);
+      setOuterWallSpeedOverride(speedHintMmS ?? 48);
+      setInfillDensityOverride(100);
+      setFuzzySkin(false);
+      setSupports(false);
+      setAdhesionType('brim');
+      setBrimWidthMm(10);
+      setAiStrategyLabel(`Litofanía Vertical Estable (${(effLh ?? 0.12).toFixed(2)} mm)`);
+    }
+  };
+
+  const handleAnalyzeModelAI = async () => {
+    // Primera instrucción síncrona para respuesta visual instantánea (0 ms)
+    setIsAnalyzingAI(true);
+    if ((!meshId && !stlFile) || !sliceResult || !analysis) {
+      setIsAnalyzingAI(false);
+      return;
+    }
+    setErrorMsg(null);
+    setSendPrintMsg(null);
+    try {
+      const res = await requestAIAnalyzeModel({
+        printer_id: selectedPrinterId,
+        material: lithophaneMode ? 'pla' : material,
+        filename: stlFile?.name || 'modelo.stl',
+        nozzle_diameter: nozzleDiameter,
+        high_speed_filament: highSpeedFilament,
+        lithophane_mode: lithophaneMode,
+        dimensions_mm: analysis.dimensions_mm,
+        volume_cm3:
+          (analysis.dimensions_mm.x * analysis.dimensions_mm.y * analysis.dimensions_mm.z) / 1000,
+        base_contact_area_mm2: analysis.base_contact_area_mm2,
+        overhang_ratio: analysis.overhang_ratio,
+        parts_count: analysis.multimaterial_parts?.length ?? 1,
+        is_multicolor: Boolean(analysis.is_multicolor),
+        detected_extruder_count: analysis.detected_extruder_count ?? 1,
+        current_slice_metrics: {
+          estimated_time: sliceResult.estimated_time,
+          estimated_time_seconds: sliceResult.estimated_time_seconds,
+          filament_grams: sliceResult.filament_grams,
+          support_weight_g: sliceResult.support_weight_g ?? 0,
+          support_percentage: sliceResult.support_percentage ?? 0,
+        },
+      });
+      setAiAnalysisResult(res);
+      if (res.model_category === 'lithophane_flat') {
+        if (material !== 'pla') setMaterial('pla');
+        if (!lithophaneMode) handleToggleLithophaneMode(true);
+      }
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Error analizando el modelo con IA.');
+    } finally {
+      setIsAnalyzingAI(false);
+    }
+  };
+
+  const handleOptimizeSliceWithAI = async (
+    presetId: string,
+    userNotes = '',
+    targetLayerHeight?: number,
+  ) => {
+    if ((!meshId && !stlFile) || !sliceResult || !analysis) return;
+    setIsOptimizingSliceAI(true);
+    setErrorMsg(null);
+    setSendPrintMsg(null);
+
+    const baselineSnap = initialSliceSnapshot ?? {
+      sliceResult,
+      gcodeText,
+      transform: { ...transform },
+      analysis,
+      supports,
+      supportType,
+      supportOnBuildPlateOnly,
+      supportZDistance,
+      supportXyDistance,
+      adhesionType,
+      brimWidthMm,
+      nozzleTemp,
+      bedTemp,
+      layerHeightOverride,
+      outerWallSpeedOverride,
+      flowRatioOverride,
+      infillDensityOverride,
+      fuzzySkin,
+      aiStrategyLabel,
+    };
+    if (!initialSliceSnapshot) {
+      setInitialSliceSnapshot(baselineSnap);
+    }
+
+    try {
+      const opt: AIOptimizeSliceResponse = await requestAIOptimizeSlice({
+        printer_id: selectedPrinterId,
+        material: lithophaneMode ? 'pla' : material,
+        filename: stlFile?.name || 'modelo.stl',
+        nozzle_diameter: nozzleDiameter,
+        high_speed_filament: highSpeedFilament,
+        lithophane_mode: lithophaneMode,
+        preset_id: presetId,
+        ...(typeof targetLayerHeight === 'number' ? { target_layer_height: targetLayerHeight } : {}),
+        user_notes: userNotes,
+        mesh_id: meshId,
+        scale_percent: transform.scalePercent,
+        rot_x: transform.rotX,
+        rot_y: transform.rotY,
+        rot_z: transform.rotZ,
+        dimensions_mm: analysis.dimensions_mm,
+        overhang_ratio: analysis.overhang_ratio,
+        base_contact_area_mm2: analysis.base_contact_area_mm2,
+        current_support_config: {
+          enabled: supports,
+          support_type: supportType,
+          placement: supportOnBuildPlateOnly ? 'buildplate' : 'everywhere',
+          support_top_z_distance: supportZDistance,
+          support_object_xy_distance: supportXyDistance,
+        },
+        current_slice_metrics: {
+          estimated_time: sliceResult.estimated_time,
+          filament_grams: sliceResult.filament_grams,
+          support_weight_g: sliceResult.support_weight_g ?? 0,
+        },
+      });
+
+      const nextTransform: ModelTransform = opt.apply_rotation
+        ? {
+            ...transform,
+            rotX: opt.rot_x,
+            rotY: opt.rot_y,
+            rotZ: opt.rot_z,
+          }
+        : { ...transform };
+
+      const effSup = lithophaneMode ? false : opt.supports_required;
+      const effAdh: AdhesionType = lithophaneMode ? 'brim' : opt.adhesion_type;
+
+      setTransform(nextTransform);
+      setSupports(effSup);
+      setSupportType(opt.support_type);
+      setSupportOnBuildPlateOnly(opt.support_on_build_plate_only);
+      setSupportZDistance(opt.support_z_distance);
+      setSupportXyDistance(opt.support_xy_distance);
+      setAdhesionType(effAdh);
+      setBrimWidthMm(opt.brim_width_mm);
+      if (opt.nozzle_temp) setNozzleTemp(opt.nozzle_temp);
+      setLayerHeightOverride(opt.layer_height);
+      setOuterWallSpeedOverride(opt.outer_wall_speed ?? null);
+      setFlowRatioOverride(opt.flow_ratio ?? null);
+      setInfillDensityOverride(opt.infill_density ?? null);
+      setFuzzySkin(opt.fuzzy_skin);
+      setFuzzySkinThickness(opt.fuzzy_skin_thickness);
+      setFuzzySkinPointDistance(opt.fuzzy_skin_point_distance);
+      setAiStrategyLabel(opt.strategy_label);
+
+      const { res, rawGcode } = await runRealSlice({
+        transformOverride: nextTransform,
+        supportsOverride: effSup,
+        supportTypeOverride: opt.support_type,
+        plateOnlyOverride: opt.support_on_build_plate_only,
+        zDistOverride: opt.support_z_distance,
+        xyDistOverride: opt.support_xy_distance,
+        adhesionOverride: effAdh,
+        brimWidthOverride: opt.brim_width_mm,
+        nozzleTempOverride: opt.nozzle_temp ?? undefined,
+        layerHeightOverride: opt.layer_height,
+        outerWallSpeedOverride: opt.outer_wall_speed ?? null,
+        flowRatioOverride: opt.flow_ratio ?? null,
+        infillDensityOverride: opt.infill_density ?? null,
+        fuzzySkinOverride: opt.fuzzy_skin,
+        fuzzySkinThicknessOverride: opt.fuzzy_skin_thickness,
+        fuzzySkinPointDistanceOverride: opt.fuzzy_skin_point_distance,
+        aiStrategyLabelOverride: opt.strategy_label,
+      });
+
+      setSliceResult(res);
+      setGcodeText(rawGcode);
+      setAiOptimizeComparison({
+        strategyLabel: opt.strategy_label,
+        explanation: opt.explanation,
+        before: {
+          time: baselineSnap.sliceResult.estimated_time,
+          grams: baselineSnap.sliceResult.filament_grams,
+          supportGrams: baselineSnap.sliceResult.support_weight_g ?? 0,
+          rot: `${baselineSnap.transform.rotX.toFixed(0)}°/${baselineSnap.transform.rotY.toFixed(0)}°/${baselineSnap.transform.rotZ.toFixed(0)}°`,
+        },
+        after: {
+          time: res.estimated_time,
+          grams: res.filament_grams,
+          supportGrams: res.support_weight_g ?? 0,
+          rot: `${nextTransform.rotX.toFixed(0)}°/${nextTransform.rotY.toFixed(0)}°/${nextTransform.rotZ.toFixed(0)}°`,
+          layerHeight: opt.layer_height,
+          fuzzySkin: opt.fuzzy_skin,
+        },
+      });
+      void refreshSavedProjects();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Error optimizando laminado con IA.');
+    } finally {
+      setIsOptimizingSliceAI(false);
+    }
+  };
+
+  const handleRollbackToInitialSlice = () => {
+    if (!initialSliceSnapshot) return;
+    setSliceResult(initialSliceSnapshot.sliceResult);
+    setGcodeText(initialSliceSnapshot.gcodeText);
+    setTransform(initialSliceSnapshot.transform);
+    setAnalysis(initialSliceSnapshot.analysis);
+    setSupports(initialSliceSnapshot.supports);
+    setSupportType(initialSliceSnapshot.supportType);
+    setSupportOnBuildPlateOnly(initialSliceSnapshot.supportOnBuildPlateOnly);
+    setSupportZDistance(initialSliceSnapshot.supportZDistance);
+    setSupportXyDistance(initialSliceSnapshot.supportXyDistance);
+    setAdhesionType(initialSliceSnapshot.adhesionType);
+    setBrimWidthMm(initialSliceSnapshot.brimWidthMm);
+    setNozzleTemp(initialSliceSnapshot.nozzleTemp);
+    setBedTemp(initialSliceSnapshot.bedTemp);
+    setLayerHeightOverride(initialSliceSnapshot.layerHeightOverride);
+    setOuterWallSpeedOverride(initialSliceSnapshot.outerWallSpeedOverride);
+    setFlowRatioOverride(initialSliceSnapshot.flowRatioOverride);
+    setInfillDensityOverride(initialSliceSnapshot.infillDensityOverride);
+    setFuzzySkin(initialSliceSnapshot.fuzzySkin);
+    setAiStrategyLabel(initialSliceSnapshot.aiStrategyLabel);
+    setAiOptimizeComparison(null);
+    setSendPrintMsg('Restaurado al laminado inicial.');
+  };
+
+  const handleRollbackToUnsliced = () => {
+    setSliceResult(null);
+    setGcodeText(null);
+    setTransform(DEFAULT_TRANSFORM);
+    setLayerHeightOverride(null);
+    setOuterWallSpeedOverride(null);
+    setFlowRatioOverride(null);
+    setInfillDensityOverride(null);
+    setFuzzySkin(false);
+    setAiStrategyLabel(null);
+    setAiAnalysisResult(null);
+    setAiOptimizeComparison(null);
+    setInitialSliceSnapshot(null);
+    setSendPrintMsg('Modelo restaurado al estado inicial sin laminar.');
+  };
+
+  const handleLoadSavedProject = (proj: SavedProjectRecord) => {
+    if (proj.printer_id) setSelectedPrinterId(proj.printer_id);
+    if (proj.material) setMaterial(proj.material);
+    if (proj.nozzle_diameter) setNozzleDiameter(proj.nozzle_diameter as NozzleDiameter);
+    if (proj.quality_preset) setQualityPreset(proj.quality_preset);
+    if (proj.transform) {
+      setTransform({
+        ...DEFAULT_TRANSFORM,
+        scalePercent: proj.transform.scale_percent ?? 100,
+        rotX: proj.transform.rot_x ?? 0,
+        rotY: proj.transform.rot_y ?? 0,
+        rotZ: proj.transform.rot_z ?? 0,
+      });
+    }
+    const p = proj.params || {};
+    if (typeof p.nozzle_temp === 'number') setNozzleTemp(p.nozzle_temp);
+    if (typeof p.bed_temp === 'number') setBedTemp(p.bed_temp);
+    if (typeof p.chamber_temp_target === 'number') setChamberTempTarget(p.chamber_temp_target);
+    setLayerHeightOverride(typeof p.layer_height === 'number' ? p.layer_height : null);
+    setOuterWallSpeedOverride(typeof p.outer_wall_speed === 'number' ? p.outer_wall_speed : null);
+    setFlowRatioOverride(typeof p.flow_ratio === 'number' ? p.flow_ratio : null);
+    setInfillDensityOverride(typeof p.infill_density === 'number' ? p.infill_density : null);
+    setFuzzySkin(Boolean(p.fuzzy_skin));
+    if (typeof p.supports === 'boolean') setSupports(p.supports);
+    if (typeof p.support_type === 'string') setSupportType(p.support_type as SupportType);
+    if (typeof p.support_z_distance === 'number') setSupportZDistance(p.support_z_distance);
+    if (typeof p.support_xy_distance === 'number') setSupportXyDistance(p.support_xy_distance);
+    if (typeof p.adhesion_type === 'string') setAdhesionType(p.adhesion_type as AdhesionType);
+    if (typeof p.brim_width_mm === 'number') setBrimWidthMm(p.brim_width_mm);
+    setSendPrintMsg(`Parámetros del proyecto '${proj.model_filename}' cargados.`);
+  };
+
+  const handleApplyDefectCorrection = async (
+    proj: SavedProjectRecord,
+    corrected: Record<string, unknown>,
+  ) => {
+    handleLoadSavedProject(proj);
+    const lh = typeof corrected.layer_height_override === 'number' ? corrected.layer_height_override : null;
+    const spd = typeof corrected.outer_wall_speed_override === 'number' ? corrected.outer_wall_speed_override : null;
+    const flw = typeof corrected.flow_ratio_override === 'number' ? corrected.flow_ratio_override : null;
+    const inf = typeof corrected.infill_density_override === 'number' ? corrected.infill_density_override : null;
+    const nTemp = typeof corrected.nozzle_temp === 'number' ? corrected.nozzle_temp : undefined;
+    const bTemp = typeof corrected.bed_temp === 'number' ? corrected.bed_temp : undefined;
+    const sup = typeof corrected.supports === 'boolean' ? corrected.supports : undefined;
+    const supType = typeof corrected.support_type === 'string' ? (corrected.support_type as SupportType) : undefined;
+    const zDist = typeof corrected.support_z_distance === 'number' ? corrected.support_z_distance : undefined;
+    const xyDist = typeof corrected.support_xy_distance === 'number' ? corrected.support_xy_distance : undefined;
+    const adh = typeof corrected.adhesion_type === 'string' ? (corrected.adhesion_type as AdhesionType) : undefined;
+    const brimW = typeof corrected.brim_width_mm === 'number' ? corrected.brim_width_mm : undefined;
+    const fz = typeof corrected.fuzzy_skin === 'boolean' ? corrected.fuzzy_skin : undefined;
+
+    if (lh !== null) setLayerHeightOverride(lh);
+    if (spd !== null) setOuterWallSpeedOverride(spd);
+    if (flw !== null) setFlowRatioOverride(flw);
+    if (inf !== null) setInfillDensityOverride(inf);
+    if (nTemp !== undefined) setNozzleTemp(nTemp);
+    if (bTemp !== undefined) setBedTemp(bTemp);
+    if (sup !== undefined) setSupports(sup);
+    if (supType !== undefined) setSupportType(supType);
+    if (zDist !== undefined) setSupportZDistance(zDist);
+    if (xyDist !== undefined) setSupportXyDistance(xyDist);
+    if (adh !== undefined) setAdhesionType(adh);
+    if (brimW !== undefined) setBrimWidthMm(brimW);
+    if (fz !== undefined) setFuzzySkin(fz);
+
+    if (!stlFile && !meshId) return;
+    setIsSlicing(true);
+    setErrorMsg(null);
+    try {
+      const { res, rawGcode } = await runRealSlice({
+        layerHeightOverride: lh,
+        outerWallSpeedOverride: spd,
+        flowRatioOverride: flw,
+        infillDensityOverride: inf,
+        nozzleTempOverride: nTemp,
+        bedTempOverride: bTemp,
+        supportsOverride: sup,
+        supportTypeOverride: supType,
+        zDistOverride: zDist,
+        xyDistOverride: xyDist,
+        adhesionOverride: adh,
+        brimWidthOverride: brimW,
+        fuzzySkinOverride: fz,
+        aiStrategyLabelOverride: 'Corrección Defecto IA',
+      });
+      setSliceResult(res);
+      setGcodeText(rawGcode);
+      setSendPrintMsg('Perfil corregido aplicado y re-laminado con éxito.');
+      void refreshSavedProjects();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Error re-laminando tras corrección.');
+    } finally {
+      setIsSlicing(false);
+    }
   };
 
   const handleAISupportOrient = async () => {
@@ -1353,8 +1993,146 @@ export function App() {
     )?.sd_volume_path ??
     '';
 
+  const handleSelectStlRef = useRef(handleSelectStl);
+  handleSelectStlRef.current = handleSelectStl;
+
+  useEffect(() => {
+    const hasFiles = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes('Files');
+
+    const onDragEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragCounterRef.current += 1;
+      setIsDraggingFile(true);
+    };
+
+    const onDragOver = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'copy';
+      }
+    };
+
+    const onDragLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+      if (dragCounterRef.current === 0) {
+        setIsDraggingFile(false);
+      }
+    };
+
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current = 0;
+      setIsDraggingFile(false);
+
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length === 0) return;
+
+      const valid = files.find((f) => /\.(stl|3mf)$/i.test(f.name));
+      if (!valid) {
+        setErrorMsg('Formato no compatible: solo se admiten archivos .STL y .3MF.');
+        return;
+      }
+
+      setActiveTab('wizard');
+      handleSelectStlRef.current(valid);
+    };
+
+    window.addEventListener('dragenter', onDragEnter);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter);
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, []);
+
+  useEffect(() => {
+    const consumePendingMacFile = async () => {
+      const api = (
+        window as unknown as {
+          pywebview?: {
+            api?: {
+              has_pending_open_file?: () => Promise<boolean>;
+              get_pending_open_file?: () => Promise<{ name: string; path: string } | null>;
+            };
+          };
+        }
+      ).pywebview?.api;
+      if (!api?.get_pending_open_file) return;
+      try {
+        if (api.has_pending_open_file) {
+          const hasFile = await api.has_pending_open_file();
+          if (hasFile) {
+            suppressRestorePromptRef.current = true;
+            setPendingRestoreSession(null);
+          }
+        }
+        const pending = await api.get_pending_open_file();
+        if (!pending?.path || !pending?.name) return;
+        suppressRestorePromptRef.current = true;
+        setPendingRestoreSession(null);
+        setIsLoadingExternalFile(pending.name);
+        const resp = await fetch(
+          `/api/desktop/open-file?path=${encodeURIComponent(pending.path)}`,
+        );
+        if (!resp.ok) {
+          throw new Error(`No se pudo abrir ${pending.name}`);
+        }
+        const blob = await resp.blob();
+        const file = new File([blob], pending.name);
+        setActiveTab('wizard');
+        handleSelectStlRef.current(file);
+      } catch {
+        // Ignorar si pywebview aún no está listo
+      } finally {
+        setIsLoadingExternalFile(null);
+      }
+    };
+
+    const onOpenEvent = () => {
+      void consumePendingMacFile();
+    };
+    window.addEventListener('nikk-open-pending-file', onOpenEvent);
+    window.addEventListener('pywebviewready', onOpenEvent);
+    void consumePendingMacFile();
+    return () => {
+      window.removeEventListener('nikk-open-pending-file', onOpenEvent);
+      window.removeEventListener('pywebviewready', onOpenEvent);
+    };
+  }, []);
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-100">
+      {isLoadingExternalFile && (
+        <div className="fixed inset-0 z-[9995] flex flex-col items-center justify-center bg-slate-950/90 backdrop-blur-md">
+          <div className="h-12 w-12 animate-spin rounded-full border-4 border-cyan-400/25 border-t-cyan-400" />
+          <p className="mt-4 text-sm font-semibold text-white">
+            Abriendo {isLoadingExternalFile}...
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            Cargando modelo 3D en Nikk Slicer
+          </p>
+        </div>
+      )}
+      {isDraggingFile && (
+        <div className="pointer-events-none fixed inset-4 z-[9990] flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-cyan-400 bg-slate-950/75 backdrop-blur-sm">
+          <Box className="mb-3 h-12 w-12 text-cyan-400" />
+          <p className="text-base font-bold text-white">
+            Suelta tu modelo .STL o .3MF para abrirlo en Nikk Slicer
+          </p>
+          <p className="mt-1 text-xs text-cyan-200/80">
+            Se cargará automáticamente en el Laminador
+          </p>
+        </div>
+      )}
       {/* Cabecera con pestañas Wizard / Monitor y botón de configuración */}
       <header className="z-20 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 bg-slate-900/70 px-6 py-2.5 backdrop-blur">
         <div className="flex items-center gap-3">
@@ -1405,6 +2183,15 @@ export function App() {
           </div>
           <button
             type="button"
+            onClick={() => setQuoteCalculatorOpen(true)}
+            title="Calculadora comercial de cotización 3D"
+            className="flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-200 hover:border-amber-400"
+          >
+            <Calculator className="h-3.5 w-3.5 text-amber-400" />
+            Cotizar
+          </button>
+          <button
+            type="button"
             onClick={() => setJournalOpen(true)}
             title="Consultar bitácora de errores y fallos"
             className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-amber-500/60"
@@ -1419,7 +2206,7 @@ export function App() {
             className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-500/60"
           >
             <Settings className="h-3.5 w-3.5 text-cyan-400" />
-            Hardware e IA
+            Configuración
           </button>
         </div>
       </header>
@@ -1482,12 +2269,28 @@ export function App() {
             primeTowerReason={primeTowerReason}
             qualityPreset={qualityPreset}
             onChangePreset={setQualityPreset}
+            specializedProfileId={specializedProfileId}
+            onSelectDynamicProfile={handleSelectDynamicProfile}
             isOptimizingAI={isOptimizingAI}
             aiReasoning={aiReasoning}
             aiProvider={aiProvider}
             onAISupportOrient={handleAISupportOrient}
             isOptimizingSupportAI={isOptimizingSupportAI}
             aiSupportStatus={aiSupportStatus}
+            onAnalyzeModelAI={handleAnalyzeModelAI}
+            isAnalyzingAI={isAnalyzingAI}
+            aiAnalysisResult={aiAnalysisResult}
+            onOptimizeSliceWithAI={handleOptimizeSliceWithAI}
+            isOptimizingSliceAI={isOptimizingSliceAI}
+            aiOptimizeComparison={aiOptimizeComparison}
+            canRollbackInitialSlice={Boolean(initialSliceSnapshot)}
+            onRollbackToInitialSlice={handleRollbackToInitialSlice}
+            onRollbackToUnsliced={handleRollbackToUnsliced}
+            savedProjects={savedProjects}
+            isLoadingProjects={isLoadingProjects}
+            onRefreshSavedProjects={refreshSavedProjects}
+            onLoadSavedProject={handleLoadSavedProject}
+            onApplyDefectCorrection={handleApplyDefectCorrection}
             onSlice={handleSlice}
             onCancelSlice={handleCancelSlice}
             isSlicing={isSlicing}
@@ -1514,6 +2317,9 @@ export function App() {
             onChangePartExtruderMap={setPartExtruderMap}
             chamberTempTarget={chamberTempTarget}
             onChangeChamberTempTarget={setChamberTempTarget}
+            layerPauses={layerPauses}
+            onAddLayerPause={handleAddLayerPause}
+            onRemoveLayerPause={handleRemoveLayerPause}
           />
 
           <Viewport3D
@@ -1527,11 +2333,18 @@ export function App() {
             onAutoOrient={handleAutoOrient}
             isAutoOrienting={isAutoOrienting}
             autoOrientMessage={autoOrientMsg}
+            orientationsData={orientationsData}
+            selectedOrientationId={selectedOrientationId}
+            onSelectOrientation={handleSelectOrientation}
+            onCloseOrientations={() => setOrientationsData(null)}
             onAutoArrange={handleAutoArrange}
             isAutoArranging={isAutoArranging}
             onFetchLayOnFaces={handleFetchLayOnFaces}
             onCutMesh={handleCutMesh}
             isCuttingMesh={isCuttingMesh}
+            layerPauses={layerPauses}
+            onAddLayerPause={handleAddLayerPause}
+            onRemoveLayerPause={handleRemoveLayerPause}
             extruderColors={
               activeProfileId === 'creator5_pro'
                 ? [0, 1, 2, 3].map((zoneIdx) => {
@@ -1597,6 +2410,28 @@ export function App() {
       <ErrorJournalModal
         open={journalOpen}
         onClose={() => setJournalOpen(false)}
+      />
+
+      <QuoteCalculatorModal
+        open={quoteCalculatorOpen}
+        onClose={() => setQuoteCalculatorOpen(false)}
+        initialData={{
+          modelName: stlFile?.name,
+          printerProfileId: activeProfileId,
+          printerName: activePrinter?.display_name || selectedPrinterId,
+          material,
+          ...(sliceResult
+            ? (() => {
+                const hMatch = /(\d+)\s*h/i.exec(sliceResult.estimated_time || '');
+                const mMatch = /(\d+)\s*m/i.exec(sliceResult.estimated_time || '');
+                return {
+                  hours: hMatch ? Number(hMatch[1]) : 0,
+                  minutes: mMatch ? Number(mMatch[1]) : 0,
+                  grams: sliceResult.filament_grams,
+                };
+              })()
+            : {}),
+        }}
       />
 
       {pendingRestoreSession && (

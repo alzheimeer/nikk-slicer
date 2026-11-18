@@ -69,17 +69,27 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) todo el f
 
 ## Características Principales
 
-- **Laminado Inteligente con Perfiles Dinámicos:**
-  - Cálculo automático de temperaturas (`1.ª Capa` e `Impresión`) a partir de los límites de caudal volumétrico (`mm³/s`), modo **Alta Velocidad (HS)**, diámetro de boquilla (`0.2 / 0.4 / 0.6 / 0.8 mm`) y el rango térmico de cada carrete (`min–max °C`).
-  - Generadores de ancho de línea y altura de capa adaptativos, más perfiles dinámicos (`Arachne + Gyroid`, puenteo optimizado y separación calibrada de soportes Z/XY por material).
+- **Laminado Inteligente con Perfiles Dinámicos (`0.08–0.28 mm`):**
+  - **Slider Discreto Calidad vs. Velocidad (`0.08`, `0.12`, `0.16`, `0.20`, `0.24`, `0.28 mm`):** recalcula en tiempo real tarjetas dinámicas (*Estándar*, *Mecánico / Estructural*, *Piel Difusa / Textura*, *Litofanía HD* en `0.08–0.12 mm` y *Rapidez Extrema Blindada* en `0.24–0.28 mm`) según los límites térmicos/cinemáticos de cada impresora y material (`PLA`, `PETG`, `ABS`, `TPU`).
+  - **Análisis IA Contextual (`POST /api/ai/analyze-model`):** cubre las 6 resoluciones con variantes desplegables, tiempos estimados según `Q_max` y filtrado estricto por geometría/modo (en Litofanía oculta materiales incompatibles y restringe alturas a `0.08 / 0.12 mm`).
+  - Cálculo automático de temperaturas (`1.ª Capa` e `Impresión`), diámetro de boquilla (`0.2 / 0.4 / 0.6 / 0.8 mm`) y separación calibrada de soportes Z/XY por material.
+- **Auto-Orientación IA Multi-Opción con Previsualización 3D en Vivo (`POST /api/ai/orientations`):**
+  - Evalúa con `trimesh` + DeepSeek IA 5 orientaciones (*Posición Original*, *Espalda en Cama / Cara Libre*, *Inclinado 45°*, *Mínimo Tiempo / Menor Altura Z* y *Máxima Estabilidad / Base Amplia*) con previsualización instantánea en el visor 3D sobre la cama (`dropToBed`) antes de laminar.
+  - Mide el área real de contacto en cama (`z <= 0.25 mm`), emite alertas de estabilidad (`Base muy pequeña · Requiere Brim/Balsa y Soportes`) y asigna badges dinámicos reales (`Sin Soportes` únicamente cuando los voladizos son `<= 2.0%`).
+- **Gestor Universal de Pausas por Capa (`POST /api/slicer/apply-pauses`):**
+  - Botón **`+ Pausa aquí`** (con nota opcional) y marcadores visuales en la barra vertical de capas del visor G-code, además del bloque **Pausas Programadas** en el Paso 4 y resumen en **Laminado listo**.
+  - Inyección instantánea en el `.gcode` sin re-laminar (`< 50 ms`) y conservación automática al volver a laminar: `PAUSE` para impresoras **Klipper** y bloque seguro `G91 / G1 Z10 / M25 / G1 Z-10` para **FlashForge Creator 5 Pro**.
 - **Soporte con IA (Antes vs. Después Real):**
   - Al pulsar **Soporte con IA (Ángulo Anti-Soportes)**, el sistema evalúa candidatos de orientación con `trimesh`, aplica la rotación y configuración recomendadas, **re-lamina realmente** en segundo plano y compara tiempo, gramos totales y peso de soporte contra el corte previo; si no mejora, revierte automáticamente a la configuración original.
-- **Multicabezal 4 Extrusores (`T0–T3`) para FlashForge Creator 5 Pro:**
+- **Multicabezal 4 Extrusores (`T0–T3`) y Mapeo Extendido (+4 Colores) para FlashForge Creator 5 Pro:**
   - Decodificación nativa de archivos **`.3mf` pintados por triángulo** (`paint_color` de Bambu/Orca/Meshy AI y `pid`/`p1`) tanto en el visor 3D (sin sangrado entre vértices) como en el laminador headless.
-  - Configuración térmica, de material (`PLA`, `PETG`, `ABS`, `TPU 95A`, `Soporte`), modo `HS`, rango de carrete y retracción **independiente por cabezal (`T0–T3`)**.
-  - Negociación automática de temperatura de cama y techo de velocidades lineales gobernado por el carrete de menor caudal volumétrico (`mm³/s`), alertas de incompatibilidad entre materiales y **Torre de Purga Ultra-Ahorro** (`20 mm` + purga en relleno y soportes).
+  - **Mapeo Extendido Multicolor (+4 Colores):** analiza rangos `[z_min_mm, z_max_mm]` por parte tras rotación/escala, sugiere ranuras físicas `T0–T3` reutilizables sin cruce en Z, valida conflictos en vivo e inyecta automáticamente la pausa `M25` en el cambio de filamento.
+  - Configuración térmica, de material (`PLA`, `PETG`, `ABS`, `TPU 95A`, `Soporte`), modo `HS`, rango de carrete y retracción **independiente por cabezal (`T0–T3`)**, más **Torre de Purga Ultra-Ahorro** (`20 mm` + purga en relleno y soportes).
 - **Modo Litofanía (Alta Definición a Contraluz):**
-  - Bloqueo automático a **PLA / PLA HS**, capa fina (`0.12 mm`), relleno **`99%` rectilíneo**, 6 perímetros (`Arachne`), costura trasera, brim exterior de `8 mm`, desactivación de soportes sobre la cara de imagen y velocidades/aceleraciones anti-ringing por cinemática.
+  - Bloqueo automático a **PLA / PLA HS**, capa fina (`0.08–0.12 mm`), relleno **`99%` rectilíneo**, 6 perímetros (`Arachne`), costura trasera, brim exterior de `8 mm`, desactivación de soportes sobre la cara de imagen y velocidades/aceleraciones anti-ringing por cinemática.
+- **Calculadora Comercial de Cotización 3D (`QuoteCalculatorModal`):**
+  - Acceso desde **Laminado listo** (`Calculadora de Venta` pre-rellenada con impresora/Watts, horas/minutos y gramos reales) o desde la barra superior (**Cotizar**).
+  - Calcula costo real en `COP$` (filamento, tarifa Enel Bogotá, desgaste por vida útil/repuestos, margen de fallo, insumos extra, pintura/mano de obra, comisiones de plataforma y multiplicadores `×2`–`×5`), con copia formateada para **WhatsApp** y guardado de preset de taller.
 - **Monitor en Vivo y Aprendizaje Continuo con DeepSeek API:**
   - <img src="docs/assets/deepseek-logo.png" alt="DeepSeek" width="16" align="absmiddle" /> **Grabador continuo (`0% → 100%`)** en segundo plano: guarda muestras cada 20 s y en hitos de progreso (`backend/temp/telemetry_sessions/`).
   - Al finalizar la impresión (o bajo demanda a mitad de corrida), genera un **Compendio Final IA** por fases (`0–5%`, `5–85%`, `85–100%`) con calificación (`EXCELENTE`, `BUENA_CON_MEJORAS`, `REQUIERE_AJUSTE`) y mejoras concretas para el siguiente laminado.
@@ -131,14 +141,16 @@ MaoSlicer/
 │   │   ├── config.py                    # Catálogo, temperaturas óptimas y negociación T0–T3
 │   │   ├── connectors/                  # moonraker.py, flashforge_lan.py, marlin_serial.py
 │   │   ├── core/                        # mesh_analyzer.py, json_patcher.py, slicer_router.py,
-│   │   │                                # ai_copilot.py, print_telemetry_recorder.py
+│   │   │                                # gcode_postprocessor.py, ai_copilot.py,
+│   │   │                                # print_telemetry_recorder.py, project_store.py
 │   │   └── models/schemas.py            # Esquemas Pydantic
 │   ├── profiles/                        # Perfiles JSON maestros (machines, filaments, process)
 │   ├── printers_config.json             # IPs, puertos y metadatos de granja
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/
-│   ├── src/components/                  # SlicerWizard.tsx, Viewport3D.tsx, FarmDashboard.tsx, etc.
+│   ├── src/components/                  # SlicerWizard.tsx, Viewport3D.tsx, FarmDashboard.tsx,
+│   │                                    # QuoteCalculatorModal.tsx, ErrorJournalModal.tsx
 │   ├── src/services/api.ts
 │   ├── src/utils/threeMfPaint.ts        # Decodificador 3MF pintado por triángulo (WebGL)
 │   └── dist/                            # Build React/Vite listo para servir desde FastAPI
@@ -195,10 +207,13 @@ http://<IP_DEL_MAC_PRINCIPAL>:8000
 | Método | Ruta | Descripción |
 | :--- | :--- | :--- |
 | `GET` | `/api/health` | Estado del servidor unificado (`Nikk Slicer`) |
-| `POST` | `/api/analyze-mesh` | Análisis geométrico (`trimesh`) y detección multicolor `.3mf` |
+| `POST` | `/api/analyze-mesh` | Análisis geométrico (`trimesh`), rangos Z `.3mf` y detección multicolor |
+| `POST` | `/api/ai/orientations` | Evaluación multi-orientación (`trimesh` + DeepSeek) con viabilidad física |
+| `POST` | `/api/ai/analyze-model` | Análisis IA contextual con 6 resoluciones (`0.08–0.28 mm`) |
 | `POST` | `/api/ai-recommend` | Recomendación automática con DeepSeek + aprendizajes reales |
 | `POST` | `/api/ai-support-orient` | Orientación anti-soportes y evaluación comparativa |
-| `POST` | `/api/slice` | Laminado real multi-perfil y multi-extrusor (`T0–T3`) |
+| `POST` | `/api/slice` | Laminado real multi-perfil, multi-extrusor (`T0–T3`) y pausas por capa |
+| `POST` | `/api/slicer/apply-pauses` | Inyección/actualización instantánea de pausas (`PAUSE` / `M25`) sin re-laminar |
 | `GET` | `/api/printers/status` | Telemetría en vivo de toda la granja + ingestión continua |
 | `GET` | `/api/printers/{id}/telemetry-session` | Sesión activa grabada (`0–100%`) e historial de compendios |
 | `POST` | `/api/printers/{id}/telemetry-session/compendium` | Genera compendio IA acumulado hasta el instante actual |
