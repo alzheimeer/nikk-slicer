@@ -51,8 +51,10 @@ DEFAULT_SLOT_COLORS: tuple[str, str, str, str] = (
 # `ConfigOptionVector::set_with_restore_2(): invalid size found` al mezclar PLA/PETG/ABS/TPU
 CREATOR_UNIFORM_FILAMENT_DEFAULTS: dict[str, list[str]] = {
     "additional_cooling_fan_speed": ["70"],
-    "enable_pressure_advance": ["0"],
-    "pressure_advance": ["0.03"],
+    "enable_pressure_advance": ["1"],
+    "pressure_advance": ["0.045"],
+    "z_hop": ["0.4"],
+    "z_hop_types": ["Auto Lift"],
     "filament_retraction_length": ["0.6"],
     "filament_retraction_speed": ["35"],
     "support_material_interface_fan_speed": ["-1"],
@@ -204,6 +206,58 @@ def _build_creator_slots(request: SliceRequest) -> list[ExtruderSlotConfig]:
                 )
             )
     return slots
+
+
+def _apply_first_layer_perfection(
+    process_data: dict[str, Any],
+    filament_jsons: list[Path],
+    request: SliceRequest,
+    profile_id: str,
+    nozzle_d: float,
+) -> None:
+    """Inyecta parámetros globales de primera capa impecable (cero surcos, cicatrices ni esquinas abultadas)."""
+    mat = "pla" if request.lithophane_mode else request.material
+    is_petg = mat == "petg"
+    is_bowden = profile_id == "flsun_sr"
+    is_slow_bed = profile_id in ("ender3_s1_pro", "flsun_sr")
+
+    init_lw = round(nozzle_d * 1.2, 2)  # 0.40 mm -> 0.48 mm
+    init_flow = "0.95" if is_petg else "0.98"
+    init_speed = "20" if is_slow_bed else ("25" if is_petg else "30")
+    init_infill_speed = "35" if is_petg else "45"
+
+    process_data["bottom_surface_pattern"] = "monotonic"
+    process_data["initial_layer_line_width"] = f"{init_lw:.2f}"
+    process_data["initial_layer_flow_ratio"] = init_flow
+    process_data["elefant_foot_compensation"] = "0.15"
+    process_data["initial_layer_speed"] = init_speed
+    process_data["initial_layer_infill_speed"] = init_infill_speed
+    process_data["initial_layer_travel_speed"] = "120"
+    process_data["reduce_crossing_wall"] = "1"
+
+    for f_idx, f_path in enumerate(filament_jsons):
+        try:
+            f_data = _load_json(f_path)
+            slot_mat = (
+                request.extruders_config[f_idx].material
+                if (request.extruders_config and f_idx < len(request.extruders_config))
+                else mat
+            )
+            slot_petg = slot_mat == "petg"
+            slot_abs = slot_mat == "abs"
+
+            f_data["z_hop"] = ["0.4"]
+            f_data["z_hop_types"] = ["Auto Lift"]
+            f_data["close_fan_the_first_layers"] = ["3" if (slot_petg or slot_abs) else "1"]
+            f_data["enable_pressure_advance"] = ["1"]
+            if slot_petg:
+                pa_val = "0.075" if is_bowden else "0.045"
+            else:
+                pa_val = "0.055" if is_bowden else "0.025"
+            f_data["pressure_advance"] = [pa_val]
+            _save_json(f_path, f_data)
+        except Exception:
+            pass
 
 
 def patch_profiles_for_job(
@@ -606,6 +660,13 @@ def patch_profiles_for_job(
         except Exception:
             pass
 
+    _apply_first_layer_perfection(
+        process_data,
+        filament_jsons,
+        request,
+        profile_id,
+        nozzle_d,
+    )
     _validate_and_normalize_process_data(process_data)
     _save_json(dst_process, process_data)
 

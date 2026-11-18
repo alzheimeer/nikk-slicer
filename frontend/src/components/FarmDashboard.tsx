@@ -88,6 +88,14 @@ function stateBadge(state: string, online: boolean): { label: string; cls: strin
   return { label: 'En Línea', cls: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200' };
 }
 
+const CAMERA_AUTO_SLEEP_MS = 5 * 60 * 1000;
+
+function withStreamNonce(url: string, nonce: number): string {
+  if (!url || nonce <= 0) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}_t=${nonce}`;
+}
+
 function CameraStreamBox({
   url,
   name,
@@ -98,18 +106,68 @@ function CameraStreamBox({
   onExpand?: () => void;
 }) {
   const [failed, setFailed] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [streamNonce, setStreamNonce] = useState(0);
 
   useEffect(() => {
     setFailed(false);
+    setIsPlaying(true);
   }, [url]);
+
+  useEffect(() => {
+    if (!url || failed || !isPlaying) return;
+    const timer = window.setTimeout(() => {
+      setIsPlaying(false);
+    }, CAMERA_AUTO_SLEEP_MS);
+    return () => window.clearTimeout(timer);
+  }, [url, failed, isPlaying, streamNonce]);
+
+  const handleResume = () => {
+    setFailed(false);
+    setStreamNonce((n) => n + 1);
+    setIsPlaying(true);
+  };
 
   if (!url || failed) {
     return (
-      <div className="flex aspect-[4/3] w-full flex-col items-center justify-center rounded-xl border border-slate-800 bg-slate-950/80 text-center">
-        <CameraOff className="mb-1.5 h-5 w-5 text-slate-600" />
+      <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/80 text-center">
+        <CameraOff className="h-5 w-5 text-slate-600" />
         <p className="text-[11px] font-medium text-slate-500">
           {url ? 'Cámara MJPEG sin señal' : 'Sin URL de cámara configurada'}
         </p>
+        {url && (
+          <button
+            type="button"
+            onClick={handleResume}
+            className="flex items-center gap-1 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/25"
+          >
+            <Play className="h-3 w-3 fill-current" />
+            Reconectar
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (!isPlaying) {
+    return (
+      <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/90 px-3 text-center">
+        <button
+          type="button"
+          onClick={handleResume}
+          aria-label={`Reanudar cámara ${name}`}
+          className="flex h-11 w-11 items-center justify-center rounded-full border border-emerald-400/60 bg-emerald-500/20 text-emerald-300 shadow-lg shadow-emerald-500/15 transition hover:scale-105 hover:bg-emerald-500/30"
+        >
+          <Play className="ml-0.5 h-5 w-5 fill-current" />
+        </button>
+        <div>
+          <p className="text-[11px] font-semibold text-slate-200">
+            Cámara en reposo
+          </p>
+          <p className="text-[10px] text-slate-400">
+            Pausada tras 5 min para ahorrar recursos
+          </p>
+        </div>
       </div>
     );
   }
@@ -117,7 +175,7 @@ function CameraStreamBox({
   return (
     <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl border border-slate-800 bg-black">
       <img
-        src={url}
+        src={withStreamNonce(url, streamNonce)}
         alt={`Cámara ${name}`}
         onError={() => setFailed(true)}
         className="h-full w-full bg-black object-contain"
@@ -126,17 +184,28 @@ function CameraStreamBox({
         <Camera className="h-3 w-3" />
         EN VIVO
       </span>
-      {onExpand && (
+      <div className="absolute right-2 top-2 flex items-center gap-1">
         <button
           type="button"
-          onClick={onExpand}
-          title="Ampliar cámara en modal"
-          aria-label={`Ampliar cámara ${name}`}
-          className="absolute right-2 top-2 flex items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/80 p-1 text-slate-200 backdrop-blur transition hover:border-cyan-400/70 hover:text-cyan-200"
+          onClick={() => setIsPlaying(false)}
+          title="Pausar cámara para ahorrar recursos"
+          aria-label={`Pausar cámara ${name}`}
+          className="flex items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/80 p-1 text-slate-300 backdrop-blur transition hover:border-amber-400/70 hover:text-amber-200"
         >
-          <Maximize2 className="h-3.5 w-3.5" />
+          <Pause className="h-3.5 w-3.5" />
         </button>
-      )}
+        {onExpand && (
+          <button
+            type="button"
+            onClick={onExpand}
+            title="Ampliar cámara en modal"
+            aria-label={`Ampliar cámara ${name}`}
+            className="flex items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/80 p-1 text-slate-200 backdrop-blur transition hover:border-cyan-400/70 hover:text-cyan-200"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1442,10 +1511,9 @@ export function FarmDashboard() {
               </button>
             </div>
             <div className="flex items-center justify-center bg-black p-2">
-              <img
-                src={expandedCamera.url}
-                alt={`Vista ampliada ${expandedCamera.name}`}
-                className="max-h-[80vh] w-full bg-black object-contain"
+              <CameraStreamBox
+                url={expandedCamera.url}
+                name={expandedCamera.name}
               />
             </div>
           </div>

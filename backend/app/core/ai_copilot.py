@@ -1472,9 +1472,11 @@ def analyze_model_for_ai(req: AIAnalyzeModelRequest) -> AIAnalyzeModelResponse:
         "mechanical_functional": "Modo Pieza Mecánica",
         "large_enclosure": "Modo Caja/Prototipo Grande",
     }
+    has_flat_base = float(getattr(req, "base_contact_area_mm2", 0.0) or 0.0) >= 40.0
+    base_badge = " · Base Monotónica + Anti-Cicatrices Z-Hop 0.4mm" if has_flat_base else ""
     filter_note = (
         f"{cat_labels[category]} detectado: mostrando exclusivamente resoluciones "
-        f"{min_h:.2f}–{max_h:.2f} mm para {printer.display_name} + {eff_mat.upper()}."
+        f"{min_h:.2f}–{max_h:.2f} mm para {printer.display_name} + {eff_mat.upper()}{base_badge}."
     )
 
     presets = [

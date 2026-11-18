@@ -9,7 +9,6 @@ import {
   ChevronUp,
   Clock,
   Cpu,
-  DollarSign,
   Download,
   FileUp,
   Flame,
@@ -727,7 +726,7 @@ export function SlicerWizard({
   const [pauseLayerInput, setPauseLayerInput] = useState('10');
   const [pauseNoteInput, setPauseNoteInput] = useState('');
   const [showManualTemps, setShowManualTemps] = useState(false);
-  const [costs, setCosts] = useState<CostSettings>(loadSavedCosts);
+  const [costs] = useState<CostSettings>(loadSavedCosts);
   const [enderMode, setEnderMode] = useState<'sd_volume' | 'usb_serial'>('sd_volume');
   const [selectedSdPath, setSelectedSdPath] = useState<string>('');
   const [pendingOutputAction, setPendingOutputAction] = useState<
@@ -2783,69 +2782,6 @@ export function SlicerWizard({
                   </button>
                 );
               })}
-            </div>
-          </div>
-          {/* Costos de Producción en Pesos (Persistente en localStorage) */}
-          <div className="mt-2.5 space-y-2 rounded-xl border border-slate-800 bg-slate-950/60 p-2.5">
-            <div className="flex items-center gap-1.5 text-xs font-medium text-slate-200">
-              <DollarSign className="h-3.5 w-3.5 text-emerald-400" />
-              <span>Costos de Producción (Pesos)</span>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5">
-              <div>
-                <label className="mb-0.5 block text-[10px] text-slate-400">
-                  Peso rollo (g)
-                </label>
-                <input
-                  type="number"
-                  min={50}
-                  step={50}
-                  value={costs.spoolWeightGrams}
-                  onChange={(e) =>
-                    setCosts((c) => ({
-                      ...c,
-                      spoolWeightGrams: Math.max(1, Number(e.target.value) || 1000),
-                    }))
-                  }
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-[11px] text-slate-100"
-                />
-              </div>
-              <div>
-                <label className="mb-0.5 block text-[10px] text-slate-400">
-                  Costo rollo ($)
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  step={1000}
-                  value={costs.spoolCostPesos}
-                  onChange={(e) =>
-                    setCosts((c) => ({
-                      ...c,
-                      spoolCostPesos: Math.max(0, Number(e.target.value) || 0),
-                    }))
-                  }
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-[11px] text-slate-100"
-                />
-              </div>
-              <div>
-                <label className="mb-0.5 block text-[10px] text-slate-400">
-                  Energía / h ($)
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  step={100}
-                  value={costs.energyCostPerHour}
-                  onChange={(e) =>
-                    setCosts((c) => ({
-                      ...c,
-                      energyCostPerHour: Math.max(0, Number(e.target.value) || 0),
-                    }))
-                  }
-                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-[11px] text-slate-100"
-                />
-              </div>
             </div>
           </div>
         </section>
