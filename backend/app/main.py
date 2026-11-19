@@ -69,6 +69,14 @@ from app.core.ai_copilot import (
     generate_ai_support_decision,
     optimize_slice_with_ai,
 )
+from app.core.project_manager import (
+    delete_full_project,
+    get_full_project,
+    get_project_model_path,
+    get_project_thumbnail_path,
+    list_recent_projects,
+    save_full_project,
+)
 from app.core.project_store import (
     get_saved_project,
     list_saved_projects,
@@ -140,6 +148,7 @@ from app.models.schemas import (
     PrinterTimelapsesResponse,
     PrintersConfigPayload,
     PrintersConfigResponse,
+    SaveProjectRequest,
     QualityPreset,
     SendPrintRequest,
     SendPrintResponse,
@@ -2067,19 +2076,76 @@ async def ai_optimize_slice_endpoint(req: AIOptimizeSliceRequest) -> AIOptimizeS
     return await asyncio.to_thread(optimize_slice_with_ai, req, best_euler)
 
 
+@app.post("/api/projects/save")
+async def save_project_endpoint(req: SaveProjectRequest) -> dict[str, Any]:
+    """Crea o actualiza un proyecto en `~/.nikk_slicer/projects/<project_id>/`."""
+    saved = save_full_project(
+        project_id=req.project_id,
+        title=req.title,
+        original_filename=req.original_filename,
+        printer_id=req.printer_id,
+        material=req.material,
+        mesh_id=req.mesh_id,
+        job_id=req.job_id,
+        thumbnail_base64=req.thumbnail_base64,
+        state=req.state,
+    )
+    return {"project": saved}
+
+
+@app.get("/api/projects/recent")
+async def list_recent_projects_endpoint(limit: int = 5) -> dict[str, Any]:
+    """Devuelve los proyectos más recientes con miniatura y título corto en español."""
+    return {"projects": list_recent_projects(limit=max(1, min(20, limit)))}
+
+
 @app.get("/api/projects")
 async def list_projects_endpoint() -> dict[str, Any]:
-    """Lista los proyectos guardados en `backend/temp/projects/`."""
+    """Lista los proyectos guardados (priorizando `~/.nikk_slicer/projects/`)."""
+    recent = list_recent_projects(limit=30)
+    if recent:
+        return {"projects": recent}
     return {"projects": list_saved_projects()}
+
+
+@app.get("/api/projects/{project_id}/thumbnail")
+async def get_project_thumbnail_endpoint(project_id: str) -> FileResponse:
+    """Sirve la miniatura PNG del proyecto guardado."""
+    thumb = get_project_thumbnail_path(project_id)
+    if thumb is None:
+        raise HTTPException(status_code=404, detail="Miniatura no encontrada.")
+    return FileResponse(path=thumb, media_type="image/png", filename="thumbnail.png")
+
+
+@app.get("/api/projects/{project_id}/model")
+async def get_project_model_endpoint(project_id: str) -> FileResponse:
+    """Sirve el archivo STL/3MF original guardado en el proyecto."""
+    found = get_project_model_path(project_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Modelo del proyecto no encontrado.")
+    model_path, orig_name = found
+    return FileResponse(path=model_path, media_type="application/octet-stream", filename=orig_name)
 
 
 @app.get("/api/projects/{project_id}")
 async def get_project_endpoint(project_id: str) -> dict[str, Any]:
-    """Devuelve el JSON completo de un proyecto guardado."""
+    """Devuelve el estado completo de un proyecto guardado."""
+    full_proj = get_full_project(project_id)
+    if full_proj is not None:
+        return full_proj
     proj = get_saved_project(project_id)
     if proj is None:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
     return proj
+
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project_endpoint(project_id: str) -> dict[str, Any]:
+    """Elimina un proyecto del historial en `~/.nikk_slicer/projects/`."""
+    ok = delete_full_project(project_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
+    return {"deleted": True, "project_id": project_id}
 
 
 @app.get("/api/desktop/open-file")

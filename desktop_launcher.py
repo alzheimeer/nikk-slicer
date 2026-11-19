@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import urllib.request
+import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -290,6 +291,207 @@ class DesktopApi:
             dest.write_bytes(resp.read())
         return {"saved": True, "path": str(dest)}
 
+    def open_new_window(self, project_id: str | None = None) -> dict[str, object]:
+        open_new_project_window(project_id=project_id)
+        return {"opened": True}
+
+    def set_window_title(self, title: str) -> dict[str, object]:
+        import webview  # type: ignore[import-not-found]
+
+        win = webview.active_window()
+        if win is not None and title:
+            try:
+                win.set_title(str(title)[:100])
+            except Exception:
+                pass
+        return {"ok": True}
+
+
+_MENU_TARGET = None
+_RECENT_SUBMENU = None
+
+
+def _build_window_url(project_id: str | None = None) -> str:
+    wsid = uuid.uuid4().hex[:10]
+    if project_id:
+        return f"{BASE_URL}/?window_session_id={wsid}&project_id={project_id}"
+    return f"{BASE_URL}/?window_session_id={wsid}"
+
+
+def open_new_project_window(project_id: str | None = None) -> None:
+    try:
+        import webview  # type: ignore[import-not-found]
+
+        url = _build_window_url(project_id)
+        webview.create_window(
+            "Nikk Slicer",
+            url,
+            width=1440,
+            height=920,
+            min_size=(1100, 720),
+            background_color="#020617",
+            js_api=DesktopApi(),
+        )
+    except Exception:
+        pass
+
+
+def _populate_recent_submenu(submenu) -> None:
+    try:
+        from AppKit import NSMenuItem  # type: ignore[import-not-found]
+
+        submenu.removeAllItems()
+        sys.path.insert(0, str(BACKEND_DIR))
+        from app.core.project_manager import list_recent_projects  # type: ignore[import-not-found]
+
+        recents = list_recent_projects(limit=5)
+        if not recents:
+            empty_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Sin proyectos recientes", None, ""
+            )
+            empty_item.setEnabled_(False)
+            submenu.addItem_(empty_item)
+            return
+
+        for proj in recents:
+            title = str(proj.get("title") or proj.get("original_filename") or "Proyecto")
+            pid = str(proj.get("project_id") or "")
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, "openRecentProject:", ""
+            )
+            item.setTarget_(_MENU_TARGET)
+            item.setRepresentedObject_(pid)
+            submenu.addItem_(item)
+    except Exception:
+        pass
+
+
+def _install_macos_archivo_menu(logger: logging.Logger) -> None:
+    global _MENU_TARGET, _RECENT_SUBMENU
+    try:
+        import objc  # type: ignore[import-not-found]
+        import webview  # type: ignore[import-not-found]
+        from AppKit import (  # type: ignore[import-not-found]
+            NSApp,
+            NSEventModifierFlagCommand,
+            NSEventModifierFlagShift,
+            NSMenu,
+            NSMenuItem,
+        )
+        from Foundation import NSObject, NSOperationQueue  # type: ignore[import-not-found]
+
+        class NikkMenuTarget(NSObject):
+            def newProjectWindow_(self, _sender):
+                open_new_project_window()
+
+            def openProjectsModal_(self, _sender):
+                win = webview.active_window()
+                if win is not None:
+                    win.evaluate_js(
+                        "window.dispatchEvent(new CustomEvent('nikk:menu-open-projects'))"
+                    )
+
+            def saveProject_(self, _sender):
+                win = webview.active_window()
+                if win is not None:
+                    win.evaluate_js(
+                        "window.dispatchEvent(new CustomEvent('nikk:menu-save-project'))"
+                    )
+
+            def saveProjectAs_(self, _sender):
+                win = webview.active_window()
+                if win is not None:
+                    win.evaluate_js(
+                        "window.dispatchEvent(new CustomEvent('nikk:menu-save-project-as'))"
+                    )
+
+            def openRecentProject_(self, sender):
+                pid = str(sender.representedObject() or "")
+                if not pid:
+                    return
+                win = webview.active_window()
+                if win is None:
+                    open_new_project_window(project_id=pid)
+                    return
+                has_model = False
+                try:
+                    has_model = bool(win.evaluate_js("Boolean(window.__nikkHasModel)"))
+                except Exception:
+                    has_model = False
+                if has_model:
+                    open_new_project_window(project_id=pid)
+                else:
+                    win.evaluate_js(
+                        f"window.dispatchEvent(new CustomEvent('nikk:open-project', {{ detail: {{ projectId: '{pid}' }} }}))"
+                    )
+
+            def menuNeedsUpdate_(self, menu):
+                _populate_recent_submenu(menu)
+
+        def _setup_on_main():
+            global _MENU_TARGET, _RECENT_SUBMENU
+            main_menu = NSApp.mainMenu()
+            if main_menu is None:
+                return
+            for i in range(main_menu.numberOfItems()):
+                if main_menu.itemAtIndex_(i).title() == "Archivo":
+                    return
+
+            _MENU_TARGET = NikkMenuTarget.alloc().init()
+            archivo_menu = NSMenu.alloc().initWithTitle_("Archivo")
+
+            it_new = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Nuevo proyecto (Nueva ventana)", "newProjectWindow:", "n"
+            )
+            it_new.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+            it_new.setTarget_(_MENU_TARGET)
+            archivo_menu.addItem_(it_new)
+
+            it_open = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Abrir proyecto...", "openProjectsModal:", "o"
+            )
+            it_open.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+            it_open.setTarget_(_MENU_TARGET)
+            archivo_menu.addItem_(it_open)
+
+            it_save = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Guardar proyecto", "saveProject:", "s"
+            )
+            it_save.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+            it_save.setTarget_(_MENU_TARGET)
+            archivo_menu.addItem_(it_save)
+
+            it_save_as = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Guardar proyecto como...", "saveProjectAs:", "S"
+            )
+            it_save_as.setKeyEquivalentModifierMask_(
+                NSEventModifierFlagCommand | NSEventModifierFlagShift
+            )
+            it_save_as.setTarget_(_MENU_TARGET)
+            archivo_menu.addItem_(it_save_as)
+
+            archivo_menu.addItem_(NSMenuItem.separatorItem())
+
+            _RECENT_SUBMENU = NSMenu.alloc().initWithTitle_("Proyectos recientes")
+            _RECENT_SUBMENU.setDelegate_(_MENU_TARGET)
+            _populate_recent_submenu(_RECENT_SUBMENU)
+            it_recent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Proyectos recientes", None, ""
+            )
+            it_recent.setSubmenu_(_RECENT_SUBMENU)
+            archivo_menu.addItem_(it_recent)
+
+            archivo_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Archivo", None, ""
+            )
+            archivo_item.setSubmenu_(archivo_menu)
+            insert_idx = 1 if main_menu.numberOfItems() >= 1 else 0
+            main_menu.insertItem_atIndex_(archivo_item, insert_idx)
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(_setup_on_main)
+    except Exception as exc:
+        logger.warning("No se pudo instalar menú Archivo nativo: %s", exc)
+
 
 def open_desktop_window(logger: logging.Logger) -> None:
     try:
@@ -300,7 +502,7 @@ def open_desktop_window(logger: logging.Logger) -> None:
         _install_macos_open_file_handler(logger)
         webview.create_window(
             "Nikk Slicer",
-            BASE_URL,
+            _build_window_url(),
             width=1440,
             height=920,
             min_size=(1100, 720),
@@ -308,7 +510,12 @@ def open_desktop_window(logger: logging.Logger) -> None:
             js_api=DesktopApi(),
         )
         _set_macos_dock_icon(logger)
-        webview.start()
+
+        def _on_webview_ready():
+            time.sleep(0.35)
+            _install_macos_archivo_menu(logger)
+
+        webview.start(func=_on_webview_ready)
         return
     except ImportError:
         pass

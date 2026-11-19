@@ -992,6 +992,7 @@ export interface AILayerResolutionGroup {
 
 export interface AIAnalyzeModelResponse {
   detected_type_summary: string;
+  short_spanish_title?: string;
   model_category:
     | 'lithophane_flat'
     | 'character_organic'
@@ -1104,6 +1105,87 @@ export async function fetchSavedProjects(): Promise<SavedProjectRecord[]> {
 
 export function getSavedProjectDownloadUrl(projectId: string): string {
   return `${API_BASE_URL}/projects/${encodeURIComponent(projectId)}`;
+}
+
+export interface FullProjectSummary {
+  project_id: string;
+  title: string;
+  original_filename: string;
+  created_at: string;
+  updated_at: string;
+  printer_id: PrinterId | string;
+  material: MaterialType | string;
+  has_thumbnail: boolean;
+  thumbnail_url: string | null;
+  slice_metrics?: {
+    estimated_time?: string;
+    filament_grams?: number;
+    filament_meters?: number;
+    total_cost_cop?: number;
+  };
+}
+
+export interface FullProjectRecord extends FullProjectSummary {
+  state: Record<string, unknown>;
+  gcode_text?: string | null;
+  model_url?: string | null;
+}
+
+export async function saveFullProject(payload: {
+  project_id?: string | null;
+  title: string;
+  original_filename: string;
+  printer_id: PrinterId;
+  material: MaterialType;
+  mesh_id?: string | null;
+  job_id?: string | null;
+  thumbnail_base64?: string | null;
+  state: Record<string, unknown>;
+}): Promise<FullProjectSummary> {
+  const res = await fetch(`${API_BASE_URL}/projects/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  const data = (await res.json()) as { project: FullProjectSummary };
+  return data.project;
+}
+
+export async function fetchRecentProjects(limit = 5): Promise<FullProjectSummary[]> {
+  const res = await fetch(`${API_BASE_URL}/projects/recent?limit=${limit}`);
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  const data = (await res.json()) as { projects?: FullProjectSummary[] };
+  return Array.isArray(data.projects) ? data.projects : [];
+}
+
+export async function fetchFullProject(projectId: string): Promise<FullProjectRecord> {
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}`);
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<FullProjectRecord>;
+}
+
+export async function deleteFullProject(projectId: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+}
+
+export function getProjectModelFileUrl(projectId: string): string {
+  return `${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/model`;
+}
+
+export function getProjectThumbnailUrl(projectId: string): string {
+  return `${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/thumbnail`;
 }
 
 export async function requestAIDefectDiagnose(payload: {

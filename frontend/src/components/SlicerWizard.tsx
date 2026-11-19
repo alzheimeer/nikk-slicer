@@ -10,6 +10,7 @@ import {
   Clock,
   Cpu,
   Download,
+  ExternalLink,
   FileUp,
   Flame,
   Gauge,
@@ -44,6 +45,7 @@ import {
   type AISupportOrientResponse,
   type AdhesionType,
   type ExtruderSlotConfig,
+  type FullProjectSummary,
   type LayerPauseItem,
   type MachineMaterialLearningsResponse,
   type MaterialType,
@@ -599,6 +601,12 @@ interface SlicerWizardProps {
   layerPauses: LayerPauseItem[];
   onAddLayerPause: (layer: number, zMm: number | null, note: string) => void;
   onRemoveLayerPause: (layer: number) => void;
+  recentProjects?: FullProjectSummary[];
+  onLoadFullProject?: (projectId: string) => void;
+  onOpenProjectNewWindow?: (projectId: string) => void;
+  onDeleteFullProject?: (projectId: string) => void;
+  externalProjectsOpen?: boolean;
+  onChangeExternalProjectsOpen?: (open: boolean) => void;
 }
 
 const COLOR_PRESETS: Array<{ name: string; hex: string }> = [
@@ -721,6 +729,12 @@ export function SlicerWizard({
   layerPauses,
   onAddLayerPause,
   onRemoveLayerPause,
+  recentProjects = [],
+  onLoadFullProject,
+  onOpenProjectNewWindow,
+  onDeleteFullProject,
+  externalProjectsOpen = false,
+  onChangeExternalProjectsOpen,
 }: SlicerWizardProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [pauseLayerInput, setPauseLayerInput] = useState('10');
@@ -740,6 +754,13 @@ export function SlicerWizard({
   >({});
   const [aiUserNotes, setAiUserNotes] = useState('');
   const [projectsModalOpen, setProjectsModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (externalProjectsOpen) {
+      setProjectsModalOpen(true);
+      onRefreshSavedProjects();
+    }
+  }, [externalProjectsOpen]);
   const [quoteModalOpen, setQuoteModalOpen] = useState(false);
   const [defectTargetProj, setDefectTargetProj] = useState<SavedProjectRecord | null>(null);
   const [defectText, setDefectText] = useState('');
@@ -3705,14 +3726,101 @@ export function SlicerWizard({
               </div>
               <button
                 type="button"
-                onClick={() => setProjectsModalOpen(false)}
+                onClick={() => {
+                  setProjectsModalOpen(false);
+                  onChangeExternalProjectsOpen?.(false);
+                }}
                 className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-700"
               >
                 Cerrar
               </button>
             </div>
 
-            <div className="flex-1 space-y-2 overflow-y-auto p-4">
+            <div className="flex-1 space-y-3 overflow-y-auto p-4">
+              {/* 5 Proyectos Recientes con miniatura 3D y título corto en español */}
+              {recentProjects.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-cyan-300">
+                    Proyectos Recientes ({recentProjects.length})
+                  </p>
+                  <div className="space-y-2">
+                    {recentProjects.map((rp) => (
+                      <div
+                        key={rp.project_id}
+                        className="flex items-center gap-3 rounded-xl border border-cyan-500/25 bg-slate-950/85 p-2.5 text-xs"
+                      >
+                        <div className="h-14 w-16 shrink-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
+                          {rp.thumbnail_url ? (
+                            <img
+                              src={rp.thumbnail_url}
+                              alt={rp.title}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">
+                              3D
+                            </div>
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <p className="truncate text-xs font-bold text-slate-100">
+                            {rp.title}
+                          </p>
+                          <p className="truncate font-mono text-[10px] text-slate-400">
+                            {rp.original_filename} ·{' '}
+                            {rp.updated_at ? new Date(rp.updated_at).toLocaleString() : ''}
+                          </p>
+                          <p className="font-mono text-[10px] text-cyan-300">
+                            {rp.printer_id} · {String(rp.material || 'pla').toUpperCase()}
+                            {rp.slice_metrics?.estimated_time
+                              ? ` · ${rp.slice_metrics.estimated_time}`
+                              : ''}
+                            {rp.slice_metrics?.filament_grams
+                              ? ` · ${rp.slice_metrics.filament_grams}g`
+                              : ''}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 flex-col gap-1 sm:flex-row">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onLoadFullProject?.(rp.project_id);
+                              setProjectsModalOpen(false);
+                              onChangeExternalProjectsOpen?.(false);
+                            }}
+                            className="rounded-lg border border-cyan-500/45 bg-cyan-500/15 px-2.5 py-1 text-[10px] font-semibold text-cyan-100 hover:bg-cyan-500/25"
+                          >
+                            Abrir aquí
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onOpenProjectNewWindow?.(rp.project_id);
+                              setProjectsModalOpen(false);
+                              onChangeExternalProjectsOpen?.(false);
+                            }}
+                            className="flex items-center gap-1 rounded-lg border border-emerald-500/45 bg-emerald-500/15 px-2.5 py-1 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-500/25"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            Nueva ventana
+                          </button>
+                          {onDeleteFullProject && (
+                            <button
+                              type="button"
+                              onClick={() => onDeleteFullProject(rp.project_id)}
+                              title="Eliminar proyecto"
+                              className="rounded-lg border border-slate-700 bg-slate-900 px-1.5 py-1 text-slate-400 hover:border-rose-500/50 hover:text-rose-300"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {isLoadingProjects ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-xs text-slate-400">
                   <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />

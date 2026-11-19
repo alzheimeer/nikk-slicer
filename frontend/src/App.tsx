@@ -8,18 +8,23 @@ import {
   autoArrangeModels,
   clearLastSession,
   cutMeshByPlane,
+  deleteFullProject,
   fetchAIRecommendation,
   fetchCachedMeshFile,
   fetchCatalog,
+  fetchFullProject,
   fetchGcodeText,
   fetchLayOnFaceCandidates,
   fetchPrintersConfig,
+  fetchRecentProjects,
   fetchSavedProjects,
   fetchUserPrefs,
+  getProjectModelFileUrl,
   requestAIAnalyzeModel,
   requestAIOrientations,
   requestAIOptimizeSlice,
   requestAISupportOrient,
+  saveFullProject,
   saveUserPrefs,
   sliceModel,
   uploadJobToPrinter,
@@ -27,6 +32,7 @@ import {
   type AIOrientationsResponse,
   type AIOptimizeSliceResponse,
   type AISupportOrientResponse,
+  type FullProjectSummary,
   type OrientationOption,
   type AdhesionType,
   type ExtruderSlotConfig,
@@ -319,6 +325,11 @@ export function App() {
   } | null>(null);
 
   const [savedProjects, setSavedProjects] = useState<SavedProjectRecord[]>([]);
+  const [recentProjects, setRecentProjects] = useState<FullProjectSummary[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [activeProjectTitle, setActiveProjectTitle] = useState<string | null>(null);
+  const [externalProjectsOpen, setExternalProjectsOpen] = useState(false);
+  const [projectToast, setProjectToast] = useState<string | null>(null);
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
 
   const [isSlicing, setIsSlicing] = useState(false);
@@ -1125,14 +1136,290 @@ export function App() {
   const refreshSavedProjects = async () => {
     setIsLoadingProjects(true);
     try {
-      const list = await fetchSavedProjects();
+      const [list, recents] = await Promise.all([
+        fetchSavedProjects(),
+        fetchRecentProjects(5).catch(() => []),
+      ]);
       setSavedProjects(list);
+      setRecentProjects(recents);
     } catch {
       // Silencioso si backend aún no tiene proyectos
     } finally {
       setIsLoadingProjects(false);
     }
   };
+
+  const showProjectToast = (msg: string) => {
+    setProjectToast(msg);
+    window.setTimeout(() => {
+      setProjectToast((cur) => (cur === msg ? null : cur));
+    }, 3500);
+  };
+
+  const captureViewportThumbnail = (): string | null => {
+    try {
+      const canvas = document.querySelector('canvas');
+      return canvas ? canvas.toDataURL('image/png') : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const saveCurrentProject = async (opts?: {
+    forceNew?: boolean;
+    customTitle?: string;
+    overrideSlice?: SliceResponse | null;
+    overrideAi?: AIAnalyzeModelResponse | null;
+  }): Promise<FullProjectSummary | null> => {
+    if (!stlFile && !meshId) return null;
+    const effSlice = opts?.overrideSlice ?? sliceResult;
+    const effAi = opts?.overrideAi ?? aiAnalysisResult;
+    const targetProjectId = opts?.forceNew ? null : activeProjectId;
+    const title =
+      (opts?.customTitle || '').trim() ||
+      effAi?.short_spanish_title?.trim() ||
+      activeProjectTitle ||
+      (stlFile?.name || 'Proyecto 3D').replace(/\.(stl|3mf)$/i, '');
+
+    try {
+      const saved = await saveFullProject({
+        project_id: targetProjectId,
+        title,
+        original_filename: stlFile?.name || 'modelo.stl',
+        printer_id: selectedPrinterId,
+        material: lithophaneMode ? 'pla' : material,
+        mesh_id: meshId,
+        job_id: effSlice?.job_id ?? null,
+        thumbnail_base64: captureViewportThumbnail(),
+        state: {
+          printer_id: selectedPrinterId,
+          material: lithophaneMode ? 'pla' : material,
+          nozzle_diameter: nozzleDiameter,
+          high_speed_filament: highSpeedFilament,
+          lithophane_mode: lithophaneMode,
+          extruders_config: extrudersConfig,
+          part_extruder_map: partExtruderMap,
+          z_color_ranges: zColorRanges,
+          transform,
+          quality_preset: qualityPreset,
+          ai_analysis_result: effAi ?? null,
+          layer_pauses: layerPauses,
+          mesh_id: meshId,
+          job_id: effSlice?.job_id ?? null,
+          slice_metrics: effSlice
+            ? {
+                estimated_time: effSlice.estimated_time,
+                filament_grams: effSlice.filament_grams,
+                filament_meters: effSlice.filament_meters,
+              }
+            : {},
+        },
+      });
+      setActiveProjectId(saved.project_id);
+      setActiveProjectTitle(saved.title);
+      const recents = await fetchRecentProjects(5).catch(() => []);
+      setRecentProjects(recents);
+      showProjectToast(
+        targetProjectId
+          ? `Proyecto actualizado: ${saved.title}`
+          : `Proyecto guardado: ${saved.title}`,
+      );
+      return saved;
+    } catch {
+      return null;
+    }
+  };
+
+  const handleLoadFullProject = async (projectId: string) => {
+    setErrorMsg(null);
+    try {
+      const proj = await fetchFullProject(projectId);
+      const st = (proj.state || {}) as Record<string, unknown>;
+      if (typeof proj.printer_id === 'string' && proj.printer_id) {
+        setSelectedPrinterId(proj.printer_id as PrinterId);
+      }
+      if (typeof proj.material === 'string') {
+        setMaterial(proj.material as MaterialType);
+      }
+      if (typeof st.nozzle_diameter === 'number') {
+        setNozzleDiameter(st.nozzle_diameter as NozzleDiameter);
+      }
+      if (typeof st.high_speed_filament === 'boolean') {
+        setHighSpeedFilament(st.high_speed_filament);
+      }
+      if (typeof st.lithophane_mode === 'boolean') {
+        setLithophaneMode(st.lithophane_mode);
+      }
+      if (Array.isArray(st.extruders_config) && st.extruders_config.length === 4) {
+        setExtrudersConfig(st.extruders_config as ExtruderSlotConfig[]);
+      }
+      if (st.part_extruder_map && typeof st.part_extruder_map === 'object') {
+        setPartExtruderMap(st.part_extruder_map as Record<string, number>);
+      }
+      if (Array.isArray(st.z_color_ranges)) {
+        setZColorRanges(st.z_color_ranges as ZColorRange[]);
+      }
+      if (Array.isArray(st.layer_pauses)) {
+        setLayerPauses(st.layer_pauses as LayerPauseItem[]);
+      }
+      if (st.ai_analysis_result && typeof st.ai_analysis_result === 'object') {
+        setAiAnalysisResult(st.ai_analysis_result as AIAnalyzeModelResponse);
+      }
+      const nextTransform =
+        st.transform && typeof st.transform === 'object'
+          ? (st.transform as ModelTransform)
+          : DEFAULT_TRANSFORM;
+      setTransform(nextTransform);
+      setActiveProjectId(proj.project_id);
+      setActiveProjectTitle(proj.title);
+      if (proj.gcode_text) {
+        setGcodeText(proj.gcode_text);
+      }
+
+      if (proj.model_url) {
+        const resp = await fetch(getProjectModelFileUrl(proj.project_id));
+        if (resp.ok) {
+          const blob = await resp.blob();
+          const loadedFile = new File([blob], proj.original_filename || 'modelo.stl', {
+            type: 'application/octet-stream',
+          });
+          setStlFile(loadedFile);
+          const restoredMeshId =
+            typeof st.mesh_id === 'string' && st.mesh_id ? st.mesh_id : null;
+          if (restoredMeshId) {
+            setMeshId(restoredMeshId);
+            await runAnalysis(
+              (proj.printer_id as PrinterId) || selectedPrinterId,
+              nextTransform,
+              { cachedMeshId: restoredMeshId },
+            );
+          } else {
+            await runAnalysis(
+              (proj.printer_id as PrinterId) || selectedPrinterId,
+              nextTransform,
+              { file: loadedFile },
+            );
+          }
+        }
+      }
+      showProjectToast(`Proyecto abierto: ${proj.title}`);
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Error al abrir el proyecto guardado.',
+      );
+    }
+  };
+
+  const handleOpenProjectNewWindow = (projectId: string) => {
+    const pyApi = (
+      window as unknown as {
+        pywebview?: { api?: { open_new_window?: (pid?: string | null) => void } };
+      }
+    ).pywebview?.api;
+    if (pyApi?.open_new_window) {
+      pyApi.open_new_window(projectId);
+    } else {
+      const wsid = Math.random().toString(36).slice(2, 10);
+      window.open(
+        `/?window_session_id=${wsid}&project_id=${encodeURIComponent(projectId)}`,
+        '_blank',
+      );
+    }
+  };
+
+  const handleDeleteFullProject = async (projectId: string) => {
+    try {
+      await deleteFullProject(projectId);
+      setRecentProjects((prev) => prev.filter((p) => p.project_id !== projectId));
+      if (activeProjectId === projectId) {
+        setActiveProjectId(null);
+        setActiveProjectTitle(null);
+      }
+    } catch {
+      // silencioso
+    }
+  };
+
+  useEffect(() => {
+    (window as unknown as { __nikkHasModel?: boolean }).__nikkHasModel = Boolean(
+      stlFile || meshId,
+    );
+    const fullTitle = activeProjectTitle
+      ? `Nikk Slicer — ${activeProjectTitle}`
+      : 'Nikk Slicer';
+    document.title = fullTitle;
+    const pyApi = (
+      window as unknown as {
+        pywebview?: { api?: { set_window_title?: (t: string) => void } };
+      }
+    ).pywebview?.api;
+    pyApi?.set_window_title?.(fullTitle);
+  }, [stlFile, meshId, activeProjectTitle]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const pid = params.get('project_id');
+    if (pid) {
+      suppressRestorePromptRef.current = true;
+      void handleLoadFullProject(pid);
+    }
+    void fetchRecentProjects(5)
+      .then((list) => setRecentProjects(list))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const onOpenProjects = () => {
+      setExternalProjectsOpen(true);
+    };
+    const onSaveProject = () => {
+      void saveCurrentProject();
+    };
+    const onSaveProjectAs = () => {
+      const suggested =
+        activeProjectTitle ||
+        aiAnalysisResult?.short_spanish_title ||
+        (stlFile?.name || 'Proyecto 3D').replace(/\.(stl|3mf)$/i, '');
+      const custom = window.prompt('Guardar proyecto como:', suggested);
+      if (custom && custom.trim()) {
+        void saveCurrentProject({ forceNew: true, customTitle: custom.trim() });
+      }
+    };
+    const onOpenSpecific = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ projectId?: string }>).detail;
+      if (detail?.projectId) {
+        void handleLoadFullProject(detail.projectId);
+      }
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (!(ev.metaKey || ev.ctrlKey)) return;
+      const k = ev.key.toLowerCase();
+      if (k === 's') {
+        ev.preventDefault();
+        if (ev.shiftKey) {
+          onSaveProjectAs();
+        } else {
+          onSaveProject();
+        }
+      } else if (k === 'o') {
+        ev.preventDefault();
+        onOpenProjects();
+      }
+    };
+
+    window.addEventListener('nikk:menu-open-projects', onOpenProjects);
+    window.addEventListener('nikk:menu-save-project', onSaveProject);
+    window.addEventListener('nikk:menu-save-project-as', onSaveProjectAs);
+    window.addEventListener('nikk:open-project', onOpenSpecific);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('nikk:menu-open-projects', onOpenProjects);
+      window.removeEventListener('nikk:menu-save-project', onSaveProject);
+      window.removeEventListener('nikk:menu-save-project-as', onSaveProjectAs);
+      window.removeEventListener('nikk:open-project', onOpenSpecific);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  });
 
   const handleSelectDynamicProfile = (
     id:
@@ -1220,12 +1507,15 @@ export function App() {
     }
   };
 
-  const handleAnalyzeModelAI = async () => {
+  const handleAnalyzeModelAI = async (
+    overrideSlice?: SliceResponse | null,
+  ): Promise<AIAnalyzeModelResponse | null> => {
+    const effSlice = overrideSlice ?? sliceResult;
     // Primera instrucción síncrona para respuesta visual instantánea (0 ms)
     setIsAnalyzingAI(true);
-    if ((!meshId && !stlFile) || !sliceResult || !analysis) {
+    if ((!meshId && !stlFile) || !effSlice || !analysis) {
       setIsAnalyzingAI(false);
-      return;
+      return null;
     }
     setErrorMsg(null);
     setSendPrintMsg(null);
@@ -1246,20 +1536,25 @@ export function App() {
         is_multicolor: Boolean(analysis.is_multicolor),
         detected_extruder_count: analysis.detected_extruder_count ?? 1,
         current_slice_metrics: {
-          estimated_time: sliceResult.estimated_time,
-          estimated_time_seconds: sliceResult.estimated_time_seconds,
-          filament_grams: sliceResult.filament_grams,
-          support_weight_g: sliceResult.support_weight_g ?? 0,
-          support_percentage: sliceResult.support_percentage ?? 0,
+          estimated_time: effSlice.estimated_time,
+          estimated_time_seconds: effSlice.estimated_time_seconds,
+          filament_grams: effSlice.filament_grams,
+          support_weight_g: effSlice.support_weight_g ?? 0,
+          support_percentage: effSlice.support_percentage ?? 0,
         },
       });
       setAiAnalysisResult(res);
+      if (res.short_spanish_title && !activeProjectTitle) {
+        setActiveProjectTitle(res.short_spanish_title);
+      }
       if (res.model_category === 'lithophane_flat') {
         if (material !== 'pla') setMaterial('pla');
         if (!lithophaneMode) handleToggleLithophaneMode(true);
       }
+      return res;
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Error analizando el modelo con IA.');
+      return null;
     } finally {
       setIsAnalyzingAI(false);
     }
@@ -1935,6 +2230,12 @@ export function App() {
       const { res, rawGcode } = await runRealSlice();
       setSliceResult(res);
       setGcodeText(rawGcode);
+      if (!aiAnalysisResult) {
+        const aiRes = await handleAnalyzeModelAI(res);
+        await saveCurrentProject({ overrideSlice: res, overrideAi: aiRes });
+      } else {
+        await saveCurrentProject({ overrideSlice: res });
+      }
     } catch (err: unknown) {
       setErrorMsg(
         err instanceof Error ? err.message : 'Error ejecutando el laminado.',
@@ -2277,7 +2578,9 @@ export function App() {
             onAISupportOrient={handleAISupportOrient}
             isOptimizingSupportAI={isOptimizingSupportAI}
             aiSupportStatus={aiSupportStatus}
-            onAnalyzeModelAI={handleAnalyzeModelAI}
+            onAnalyzeModelAI={() => {
+              void handleAnalyzeModelAI();
+            }}
             isAnalyzingAI={isAnalyzingAI}
             aiAnalysisResult={aiAnalysisResult}
             onOptimizeSliceWithAI={handleOptimizeSliceWithAI}
@@ -2320,6 +2623,12 @@ export function App() {
             layerPauses={layerPauses}
             onAddLayerPause={handleAddLayerPause}
             onRemoveLayerPause={handleRemoveLayerPause}
+            recentProjects={recentProjects}
+            onLoadFullProject={handleLoadFullProject}
+            onOpenProjectNewWindow={handleOpenProjectNewWindow}
+            onDeleteFullProject={handleDeleteFullProject}
+            externalProjectsOpen={externalProjectsOpen}
+            onChangeExternalProjectsOpen={setExternalProjectsOpen}
           />
 
           <Viewport3D
@@ -2526,6 +2835,11 @@ export function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {projectToast && (
+        <div className="fixed bottom-4 right-4 z-50 rounded-xl border border-emerald-500/45 bg-slate-900/95 px-3.5 py-2 text-xs font-semibold text-emerald-200 shadow-2xl backdrop-blur">
+          {projectToast}
         </div>
       )}
     </div>

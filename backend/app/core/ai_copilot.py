@@ -1424,9 +1424,10 @@ def analyze_model_for_ai(req: AIAnalyzeModelRequest) -> AIAnalyzeModelResponse:
     }
     prompt = (
         "Eres un ingeniero experto en impresión 3D FDM.\n"
-        "Redacta un resumen corto y elige 1 o 2 alturas recomendadas DENTRO de `allowed_heights`.\n"
+        "Redacta un resumen corto, un título de proyecto en español (2 a 4 palabras máximo, ej. 'Robot Articulado Multicolor', 'Soporte Base Laptop', 'Litofanía Fotográfica', 'Organizador Modular', 'Busto Personaje') y elige 1 o 2 alturas recomendadas DENTRO de `allowed_heights`.\n"
         "Responde SOLO JSON válido con:\n"
         "- detected_type_summary (string en español <= 12 palabras)\n"
+        "- short_spanish_title (string en español de 2 a 4 palabras máximo)\n"
         "- recommended_heights (array de 1 o 2 números de `allowed_heights`)\n"
         f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
     )
@@ -1434,11 +1435,39 @@ def analyze_model_for_ai(req: AIAnalyzeModelRequest) -> AIAnalyzeModelResponse:
     summary = default_summary
     rec_heights = list(rec_by_cat[category])
 
+    fname_low = (req.filename or "").lower()
+    if category == "lithophane_flat":
+        short_title = "Litofanía Fotográfica"
+    elif category == "character_organic":
+        if "robot" in fname_low or "robo" in fname_low or "mech" in fname_low:
+            short_title = "Robot Articulado Multicolor" if req.is_multicolor else "Robot Articulado 3D"
+        elif "bust" in fname_low or "head" in fname_low:
+            short_title = "Busto Personaje"
+        else:
+            short_title = "Figura Coleccionable Multicolor" if req.is_multicolor else "Figura Coleccionable 3D"
+    elif category == "large_enclosure":
+        if "stand" in fname_low or "laptop" in fname_low:
+            short_title = "Soporte Base Laptop"
+        else:
+            short_title = "Organizador Modular"
+    else:
+        if "stand" in fname_low or "soporte" in fname_low:
+            short_title = "Soporte Funcional 3D"
+        elif "box" in fname_low or "case" in fname_low or "caja" in fname_low:
+            short_title = "Carcasa Protectora 3D"
+        else:
+            short_title = "Pieza Mecánica Multicolor" if req.is_multicolor else "Pieza Mecánica Funcional"
+
     allowed_set = set(allowed_by_cat[category])
     if raw_json:
         raw_sum = str(raw_json.get("detected_type_summary") or "").strip()
         if raw_sum:
             summary = raw_sum[:110]
+        raw_title = str(raw_json.get("short_spanish_title") or "").strip()
+        if raw_title:
+            words = raw_title.split()[:4]
+            if words:
+                short_title = " ".join(words)[:60]
         raw_heights = raw_json.get("recommended_heights")
         if isinstance(raw_heights, list) and raw_heights:
             valid_h = [round(float(h), 2) for h in raw_heights if round(float(h), 2) in allowed_set]
@@ -1491,6 +1520,7 @@ def analyze_model_for_ai(req: AIAnalyzeModelRequest) -> AIAnalyzeModelResponse:
 
     return AIAnalyzeModelResponse(
         detected_type_summary=summary,
+        short_spanish_title=short_title,
         model_category=category,  # type: ignore[arg-type]
         filter_note=filter_note,
         contextual_options=contextual_options,

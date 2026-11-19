@@ -2378,6 +2378,7 @@ export function Viewport3D({
       {/* Escena 3D */}
       <Canvas
         shadows
+        gl={{ preserveDrawingBuffer: true }}
         camera={{ position: [230, 210, 250], fov: 42, near: 0.5, far: 5000 }}
       >
         <color attach="background" args={['#070b14']} />

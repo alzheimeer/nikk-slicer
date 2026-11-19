@@ -268,6 +268,20 @@ class ApplyPausesResponse(BaseModel):
     gcode_text: str
 
 
+class SaveProjectRequest(BaseModel):
+    """Solicitud para crear o actualizar un proyecto completo en `~/.nikk_slicer/projects/`."""
+
+    project_id: str | None = None
+    title: str
+    original_filename: str = "modelo.stl"
+    printer_id: PrinterId
+    material: MaterialType = "pla"
+    mesh_id: str | None = None
+    job_id: str | None = None
+    thumbnail_base64: str | None = None
+    state: dict[str, Any] = Field(default_factory=dict)
+
+
 class SliceResponse(BaseModel):
     """Resultado completo del laminado CLI y análisis geométrico."""
 
@@ -424,6 +438,7 @@ class AIAnalyzeModelResponse(BaseModel):
     """Respuesta de Fase 1 con clasificación estricta, opciones fijas y resoluciones filtradas."""
 
     detected_type_summary: str
+    short_spanish_title: str = ""
     model_category: Literal[
         "lithophane_flat",
         "character_organic",
