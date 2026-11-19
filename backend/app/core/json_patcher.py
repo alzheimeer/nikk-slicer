@@ -53,10 +53,15 @@ CREATOR_UNIFORM_FILAMENT_DEFAULTS: dict[str, list[str]] = {
     "additional_cooling_fan_speed": ["70"],
     "enable_pressure_advance": ["1"],
     "pressure_advance": ["0.045"],
-    "z_hop": ["0.4"],
-    "z_hop_types": ["Auto Lift"],
-    "filament_retraction_length": ["0.6"],
-    "filament_retraction_speed": ["35"],
+    "z_hop": ["0.2"],
+    "z_hop_types": ["Slope Lift"],
+    "wipe": ["1"],
+    "wipe_distance": ["1.5"],
+    "retract_before_wipe": ["70%"],
+    "filament_retraction_length": ["1.2"],
+    "filament_retraction_speed": ["40"],
+    "filament_deretraction_speed": ["35"],
+    "retraction_length_when_changing_material": ["1.6"],
     "support_material_interface_fan_speed": ["-1"],
 }
 
@@ -246,12 +251,23 @@ def _apply_first_layer_perfection(
             slot_petg = slot_mat == "petg"
             slot_abs = slot_mat == "abs"
 
-            f_data["z_hop"] = ["0.4"]
-            f_data["z_hop_types"] = ["Auto Lift"]
+            f_data["z_hop"] = ["0.2"]
+            f_data["z_hop_types"] = ["Slope Lift"]
+            f_data["wipe"] = ["1"]
+            f_data["wipe_distance"] = ["1.5"]
+            f_data["retract_before_wipe"] = ["70%"]
             f_data["close_fan_the_first_layers"] = ["3" if (slot_petg or slot_abs) else "1"]
             f_data["enable_pressure_advance"] = ["1"]
             if slot_petg:
                 pa_val = "0.075" if is_bowden else "0.045"
+                if is_bowden:
+                    f_data["filament_retraction_length"] = ["4.5"]
+                    f_data["filament_retraction_speed"] = ["45"]
+                else:
+                    f_data["filament_retraction_length"] = ["1.2"]
+                    f_data["filament_retraction_speed"] = ["40"]
+                    f_data["filament_deretraction_speed"] = ["35"]
+                    f_data["retraction_length_when_changing_material"] = ["1.6"]
             else:
                 pa_val = "0.055" if is_bowden else "0.025"
             f_data["pressure_advance"] = [pa_val]
@@ -260,11 +276,70 @@ def _apply_first_layer_perfection(
             pass
 
 
+def _apply_anti_stringing_and_tower_positioning(
+    process_data: dict[str, Any],
+    filament_jsons: list[Path],
+    request: SliceRequest,
+    profile_id: str,
+    *,
+    is_multicolor: bool,
+    model_dimensions_mm: tuple[float, float, float] | None,
+) -> None:
+    """Optimiza viajes rápidos, moderación térmica en PETG multicolor y posición cercana de torre de purga."""
+    if profile_id in ("creator5_pro", "flsun_v400", "flsun_t1_pro"):
+        process_data["travel_speed"] = "280"
+
+    if is_multicolor:
+        process_data["ooze_prevention"] = "1"
+        process_data["flush_into_infill"] = "1"
+        for f_idx, f_path in enumerate(filament_jsons):
+            try:
+                f_data = _load_json(f_path)
+                slot_mat = (
+                    request.extruders_config[f_idx].material
+                    if (request.extruders_config and f_idx < len(request.extruders_config))
+                    else request.material
+                )
+                if slot_mat == "petg":
+                    raw_t = f_data.get("nozzle_temperature")
+                    if isinstance(raw_t, list) and raw_t:
+                        cur_t = int(float(raw_t[0]))
+                        f_data["nozzle_temperature"] = [str(max(225, cur_t - 5))]
+                        _save_json(f_path, f_data)
+            except Exception:
+                pass
+
+    if process_data.get("enable_prime_tower") == "1":
+        printer = get_printer_config(request.printer_id)
+        dx = float(model_dimensions_mm[0]) if model_dimensions_mm else 80.0
+        dy = float(model_dimensions_mm[1]) if model_dimensions_mm else 80.0
+        tower_w = float(process_data.get("prime_tower_width", "20") or 20.0)
+        if printer.origin == "center":
+            max_r = (printer.diameter_mm or 260.0) / 2.0 - tower_w - 8.0
+            cand_x = request.offset_x + dx / 2.0 + 20.0
+            if abs(cand_x) > max_r:
+                cand_x = request.offset_x - dx / 2.0 - 20.0 - tower_w
+            cand_x = max(-max_r, min(max_r, cand_x))
+            cand_y = max(-max_r * 0.6, min(max_r * 0.6, request.offset_y))
+        else:
+            bx, by, _ = printer.bed_mm or (256.0, 256.0, 256.0)
+            cx, cy = bx / 2.0, by / 2.0
+            cand_x = cx + request.offset_x + dx / 2.0 + 20.0
+            if cand_x + tower_w > bx - 10.0:
+                cand_x = cx + request.offset_x - dx / 2.0 - 20.0 - tower_w
+            cand_x = max(12.0, min(bx - tower_w - 12.0, cand_x))
+            cand_y = max(12.0, min(by - tower_w - 12.0, cy + request.offset_y))
+        process_data["prime_tower_position_x"] = f"{cand_x:.1f}"
+        process_data["prime_tower_position_y"] = f"{cand_y:.1f}"
+
+
 def patch_profiles_for_job(
     request: SliceRequest,
     job_dir: Path,
     multimaterial_3mf: bool = False,
     safe_clean_base: bool = False,
+    is_multicolor: bool = False,
+    model_dimensions_mm: tuple[float, float, float] | None = None,
 ) -> PatchedProfileSet:
     """Clona los JSON maestros en `job_dir` e inyecta boquilla, HS, temperaturas, soportes, balsa y T0..T3."""
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -666,6 +741,14 @@ def patch_profiles_for_job(
         request,
         profile_id,
         nozzle_d,
+    )
+    _apply_anti_stringing_and_tower_positioning(
+        process_data,
+        filament_jsons,
+        request,
+        profile_id,
+        is_multicolor=bool(is_multicolor or multimaterial_3mf),
+        model_dimensions_mm=model_dimensions_mm,
     )
     _validate_and_normalize_process_data(process_data)
     _save_json(dst_process, process_data)

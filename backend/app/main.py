@@ -815,7 +815,17 @@ def _execute_slice_job_sync(
             drop_to_bed=req.drop_to_bed,
             instances=req.instances,
         )
-        patched = patch_profiles_for_job(req, job_dir, multimaterial_3mf=True)
+        patched = patch_profiles_for_job(
+            req,
+            job_dir,
+            multimaterial_3mf=True,
+            is_multicolor=bool(analysis.is_multicolor),
+            model_dimensions_mm=(
+                analysis.dimensions_mm.x,
+                analysis.dimensions_mm.y,
+                analysis.dimensions_mm.z,
+            ),
+        )
         model_input: Path | list[Path] = assembled_3mf_path
         f_ids: list[int] | None = None
     elif use_painted_3mf:
@@ -837,7 +847,17 @@ def _execute_slice_job_sync(
             instances=req.instances,
             part_extruder_map=req.part_extruder_map,
         )
-        patched = patch_profiles_for_job(req, job_dir, multimaterial_3mf=True)
+        patched = patch_profiles_for_job(
+            req,
+            job_dir,
+            multimaterial_3mf=True,
+            is_multicolor=bool(analysis.is_multicolor),
+            model_dimensions_mm=(
+                analysis.dimensions_mm.x,
+                analysis.dimensions_mm.y,
+                analysis.dimensions_mm.z,
+            ),
+        )
         model_input = painted_3mf_path
         f_ids = None
     else:
@@ -865,7 +885,16 @@ def _execute_slice_job_sync(
             else str(exported_stl).encode("utf-8")
         )
         _atomic_write_bytes(stl_for_slicer, bytes(stl_bytes))
-        patched = patch_profiles_for_job(req, job_dir)
+        patched = patch_profiles_for_job(
+            req,
+            job_dir,
+            is_multicolor=bool(analysis.is_multicolor),
+            model_dimensions_mm=(
+                analysis.dimensions_mm.x,
+                analysis.dimensions_mm.y,
+                analysis.dimensions_mm.z,
+            ),
+        )
         model_input = stl_for_slicer
         f_ids = None
 
