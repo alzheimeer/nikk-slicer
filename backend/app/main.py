@@ -98,15 +98,18 @@ from app.core.print_telemetry_recorder import (
 )
 from app.core.mesh_analyzer import (
     analyze_model_file,
+    assemble_scene_objects_for_slicer,
     auto_arrange_instances,
     auto_orient_mesh,
     compute_lay_on_face_candidates,
     cut_mesh_by_plane,
     evaluate_orientation_candidates,
     find_optimal_anti_support_orientation,
+    get_scene_object_stl_path,
     load_and_transform_mesh,
     prepare_painted_3mf_for_slicer,
     sanitize_euler_rotation,
+    split_mesh_into_scene_objects,
     transform_and_export_3mf_parts,
 )
 from app.core.slicer_router import run_slicer_cli
@@ -149,6 +152,8 @@ from app.models.schemas import (
     PrintersConfigPayload,
     PrintersConfigResponse,
     SaveProjectRequest,
+    SceneObjectTransform,
+    SplitObjectsResponse,
     QualityPreset,
     SendPrintRequest,
     SendPrintResponse,
@@ -614,6 +619,31 @@ def download_cached_mesh(mesh_id: str) -> FileResponse:
     raise HTTPException(status_code=404, detail="Malla no encontrada en caché.")
 
 
+@app.get("/api/models/{mesh_id}/objects/{object_id}.stl")
+async def get_scene_object_stl_endpoint(mesh_id: str, object_id: str) -> FileResponse:
+    """Sirve el archivo STL individual de un objeto extraído de `.3mf` o dividido."""
+    stl_path = get_scene_object_stl_path(mesh_id, object_id)
+    if stl_path is None:
+        raise HTTPException(status_code=404, detail="Objeto 3D no encontrado en caché.")
+    return FileResponse(path=stl_path, media_type="application/octet-stream", filename=f"{object_id}.stl")
+
+
+@app.post("/api/models/split-objects", response_model=SplitObjectsResponse)
+async def split_objects_endpoint(
+    printer_id: PrinterId = Form(...),
+    mesh_id: str | None = Form(None),
+    file: UploadFile | None = File(None),
+) -> SplitObjectsResponse:
+    """Divide una malla STL/3MF en objetos independientes mediante `trimesh.split`."""
+    _resolve_printer_or_400(printer_id)
+    resolved_id, cached_path = _resolve_cached_stl(file, mesh_id)
+    try:
+        objs = split_mesh_into_scene_objects(cached_path, resolved_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SplitObjectsResponse(mesh_id=resolved_id, scene_objects=objs)
+
+
 @app.post("/api/auto-orient", response_model=AutoOrientResponse)
 def auto_orient_endpoint(
     printer_id: PrinterId = Form(...),
@@ -805,7 +835,28 @@ def _execute_slice_job_sync(
         and analysis.is_multicolor
     )
 
-    if use_multimaterial_3mf:
+    if len(req.scene_objects) > 0:
+        assembled_3mf_path = assemble_scene_objects_for_slicer(
+            resolved_id,
+            req.scene_objects,
+            job_dir,
+            printer,
+            part_extruder_map=req.part_extruder_map,
+        )
+        patched = patch_profiles_for_job(
+            req,
+            job_dir,
+            multimaterial_3mf=(printer.profile_id == "creator5_pro" and len(req.scene_objects) > 1),
+            is_multicolor=bool(analysis.is_multicolor),
+            model_dimensions_mm=(
+                analysis.dimensions_mm.x,
+                analysis.dimensions_mm.y,
+                analysis.dimensions_mm.z,
+            ),
+        )
+        model_input = assembled_3mf_path
+        f_ids = None
+    elif use_multimaterial_3mf:
         assembled_3mf_path, _filament_ids = transform_and_export_3mf_parts(
             cached_path,
             job_dir,
@@ -1191,6 +1242,7 @@ async def slice_endpoint(
     z_color_ranges_json: str | None = Form(None),
     part_extruder_map_json: str | None = Form(None),
     layer_pauses_json: str | None = Form(None),
+    scene_objects_json: str | None = Form(None),
     file: UploadFile | None = File(None),
 ) -> SliceResponse:
     """Lamina `.stl` o `.3mf` multicolor usando caché `mesh_id`, bloqueo por malla y escritura atómica."""
@@ -1236,6 +1288,17 @@ async def slice_endpoint(
                 status_code=400, detail=f"layer_pauses_json inválido: {exc}"
             ) from exc
 
+    parsed_scene_objects: list[SceneObjectTransform] = []
+    if scene_objects_json:
+        try:
+            raw_objs = json.loads(scene_objects_json)
+            if isinstance(raw_objs, list):
+                parsed_scene_objects = [SceneObjectTransform(**item) for item in raw_objs]
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"scene_objects_json inválido: {exc}"
+            ) from exc
+
     parsed_instances = _parse_instances_json(instances_json)
     clean_rx, clean_ry, clean_rz = sanitize_euler_rotation(rot_x, rot_y, rot_z)
     eff_material: MaterialType = "pla" if lithophane_mode else material
@@ -1255,6 +1318,7 @@ async def slice_endpoint(
             lithophane_mode=lithophane_mode,
             supports=eff_supports,
             layer_pauses=parsed_layer_pauses,
+            scene_objects=parsed_scene_objects,
             support_type=support_type,
             support_on_build_plate_only=support_on_build_plate_only,
             support_z_distance=support_z_distance,

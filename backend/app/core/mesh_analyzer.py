@@ -26,6 +26,8 @@ from app.models.schemas import (
     MeshAnalysisResponse,
     ModelInstanceTransform,
     MultimaterialPartInfo,
+    SceneObjectInfo,
+    SceneObjectTransform,
 )
 
 CRITICAL_OVERHANG_COS = math.cos(math.radians(50.0))  # ~0.6428 -> nz < -0.6428 implica >50°
@@ -1115,6 +1117,7 @@ def analyze_mesh_object(
     extruder_triangle_percentages: dict[str, float] | None = None,
     detected_filament_colors: list[str] | None = None,
     detected_colors: list[DetectedColorInfo] | None = None,
+    scene_objects: list[SceneObjectInfo] | None = None,
 ) -> MeshAnalysisResponse:
     """Evalúa dimensiones, encaje en cama, auto-escala 95%, área base y voladizos > 50°."""
     extents = mesh.extents
@@ -1246,6 +1249,7 @@ def analyze_mesh_object(
         extruder_triangle_percentages=extruder_triangle_percentages or {},
         detected_filament_colors=detected_filament_colors or [],
         detected_colors=detected_colors or [],
+        scene_objects=scene_objects or [],
         warnings=warnings,
     )
 
@@ -1393,6 +1397,7 @@ def analyze_model_file(
     extruder_triangle_percentages: dict[str, float] = {}
     detected_filament_colors: list[str] = []
     detected_colors_list: list[DetectedColorInfo] = []
+    scene_objects_list: list[SceneObjectInfo] = []
 
     if is_3mf:
         extracted = extract_3mf_parts_and_meshes(model_path)
@@ -1529,6 +1534,9 @@ def analyze_model_file(
                             suggested_slot=sug,
                         )
                     )
+
+        if len(extracted) > 1 and mesh_id:
+            scene_objects_list = _export_scene_objects_to_cache(mesh_id, extracted)
     else:
         raw = load_raw_mesh(model_path)
 
@@ -1583,6 +1591,7 @@ def analyze_model_file(
         extruder_triangle_percentages=extruder_triangle_percentages,
         detected_filament_colors=detected_filament_colors,
         detected_colors=detected_colors_list,
+        scene_objects=scene_objects_list,
     )
 
 
@@ -2774,3 +2783,195 @@ def evaluate_orientation_candidates(
         "recommended_id": recommended_id,
         "options": options_out,
     }
+
+
+def _scene_objects_dir(mesh_id: str) -> Path:
+    clean_id = "".join(ch for ch in mesh_id if ch.isalnum() or ch in ("-", "_"))
+    return MESH_CACHE_DIR / f"{clean_id}_objs"
+
+
+def get_scene_object_stl_path(mesh_id: str, object_id: str) -> Path | None:
+    clean_obj = "".join(ch for ch in object_id if ch.isalnum() or ch in ("-", "_"))
+    if not clean_obj:
+        return None
+    cand = _scene_objects_dir(mesh_id) / f"{clean_obj}.stl"
+    return cand if cand.is_file() else None
+
+
+def _export_scene_objects_to_cache(
+    mesh_id: str,
+    parts_with_meshes: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]],
+) -> list[SceneObjectInfo]:
+    """Exporta cada objeto de un `.3mf` como `.stl` independiente centrado localmente."""
+    obj_dir = _scene_objects_dir(mesh_id)
+    obj_dir.mkdir(parents=True, exist_ok=True)
+
+    all_bounds = [m.bounds for _, m in parts_with_meshes if len(m.vertices) > 0]
+    if all_bounds:
+        g_min = np.min([b[0] for b in all_bounds], axis=0)
+        g_max = np.max([b[1] for b in all_bounds], axis=0)
+        global_cx = float((g_min[0] + g_max[0]) / 2.0)
+        global_cy = float((g_min[1] + g_max[1]) / 2.0)
+        global_zmin = float(g_min[2])
+    else:
+        global_cx = global_cy = global_zmin = 0.0
+
+    out: list[SceneObjectInfo] = []
+    for idx, (p_info, p_mesh) in enumerate(parts_with_meshes):
+        if len(p_mesh.vertices) == 0:
+            continue
+        obj_id = "".join(ch for ch in (p_info.part_id or f"obj_{idx + 1}") if ch.isalnum() or ch in ("-", "_"))
+        if not obj_id:
+            obj_id = f"obj_{idx + 1}"
+        b = p_mesh.bounds
+        lcx = float((b[0][0] + b[1][0]) / 2.0)
+        lcy = float((b[0][1] + b[1][1]) / 2.0)
+        lz0 = float(b[0][2])
+
+        local_mesh = p_mesh.copy()
+        local_mesh.apply_translation([-lcx, -lcy, -lz0])
+
+        stl_path = obj_dir / f"{obj_id}.stl"
+        exported = local_mesh.export(file_type="stl")
+        stl_bytes = exported if isinstance(exported, (bytes, bytearray)) else str(exported).encode("utf-8")
+        stl_path.write_bytes(bytes(stl_bytes))
+
+        ext = local_mesh.extents
+        out.append(
+            SceneObjectInfo(
+                object_id=obj_id,
+                name=p_info.name or f"Pieza {idx + 1}",
+                extruder=max(1, min(4, int(p_info.extruder))),
+                color_hex=p_info.color_hex,
+                mesh_url=f"/api/models/{mesh_id}/objects/{obj_id}.stl",
+                position=[
+                    round(lcx - global_cx, 2),
+                    round(lcy - global_cy, 2),
+                    round(max(0.0, lz0 - global_zmin), 2),
+                ],
+                rotation=[0.0, 0.0, 0.0],
+                scale=[100.0, 100.0, 100.0],
+                dimensions_mm=[round(float(ext[0]), 2), round(float(ext[1]), 2), round(float(ext[2]), 2)],
+            )
+        )
+    return out
+
+
+def split_mesh_into_scene_objects(
+    model_path: Path,
+    mesh_id: str,
+) -> list[SceneObjectInfo]:
+    """Divide una malla `.stl` o `.3mf` en componentes geométricos desconectados (`split`)."""
+    is_3mf = model_path.suffix.lower() == ".3mf"
+    if is_3mf:
+        extracted = extract_3mf_parts_and_meshes(model_path)
+        if len(extracted) > 1:
+            return _export_scene_objects_to_cache(mesh_id, extracted)
+        raw = extracted[0][1]
+    else:
+        raw = load_raw_mesh(model_path)
+
+    shells = [m for m in raw.split(only_watertight=False) if len(m.faces) >= 10]
+    if not shells:
+        shells = [raw]
+    shells.sort(key=lambda m: float(np.prod(m.extents)), reverse=True)
+
+    parts_list: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
+    for idx, sh in enumerate(shells[:32]):
+        parts_list.append(
+            (
+                MultimaterialPartInfo(
+                    part_id=f"split_{idx + 1}",
+                    name=f"Pieza {idx + 1}",
+                    extruder=1,
+                    triangle_count=int(len(sh.faces)),
+                ),
+                sh,
+            )
+        )
+    return _export_scene_objects_to_cache(mesh_id, parts_list)
+
+
+def assemble_scene_objects_for_slicer(
+    mesh_id: str,
+    scene_objects: list[SceneObjectTransform],
+    job_dir: Path,
+    printer: PrinterConfig,
+    part_extruder_map: dict[str, int] | None = None,
+) -> Path:
+    """Reconstruye un `.3mf` multi-objeto con las transformaciones y filamentos individuales de cada pieza."""
+    bed_cx, bed_cy = _bed_center_xy(printer)
+    override_map = part_extruder_map or {}
+    xml_objects: list[str] = []
+    xml_items: list[str] = []
+
+    for idx, obj in enumerate(scene_objects, start=1):
+        stl_path = get_scene_object_stl_path(mesh_id, obj.object_id)
+        if stl_path is None:
+            continue
+        mesh = load_raw_mesh(stl_path)
+        transformed = apply_transform_to_mesh(
+            mesh,
+            printer=None,
+            scale_percent=obj.scale_percent,
+            rot_x=obj.rot_x,
+            rot_y=obj.rot_y,
+            rot_z=obj.rot_z,
+            scale_x=obj.scale_x,
+            scale_y=obj.scale_y,
+            scale_z=obj.scale_z,
+            offset_x=bed_cx + obj.offset_x,
+            offset_y=bed_cy + obj.offset_y,
+            offset_z=obj.offset_z,
+            drop_to_bed=obj.drop_to_bed,
+            copy=False,
+        )
+        ext_num = max(1, min(4, int(override_map.get(obj.object_id, obj.extruder - 1) + 1 if obj.object_id in override_map else obj.extruder)))
+        verts = transformed.vertices
+        faces = transformed.faces
+        v_lines = "\n".join(f'          <vertex x="{v[0]:.4f}" y="{v[1]:.4f}" z="{v[2]:.4f}" />' for v in verts)
+        t_lines = "\n".join(f'          <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}" />' for f in faces)
+        xml_objects.append(
+            f'    <object id="{idx}" type="model" name="{obj.name}" p:extruder="{ext_num}">\n'
+            f'      <mesh>\n'
+            f'        <vertices>\n{v_lines}\n        </vertices>\n'
+            f'        <triangles>\n{t_lines}\n        </triangles>\n'
+            f'      </mesh>\n'
+            f'    </object>'
+        )
+        xml_items.append(f'    <item objectid="{idx}" printable="1" />')
+
+    if not xml_objects:
+        raise ValueError("No hay objetos activos válidos para ensamblar el .3mf.")
+
+    model_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<model unit="millimeter" xml:lang="en-US" '
+        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
+        'xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">\n'
+        '  <resources>\n'
+        + "\n".join(xml_objects)
+        + "\n  </resources>\n  <build>\n"
+        + "\n".join(xml_items)
+        + "\n  </build>\n</model>\n"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
+        '  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />\n'
+        '  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml" />\n'
+        '</Types>\n'
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+        '  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2015/02/3dmodel" />\n'
+        '</Relationships>\n'
+    )
+
+    out_3mf = job_dir / "scene_objects_assembled.3mf"
+    with zipfile.ZipFile(out_3mf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("3D/3dmodel.model", model_xml)
+    return out_3mf

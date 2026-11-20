@@ -170,7 +170,40 @@ export interface MeshAnalysisResponse {
   extruder_triangle_percentages?: Record<string, number>;
   detected_filament_colors?: string[];
   detected_colors?: DetectedColorInfo[];
+  scene_objects?: SceneObjectInfo[];
   warnings: string[];
+}
+
+export interface SceneObjectInfo {
+  object_id: string;
+  name: string;
+  extruder: number;
+  color_hex: string | null;
+  mesh_url: string;
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+  dimensions_mm: [number, number, number];
+}
+
+export interface SceneObjectTransform {
+  object_id: string;
+  name: string;
+  extruder: number;
+  color_hex: string | null;
+  mesh_url: string;
+  offset_x: number;
+  offset_y: number;
+  offset_z: number;
+  rot_x: number;
+  rot_y: number;
+  rot_z: number;
+  scale_percent: number;
+  scale_x?: number | null;
+  scale_y?: number | null;
+  scale_z?: number | null;
+  drop_to_bed: boolean;
+  dimensions_mm: [number, number, number];
 }
 
 export interface AutoOrientResponse {
@@ -283,6 +316,7 @@ export interface SlicePayload {
   z_color_ranges?: ZColorRange[];
   part_extruder_map?: Record<string, number>;
   layer_pauses?: LayerPauseItem[];
+  scene_objects?: SceneObjectTransform[];
 }
 
 export interface SliceResponse {
@@ -1327,6 +1361,9 @@ export async function sliceModel(
   if (payload.layer_pauses && payload.layer_pauses.length > 0) {
     form.append('layer_pauses_json', JSON.stringify(payload.layer_pauses));
   }
+  if (payload.scene_objects && payload.scene_objects.length > 0) {
+    form.append('scene_objects_json', JSON.stringify(payload.scene_objects));
+  }
 
   const res = await fetchWithTimeout(
     `${API_BASE_URL}/slice`,
@@ -1341,6 +1378,32 @@ export async function sliceModel(
     throw new Error(await parseError(res));
   }
   return res.json() as Promise<SliceResponse>;
+}
+
+export async function splitMeshObjects({
+  printerId,
+  meshId,
+  file,
+}: {
+  printerId: PrinterId;
+  meshId?: string | null;
+  file?: File | null;
+}): Promise<{ mesh_id: string; scene_objects: SceneObjectInfo[] }> {
+  const form = new FormData();
+  form.append('printer_id', printerId);
+  if (meshId) {
+    form.append('mesh_id', meshId);
+  } else if (file) {
+    form.append('file', file);
+  }
+  const res = await fetch(`${API_BASE_URL}/models/split-objects`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<{ mesh_id: string; scene_objects: SceneObjectInfo[] }>;
 }
 
 export async function applyLayerPauses({

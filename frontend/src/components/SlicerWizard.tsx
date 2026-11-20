@@ -782,7 +782,11 @@ export function SlicerWizard({
         ? 'ai_analyze'
         : isSlicing
           ? 'slicing'
-          : instantOverlayMode;
+          : uploadActionMode === 'upload_only'
+            ? 'upload_only'
+            : uploadActionMode === 'upload_and_print'
+              ? 'upload_and_print'
+              : instantOverlayMode;
   const overlayActive = rawOverlayMode !== null;
 
   useEffect(() => {
@@ -3982,6 +3986,7 @@ export function SlicerWizard({
         active={overlayActive}
         mode={rawOverlayMode ?? lastOverlayMode}
         printerName={selectedPrinter?.display_name || selectedPrinterId}
+        printerIp={selectedPrinter?.ip || ''}
         fileSizeMb={(stlFile?.size ?? 0) / (1024 * 1024)}
         triangleCount={analysis?.triangle_count ?? 0}
         layerHeightMm={qualityPreset === 'rapidez_extrema' ? 0.24 : 0.2}

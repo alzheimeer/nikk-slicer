@@ -572,7 +572,8 @@ async def upload_and_start_flashforge(
 ) -> str:
     """Sube G-code a la memoria de Creator 5 Pro vía `:8898/uploadGcode` (campo `gcodeFile`)."""
     port = int(cfg.get("port", 8899) or 8899)
-    async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
+    upload_timeout = httpx.Timeout(connect=10.0, read=180.0, write=180.0, pool=10.0)
+    async with httpx.AsyncClient(timeout=upload_timeout, trust_env=False) as client:
         ip, eff_sn, access_code, detail = await _resolve_flashforge_target(cfg, client)
         use_station, tool_cnt, mappings = _build_material_mappings_from_gcode(
             gcode_path, detail if isinstance(detail, dict) else {}
@@ -617,15 +618,22 @@ async def upload_and_start_flashforge(
                     action_txt = (
                         "e impresión iniciada"
                         if start_immediately
-                        else "a memoria interna (sin iniciar impresión)"
+                        else "a memoria sin iniciar impresión"
                     )
                     ver_txt = " [verificado en /gcodeList]" if in_list else ""
                     return f"FlashForge LAN ({ip}:8898): '{filename}' subido {action_txt}{ver_txt}."
                 raise RuntimeError(
                     f"FlashForge LAN ({ip}:8898) rechazó la subida: {body.get('message', body)}"
                 )
-        except httpx.HTTPError:
+            raise RuntimeError(
+                f"FlashForge LAN ({ip}:8898) devolvió HTTP {resp.status_code} al subir '{filename}'."
+            )
+        except httpx.ConnectError:
             pass
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"Error transfiriendo '{filename}' a FlashForge LAN ({ip}:8898): {exc}"
+            ) from exc
 
     return await asyncio.to_thread(
         _tcp_upload_sync,

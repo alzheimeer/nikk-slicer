@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Cpu, Layers } from 'lucide-react';
+import { Check, Cpu, Layers, Send } from 'lucide-react';
 
-export type ProcessingOverlayMode = 'slicing' | 'ai_optimize' | 'ai_analyze';
+export type ProcessingOverlayMode =
+  | 'slicing'
+  | 'ai_optimize'
+  | 'ai_analyze'
+  | 'upload_only'
+  | 'upload_and_print';
 
 export interface GlobalProcessingOverlayProps {
   active: boolean;
   mode: ProcessingOverlayMode;
   printerName: string;
+  printerIp?: string;
   fileSizeMb?: number;
   triangleCount?: number;
   layerHeightMm?: number;
@@ -16,6 +22,7 @@ export function GlobalProcessingOverlay({
   active,
   mode,
   printerName,
+  printerIp = '',
   fileSizeMb = 0,
   triangleCount = 0,
   layerHeightMm = 0.2,
@@ -70,6 +77,15 @@ export function GlobalProcessingOverlay({
             } else {
               nextPct = Math.min(97, 88 + (s3Elapsed - expectedStep3Seconds) * 0.2);
             }
+          }
+        } else if (mode === 'upload_only' || mode === 'upload_and_print') {
+          const transferSec = Math.max(4, Math.min(45, 4 + Math.max(0, fileSizeMb) * 1.4));
+          if (t <= 1.2) {
+            nextPct = (t / 1.2) * 25;
+          } else if (t <= 1.2 + transferSec) {
+            nextPct = 25 + ((t - 1.2) / transferSec) * 60;
+          } else {
+            nextPct = Math.min(97, 85 + (t - 1.2 - transferSec) * 1.2);
           }
         } else {
           // ai_analyze: Etapa 1 (0 -> 25% en 1s) y Etapa 2 (25 -> 96%)
@@ -138,7 +154,27 @@ export function GlobalProcessingOverlay({
               liveSubtext: `Procesando capas y rellenos · ${elapsedStr} transcurridos...`,
             },
           ]
-        : [
+      : mode === 'upload_only' || mode === 'upload_and_print'
+        ? [
+            {
+              label: 'Preparando paquete .gcode y pausas programadas...',
+              threshold: 25,
+            },
+            {
+              label: `Transfiriendo archivo por LAN a ${printerName}${printerIp ? ` (${printerIp})` : ''}...`,
+              threshold: 85,
+              liveSubtext: `Enviando datos por red · ${elapsedStr} transcurridos...`,
+            },
+            {
+              label:
+                mode === 'upload_and_print'
+                  ? 'Verificando archivo en /gcodeList e iniciando impresión...'
+                  : 'Confirmando almacenamiento en memoria sin imprimir...',
+              threshold: 99,
+              liveSubtext: `Validando respuesta de la impresora · ${elapsedStr}`,
+            },
+          ]
+      : [
             {
               label: 'Inspeccionando geometría, voladizos y área de base',
               threshold: 25,
@@ -176,6 +212,8 @@ export function GlobalProcessingOverlay({
           <div className="mt-3 flex items-center gap-2">
             {mode === 'slicing' ? (
               <Layers className="h-4 w-4 text-cyan-400" />
+            ) : mode === 'upload_only' || mode === 'upload_and_print' ? (
+              <Send className="h-4 w-4 text-emerald-400" />
             ) : (
               <Cpu className="h-4 w-4 text-violet-400" />
             )}
@@ -184,7 +222,11 @@ export function GlobalProcessingOverlay({
                 ? 'Laminando Modelo 3D'
                 : mode === 'ai_optimize'
                   ? 'Optimización IA + Re-laminado'
-                  : 'Análisis IA del Modelo'}
+                  : mode === 'upload_only'
+                    ? 'Subiendo G-code a Memoria'
+                    : mode === 'upload_and_print'
+                      ? 'Enviando e Iniciando Impresión'
+                      : 'Análisis IA del Modelo'}
             </h3>
           </div>
           <p className="mt-1 text-xs text-slate-400">{printerName}</p>

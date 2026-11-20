@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Box, Calculator, Cpu, Settings, Sliders } from 'lucide-react';
+import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Plus, Settings, Sliders } from 'lucide-react';
 import { ErrorJournalModal } from './components/ErrorJournalModal';
 import { QuoteCalculatorModal } from './components/QuoteCalculatorModal';
 import {
@@ -27,6 +27,7 @@ import {
   saveFullProject,
   saveUserPrefs,
   sliceModel,
+  splitMeshObjects,
   uploadJobToPrinter,
   type AIAnalyzeModelResponse,
   type AIOrientationsResponse,
@@ -50,6 +51,8 @@ import {
   type ProfileId,
   type QualityPreset,
   type SavedProjectRecord,
+  type SceneObjectInfo,
+  type SceneObjectTransform,
   type SliceResponse,
   type SupportType,
   type ZColorRange,
@@ -201,6 +204,9 @@ export function App() {
   const [isAutoOrienting, setIsAutoOrienting] = useState(false);
   const [isAutoArranging, setIsAutoArranging] = useState(false);
   const [isCuttingMesh, setIsCuttingMesh] = useState(false);
+  const [isSplittingObjects, setIsSplittingObjects] = useState(false);
+  const [sceneObjects, setSceneObjects] = useState<SceneObjectTransform[]>([]);
+  const [selectedObjectIds, setSelectedObjectIds] = useState<string[]>([]);
   const [autoOrientMsg, setAutoOrientMsg] = useState<string | null>(null);
   const [orientationsData, setOrientationsData] =
     useState<AIOrientationsResponse | null>(null);
@@ -328,6 +334,27 @@ export function App() {
   const [recentProjects, setRecentProjects] = useState<FullProjectSummary[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeProjectTitle, setActiveProjectTitle] = useState<string | null>(null);
+  const [windowSessionId] = useState<string>(() => {
+    const p = new URLSearchParams(window.location.search).get('window_session_id');
+    return p || `win_${Math.random().toString(36).slice(2, 10)}`;
+  });
+  const windowAccent = (() => {
+    const palette = [
+      { name: 'Cian Eléctrico', hex: '#22d3ee' },
+      { name: 'Ámbar Dorado', hex: '#f59e0b' },
+      { name: 'Esmeralda', hex: '#10b981' },
+      { name: 'Violeta', hex: '#a855f7' },
+      { name: 'Coral', hex: '#fb7185' },
+    ];
+    let h = 0;
+    for (let i = 0; i < windowSessionId.length; i += 1) {
+      h = (h * 31 + windowSessionId.charCodeAt(i)) >>> 0;
+    }
+    return palette[h % palette.length];
+  })();
+  const [openWindows, setOpenWindows] = useState<
+    Record<string, { windowId: string; title: string; color: string; updatedAt: number }>
+  >({});
   const [externalProjectsOpen, setExternalProjectsOpen] = useState(false);
   const [projectToast, setProjectToast] = useState<string | null>(null);
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
@@ -685,6 +712,29 @@ export function App() {
       if (seq !== analyzeSeqRef.current) return;
       setMeshId(res.mesh_id);
       setAnalysis(res);
+      if (options.file && res.scene_objects && res.scene_objects.length > 1) {
+        const mappedObjs: SceneObjectTransform[] = res.scene_objects.map((o: SceneObjectInfo) => ({
+          object_id: o.object_id,
+          name: o.name,
+          extruder: o.extruder,
+          color_hex: o.color_hex,
+          mesh_url: o.mesh_url,
+          offset_x: o.position?.[0] ?? 0,
+          offset_y: o.position?.[1] ?? 0,
+          offset_z: o.position?.[2] ?? 0,
+          rot_x: o.rotation?.[0] ?? 0,
+          rot_y: o.rotation?.[1] ?? 0,
+          rot_z: o.rotation?.[2] ?? 0,
+          scale_percent: o.scale?.[0] ?? 100,
+          scale_x: null,
+          scale_y: null,
+          scale_z: null,
+          drop_to_bed: true,
+          dimensions_mm: o.dimensions_mm ?? [0, 0, 0],
+        }));
+        setSceneObjects(mappedObjs);
+        setSelectedObjectIds(mappedObjs[0]?.object_id ? [mappedObjs[0].object_id] : []);
+      }
       setSupports(res.suggests_supports);
       setAdhesionType(res.suggests_raft ? 'raft' : 'none');
 
@@ -741,6 +791,8 @@ export function App() {
   const handleSelectStl = (file: File) => {
     setStlFile(file);
     setMeshId(null);
+    setSceneObjects([]);
+    setSelectedObjectIds([]);
     setTransform(DEFAULT_TRANSFORM);
     setAutoOrientMsg(null);
     setAiReasoning(null);
@@ -841,6 +893,47 @@ export function App() {
         opt.rotation.rz,
       ),
     );
+  };
+
+  const handleSplitObjects = async () => {
+    if (!meshId && !stlFile) return;
+    setIsSplittingObjects(true);
+    setErrorMsg(null);
+    try {
+      const res = await splitMeshObjects({
+        printerId: selectedPrinterId,
+        meshId,
+        file: meshId ? null : stlFile,
+      });
+      setMeshId(res.mesh_id);
+      const mappedObjs: SceneObjectTransform[] = res.scene_objects.map((o) => ({
+        object_id: o.object_id,
+        name: o.name,
+        extruder: o.extruder,
+        color_hex: o.color_hex,
+        mesh_url: o.mesh_url,
+        offset_x: o.position?.[0] ?? 0,
+        offset_y: o.position?.[1] ?? 0,
+        offset_z: o.position?.[2] ?? 0,
+        rot_x: o.rotation?.[0] ?? 0,
+        rot_y: o.rotation?.[1] ?? 0,
+        rot_z: o.rotation?.[2] ?? 0,
+        scale_percent: o.scale?.[0] ?? 100,
+        scale_x: null,
+        scale_y: null,
+        scale_z: null,
+        drop_to_bed: true,
+        dimensions_mm: o.dimensions_mm ?? [0, 0, 0],
+      }));
+      setSceneObjects(mappedObjs);
+      setSelectedObjectIds(mappedObjs[0]?.object_id ? [mappedObjs[0].object_id] : []);
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Error dividiendo el modelo en objetos.',
+      );
+    } finally {
+      setIsSplittingObjects(false);
+    }
   };
 
   const handleAutoArrange = async (instances: ModelInstanceTransform[]) => {
@@ -1082,6 +1175,7 @@ export function App() {
       file: effMeshId ? null : stlFile,
       transform: overrides?.transformOverride ?? transform,
       layer_pauses: layerPauses,
+      ...(sceneObjects.length > 0 ? { scene_objects: sceneObjects } : {}),
       ...(activeProfileId === 'creator5_pro'
         ? {
           extruders_config: extrudersConfig,
@@ -1355,6 +1449,94 @@ export function App() {
     ).pywebview?.api;
     pyApi?.set_window_title?.(fullTitle);
   }, [stlFile, meshId, activeProjectTitle]);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel('nikk_slicer_windows');
+    const shortTitle =
+      activeProjectTitle ||
+      (stlFile?.name ? stlFile.name.replace(/\.(stl|3mf)$/i, '') : 'Sin proyecto');
+
+    const announce = () => {
+      const payload = {
+        type: 'announce',
+        windowId: windowSessionId,
+        title: shortTitle,
+        color: windowAccent.hex,
+        updatedAt: Date.now(),
+      };
+      setOpenWindows((prev) => ({
+        ...prev,
+        [windowSessionId]: {
+          windowId: windowSessionId,
+          title: shortTitle,
+          color: windowAccent.hex,
+          updatedAt: Date.now(),
+        },
+      }));
+      ch.postMessage(payload);
+    };
+
+    ch.onmessage = (ev) => {
+      const data = ev.data as {
+        type?: string;
+        windowId?: string;
+        targetWindowId?: string;
+        title?: string;
+        color?: string;
+        updatedAt?: number;
+      };
+      if (!data?.type) return;
+      if (data.type === 'announce' && data.windowId) {
+        setOpenWindows((prev) => ({
+          ...prev,
+          [data.windowId!]: {
+            windowId: data.windowId!,
+            title: data.title || 'Proyecto 3D',
+            color: data.color || '#22d3ee',
+            updatedAt: Date.now(),
+          },
+        }));
+      } else if (data.type === 'ping') {
+        announce();
+      } else if (data.type === 'bye' && data.windowId) {
+        setOpenWindows((prev) => {
+          const next = { ...prev };
+          delete next[data.windowId!];
+          return next;
+        });
+      } else if (data.type === 'focus' && data.targetWindowId === windowSessionId) {
+        window.focus();
+      }
+    };
+
+    announce();
+    ch.postMessage({ type: 'ping' });
+    const interval = window.setInterval(() => {
+      announce();
+      const now = Date.now();
+      setOpenWindows((prev) => {
+        const next: typeof prev = {};
+        for (const [k, v] of Object.entries(prev)) {
+          if (k === windowSessionId || now - v.updatedAt < 8000) {
+            next[k] = v;
+          }
+        }
+        return next;
+      });
+    }, 2500);
+
+    const onUnload = () => {
+      ch.postMessage({ type: 'bye', windowId: windowSessionId });
+    };
+    window.addEventListener('beforeunload', onUnload);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('beforeunload', onUnload);
+      ch.postMessage({ type: 'bye', windowId: windowSessionId });
+      ch.close();
+    };
+  }, [windowSessionId, windowAccent.hex, activeProjectTitle, stlFile?.name]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -2434,21 +2616,101 @@ export function App() {
           </p>
         </div>
       )}
-      {/* Cabecera con pestañas Wizard / Monitor y botón de configuración */}
-      <header className="z-20 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 bg-slate-900/70 px-6 py-2.5 backdrop-blur">
-        <div className="flex items-center gap-3">
+      {/* Cabecera con acento de color por ventana, pestañas de proyectos abiertos y navegación */}
+      <header
+        style={{
+          borderTop: `2px solid ${windowAccent.hex}`,
+          backgroundImage: `linear-gradient(90deg, ${windowAccent.hex}1a 0%, rgba(15, 23, 42, 0.72) 45%, rgba(15, 23, 42, 0.72) 100%)`,
+        }}
+        className="z-20 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 bg-slate-900/70 px-6 py-2.5 backdrop-blur"
+      >
+        <div className="flex flex-wrap items-center gap-3">
           <img
             src="/nikk-logo.jpg"
             alt="Nikk Slider Logo"
-            className="h-10 w-10 rounded-xl object-cover ring-1 ring-cyan-500/45 shadow-md shadow-cyan-500/15"
+            style={{ boxShadow: `0 0 0 1px ${windowAccent.hex}80` }}
+            className="h-10 w-10 rounded-xl object-cover shadow-md"
           />
           <div>
-            <h1 className="text-base font-bold tracking-tight text-slate-100">
-              Nikk Slider
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-base font-bold tracking-tight text-slate-100">
+                Nikk Slider
+              </h1>
+              <span
+                style={{
+                  borderColor: `${windowAccent.hex}66`,
+                  backgroundColor: `${windowAccent.hex}1f`,
+                  color: windowAccent.hex,
+                }}
+                className="rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+              >
+                {activeProjectTitle || windowAccent.name}
+              </span>
+            </div>
             <p className="text-[11px] text-slate-400">
               Laminador Unificado · Granja FDM de {printers.length || 6} Impresoras
             </p>
+          </div>
+
+          {/* Conmutador rápido de ventanas/proyectos abiertos */}
+          <div className="flex flex-wrap items-center gap-1 rounded-xl border border-slate-800 bg-slate-950/80 p-1">
+            {Object.values(openWindows).map((winInfo) => {
+              const isCurrent = winInfo.windowId === windowSessionId;
+              return (
+                <button
+                  key={winInfo.windowId}
+                  type="button"
+                  onClick={() => {
+                    if (isCurrent) return;
+                    const pyApi = (
+                      window as unknown as {
+                        pywebview?: {
+                          api?: { focus_window_by_id?: (id: string) => void };
+                        };
+                      }
+                    ).pywebview?.api;
+                    pyApi?.focus_window_by_id?.(winInfo.windowId);
+                    if (typeof BroadcastChannel !== 'undefined') {
+                      const ch = new BroadcastChannel('nikk_slicer_windows');
+                      ch.postMessage({ type: 'focus', targetWindowId: winInfo.windowId });
+                      ch.close();
+                    }
+                  }}
+                  title={isCurrent ? 'Ventana actual' : `Cambiar a: ${winInfo.title}`}
+                  className={`flex max-w-[160px] items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium transition ${
+                    isCurrent
+                      ? 'bg-slate-800 text-white shadow-sm'
+                      : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                  }`}
+                >
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: winInfo.color }}
+                  />
+                  <span className="truncate">{winInfo.title}</span>
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => {
+                const pyApi = (
+                  window as unknown as {
+                    pywebview?: { api?: { open_new_window?: (pid?: string | null) => void } };
+                  }
+                ).pywebview?.api;
+                if (pyApi?.open_new_window) {
+                  pyApi.open_new_window(null);
+                } else {
+                  const wsid = Math.random().toString(36).slice(2, 10);
+                  window.open(`/?window_session_id=${wsid}`, '_blank');
+                }
+              }}
+              title="Nueva ventana independiente (Cmd+N)"
+              className="flex h-6 w-6 items-center justify-center rounded-lg border border-slate-700/70 bg-slate-900 text-slate-300 hover:border-cyan-500/60 hover:text-cyan-200"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
 
@@ -2654,6 +2916,12 @@ export function App() {
             layerPauses={layerPauses}
             onAddLayerPause={handleAddLayerPause}
             onRemoveLayerPause={handleRemoveLayerPause}
+            sceneObjects={sceneObjects}
+            selectedObjectIds={selectedObjectIds}
+            onSelectObjects={setSelectedObjectIds}
+            onChangeSceneObjects={setSceneObjects}
+            onSplitObjects={handleSplitObjects}
+            isSplittingObjects={isSplittingObjects}
             extruderColors={
               activeProfileId === 'creator5_pro'
                 ? [0, 1, 2, 3].map((zoneIdx) => {
@@ -2765,7 +3033,20 @@ export function App() {
                   : ''}
               </p>
             </div>
-            <div className="flex items-center justify-end gap-2 pt-1">
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={isRestoringSession}
+                onClick={() => {
+                  setPendingRestoreSession(null);
+                  void clearLastSession().catch(() => {});
+                  setExternalProjectsOpen(true);
+                }}
+                className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-cyan-200 hover:border-cyan-500/60 hover:bg-slate-800 disabled:opacity-40"
+              >
+                <FolderOpen className="h-3.5 w-3.5 text-cyan-400" />
+                Abrir proyecto
+              </button>
               <button
                 type="button"
                 disabled={isRestoringSession}

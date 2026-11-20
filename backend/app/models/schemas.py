@@ -60,6 +60,27 @@ class DetectedColorInfo(BaseModel):
     suggested_slot: int = 0
 
 
+class SceneObjectInfo(BaseModel):
+    """Objeto independiente extraído de un `.3mf` o dividido con `split`."""
+
+    object_id: str
+    name: str
+    extruder: int = Field(default=1, ge=1, le=4)
+    color_hex: str | None = None
+    mesh_url: str
+    position: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    rotation: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    scale: list[float] = Field(default_factory=lambda: [100.0, 100.0, 100.0])
+    dimensions_mm: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+
+
+class SplitObjectsResponse(BaseModel):
+    """Respuesta de `POST /api/models/split-objects`."""
+
+    mesh_id: str
+    scene_objects: list[SceneObjectInfo] = Field(default_factory=list)
+
+
 class MeshAnalysisResponse(BaseModel):
     """Resultado del análisis geométrico del STL/3MF con Trimesh."""
 
@@ -80,6 +101,7 @@ class MeshAnalysisResponse(BaseModel):
     extruder_triangle_percentages: dict[str, float] = Field(default_factory=dict)
     detected_filament_colors: list[str] = Field(default_factory=list)
     detected_colors: list[DetectedColorInfo] = Field(default_factory=list)
+    scene_objects: list[SceneObjectInfo] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -238,6 +260,29 @@ class SliceRequest(BaseModel):
     z_color_ranges: list[ZColorRange] = Field(default_factory=list)
     part_extruder_map: dict[str, int] = Field(default_factory=dict)
     layer_pauses: list["LayerPauseItem"] = Field(default_factory=list)
+    scene_objects: list["SceneObjectTransform"] = Field(default_factory=list)
+
+
+class SceneObjectTransform(BaseModel):
+    """Estado de transformación individual de un objeto en la escena multi-objeto."""
+
+    object_id: str
+    name: str = "Pieza"
+    extruder: int = Field(default=1, ge=1, le=4)
+    color_hex: str | None = None
+    mesh_url: str = ""
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+    offset_z: float = 0.0
+    rot_x: float = 0.0
+    rot_y: float = 0.0
+    rot_z: float = 0.0
+    scale_percent: float = 100.0
+    scale_x: float | None = None
+    scale_y: float | None = None
+    scale_z: float | None = None
+    drop_to_bed: bool = True
+    dimensions_mm: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
 
 
 class LayerPauseItem(BaseModel):

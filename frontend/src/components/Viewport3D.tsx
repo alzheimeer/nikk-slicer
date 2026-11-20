@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas, type ThreeEvent } from '@react-three/fiber';
+import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Grid, OrbitControls, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
@@ -39,6 +39,7 @@ import type {
   MultimaterialPartInfo,
   OrientationOption,
   PrinterInfo,
+  SceneObjectTransform,
 } from '../services/api';
 import {
   applyVisibleRolesToGeometry,
@@ -91,6 +92,12 @@ interface Viewport3DProps {
   layerPauses?: LayerPauseItem[];
   onAddLayerPause?: (layer: number, zMm: number, note: string) => void;
   onRemoveLayerPause?: (layer: number) => void;
+  sceneObjects?: SceneObjectTransform[];
+  selectedObjectIds?: string[];
+  onSelectObjects?: (ids: string[]) => void;
+  onChangeSceneObjects?: (next: SceneObjectTransform[]) => void;
+  onSplitObjects?: () => Promise<void> | void;
+  isSplittingObjects?: boolean;
 }
 
 function buildInitialInstances(t: ModelTransform): ModelInstanceTransform[] {
@@ -277,6 +284,356 @@ function buildTransformedInstanceGeometry(
   }
   g.computeVertexNormals();
   return { geo: g, size };
+}
+
+function applyAlwaysOnTopGizmoStyle(ctrl: unknown) {
+  const root = ctrl as THREE.Object3D | null;
+  if (!root || typeof root.traverse !== 'function') return;
+  root.traverse((child) => {
+    child.renderOrder = 999;
+    const mat = (child as THREE.Mesh).material;
+    if (Array.isArray(mat)) {
+      mat.forEach((m) => {
+        if (m) {
+          m.depthTest = false;
+          m.depthWrite = false;
+          m.transparent = true;
+          m.needsUpdate = true;
+        }
+      });
+    } else if (mat) {
+      mat.depthTest = false;
+      mat.depthWrite = false;
+      mat.transparent = true;
+      mat.needsUpdate = true;
+    }
+  });
+}
+
+function SceneObjectItemPreview({
+  obj,
+  isSelected,
+  fitsInVolume,
+  ghostMode,
+  extruderColors,
+  partExtruderMap,
+  activeCadTool,
+  onSelect,
+  onCommitOffset,
+  onDraggingChange,
+}: {
+  obj: SceneObjectTransform;
+  isSelected: boolean;
+  fitsInVolume: boolean;
+  ghostMode: boolean;
+  extruderColors?: string[];
+  partExtruderMap?: Record<string, number>;
+  activeCadTool: CadToolMode | null;
+  onSelect: (ev: ThreeEvent<MouseEvent>) => void;
+  onCommitOffset: (patch: Partial<SceneObjectTransform>) => void;
+  onDraggingChange: (dragging: boolean) => void;
+}) {
+  const [rawGeo, setRawGeo] = useState<THREE.BufferGeometry | null>(null);
+  const [groupNode, setGroupNode] = useState<THREE.Group | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const controlsRef = useRef<any>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let loadedGeo: THREE.BufferGeometry | null = null;
+    if (!obj.mesh_url) return;
+    const loader = new STLLoader();
+    fetch(obj.mesh_url)
+      .then((r) => r.arrayBuffer())
+      .then((buf) => {
+        if (cancelled) return;
+        const g = loader.parse(buf);
+        g.computeVertexNormals();
+        loadedGeo = g;
+        setRawGeo(g);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      loadedGeo?.dispose();
+    };
+  }, [obj.mesh_url]);
+
+  const transformed = useMemo(() => {
+    if (!rawGeo) return null;
+    return buildTransformedInstanceGeometry(rawGeo, {
+      instance_id: obj.object_id,
+      offset_x: obj.offset_x,
+      offset_y: obj.offset_y,
+      offset_z: obj.offset_z,
+      scale_percent: obj.scale_percent,
+      scale_x: obj.scale_x ?? null,
+      scale_y: obj.scale_y ?? null,
+      scale_z: obj.scale_z ?? null,
+      rot_x: obj.rot_x,
+      rot_y: obj.rot_y,
+      rot_z: obj.rot_z,
+      drop_to_bed: obj.drop_to_bed,
+    });
+  }, [
+    rawGeo,
+    obj.object_id,
+    obj.offset_x,
+    obj.offset_y,
+    obj.offset_z,
+    obj.scale_percent,
+    obj.scale_x,
+    obj.scale_y,
+    obj.scale_z,
+    obj.rot_x,
+    obj.rot_y,
+    obj.rot_z,
+    obj.drop_to_bed,
+  ]);
+
+  useEffect(() => () => transformed?.geo.dispose(), [transformed]);
+
+  useEffect(() => {
+    const ctrl = controlsRef.current;
+    if (!ctrl) return;
+    applyAlwaysOnTopGizmoStyle(ctrl);
+    const raf = window.requestAnimationFrame(() => applyAlwaysOnTopGizmoStyle(ctrl));
+    const cb = (ev: { value: boolean }) => {
+      onDraggingChange(ev.value);
+      if (!ev.value && groupNode) {
+        const p = groupNode.position;
+        onCommitOffset({
+          offset_x: Math.round(p.x * 10) / 10,
+          offset_y: Math.round(-p.z * 10) / 10,
+          offset_z: obj.drop_to_bed ? 0 : Math.max(0, Math.round(p.y * 10) / 10),
+        });
+      }
+    };
+    ctrl.addEventListener('dragging-changed', cb);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      ctrl.removeEventListener('dragging-changed', cb);
+    };
+  }, [groupNode, activeCadTool, onDraggingChange, onCommitOffset, obj.drop_to_bed]);
+
+  if (!transformed) return null;
+
+  const slotIdx = partExtruderMap?.[obj.object_id] ?? Math.max(0, (obj.extruder || 1) - 1);
+  const color = ghostMode
+    ? '#22c55e'
+    : !fitsInVolume
+      ? '#f97316'
+      : extruderColors?.[slotIdx] || obj.color_hex || (isSelected ? '#38bdf8' : '#94a3b8');
+
+  const showGizmo =
+    !ghostMode &&
+    isSelected &&
+    (activeCadTool === 'move' || activeCadTool === 'rotate' || activeCadTool === 'scale');
+
+  return (
+    <>
+      <group
+        ref={setGroupNode}
+        position={[obj.offset_x, obj.drop_to_bed ? 0 : obj.offset_z, -obj.offset_y]}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect(e);
+        }}
+      >
+        <mesh geometry={transformed.geo} castShadow receiveShadow>
+          <meshStandardMaterial
+            color={color}
+            roughness={ghostMode ? 0.6 : 0.35}
+            metalness={0.08}
+            transparent={ghostMode}
+            opacity={ghostMode ? 0.25 : 1}
+          />
+        </mesh>
+        {isSelected && !ghostMode && (
+          <mesh position={[0, transformed.size[2] / 2, 0]}>
+            <boxGeometry
+              args={[
+                transformed.size[0] + 1.5,
+                transformed.size[2] + 1.5,
+                transformed.size[1] + 1.5,
+              ]}
+            />
+            <meshBasicMaterial color="#22d3ee" wireframe transparent opacity={0.45} />
+          </mesh>
+        )}
+      </group>
+      {showGizmo && groupNode && (
+        <TransformControls
+          ref={controlsRef}
+          object={groupNode}
+          mode={activeCadTool === 'rotate' ? 'rotate' : activeCadTool === 'scale' ? 'scale' : 'translate'}
+          showY={activeCadTool !== 'move' || !obj.drop_to_bed}
+          size={1.25}
+        />
+      )}
+    </>
+  );
+}
+
+function MarqueeProjector({
+  projectorRef,
+}: {
+  projectorRef: React.MutableRefObject<((pos: [number, number, number]) => { x: number; y: number } | null) | null>;
+}) {
+  const { camera, size } = useThree();
+  useEffect(() => {
+    projectorRef.current = (pos: [number, number, number]) => {
+      const v = new THREE.Vector3(pos[0], pos[1], pos[2]).project(camera);
+      if (v.z > 1) return null;
+      return {
+        x: ((v.x + 1) / 2) * size.width,
+        y: ((-v.y + 1) / 2) * size.height,
+      };
+    };
+    return () => {
+      projectorRef.current = null;
+    };
+  }, [camera, size, projectorRef]);
+  return null;
+}
+
+function GroupMoveGizmo({
+  centroid,
+  allowZ,
+  onCommitDelta,
+  onDraggingChange,
+}: {
+  centroid: { x: number; y: number; z: number };
+  allowZ: boolean;
+  onCommitDelta: (dx: number, dy: number, dz: number) => void;
+  onDraggingChange: (dragging: boolean) => void;
+}) {
+  const [anchorNode, setAnchorNode] = useState<THREE.Group | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const controlsRef = useRef<any>(null);
+  const startPosRef = useRef<{ x: number; y: number; z: number }>({
+    x: centroid.x,
+    y: centroid.y,
+    z: centroid.z,
+  });
+
+  useEffect(() => {
+    startPosRef.current = { x: centroid.x, y: centroid.y, z: centroid.z };
+  }, [centroid.x, centroid.y, centroid.z]);
+
+  useEffect(() => {
+    const ctrl = controlsRef.current;
+    if (!ctrl) return;
+    applyAlwaysOnTopGizmoStyle(ctrl);
+    const raf = window.requestAnimationFrame(() => applyAlwaysOnTopGizmoStyle(ctrl));
+    const cb = (ev: { value: boolean }) => {
+      onDraggingChange(ev.value);
+      if (ev.value) {
+        startPosRef.current = { x: centroid.x, y: centroid.y, z: centroid.z };
+      } else if (anchorNode) {
+        const p = anchorNode.position;
+        const dx = Math.round((p.x - startPosRef.current.x) * 10) / 10;
+        const dy = Math.round((-p.z - startPosRef.current.y) * 10) / 10;
+        const dz = allowZ ? Math.round((p.y - startPosRef.current.z) * 10) / 10 : 0;
+        if (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05 || Math.abs(dz) > 0.05) {
+          onCommitDelta(dx, dy, dz);
+        }
+      }
+    };
+    ctrl.addEventListener('dragging-changed', cb);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      ctrl.removeEventListener('dragging-changed', cb);
+    };
+  }, [anchorNode, allowZ, centroid.x, centroid.y, centroid.z, onCommitDelta, onDraggingChange]);
+
+  return (
+    <>
+      <group ref={setAnchorNode} position={[centroid.x, centroid.z, -centroid.y]}>
+        <mesh renderOrder={998}>
+          <sphereGeometry args={[2.6, 12, 12]} />
+          <meshBasicMaterial color="#22d3ee" depthTest={false} depthWrite={false} transparent />
+        </mesh>
+      </group>
+      {anchorNode && (
+        <TransformControls
+          ref={controlsRef}
+          object={anchorNode}
+          mode="translate"
+          showY={allowZ}
+          size={1.25}
+        />
+      )}
+    </>
+  );
+}
+
+function arrangeSceneObjectsOnBed(
+  allObjects: SceneObjectTransform[],
+  targetIds: Set<string>,
+  printer: PrinterInfo | null,
+): SceneObjectTransform[] {
+  const toArrange = allObjects.filter((o) => targetIds.has(o.object_id));
+  if (toArrange.length === 0) return allObjects;
+
+  const spacing = 4;
+  const isDelta = printer?.kinematics === 'delta';
+  const maxWidth = isDelta
+    ? Math.max(80, ((printer?.diameter_mm ?? 260) * 0.72))
+    : Math.max(80, (printer?.bed_mm?.[0] ?? 256) - 16);
+
+  let curX = 0;
+  let curY = 0;
+  let rowMaxH = 0;
+  const placed: Array<{ id: string; px: number; py: number; w: number; h: number }> = [];
+
+  const sorted = [...toArrange].sort((a, b) => {
+    const ha = (a.dimensions_mm?.[1] || 40) * ((a.scale_y ?? a.scale_percent) / 100);
+    const hb = (b.dimensions_mm?.[1] || 40) * ((b.scale_y ?? b.scale_percent) / 100);
+    return hb - ha;
+  });
+
+  for (const obj of sorted) {
+    const w = Math.max(8, (obj.dimensions_mm?.[0] || 40) * ((obj.scale_x ?? obj.scale_percent) / 100));
+    const h = Math.max(8, (obj.dimensions_mm?.[1] || 40) * ((obj.scale_y ?? obj.scale_percent) / 100));
+    if (curX > 0 && curX + w > maxWidth) {
+      curX = 0;
+      curY += rowMaxH + spacing;
+      rowMaxH = 0;
+    }
+    placed.push({ id: obj.object_id, px: curX + w / 2, py: curY + h / 2, w, h });
+    curX += w + spacing;
+    rowMaxH = Math.max(rowMaxH, h);
+  }
+
+  const minX = Math.min(...placed.map((p) => p.px - p.w / 2));
+  const maxX = Math.max(...placed.map((p) => p.px + p.w / 2));
+  const minY = Math.min(...placed.map((p) => p.py - p.h / 2));
+  const maxY = Math.max(...placed.map((p) => p.py + p.h / 2));
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+
+  const byId = new Map(
+    placed.map((p) => [
+      p.id,
+      {
+        offset_x: Math.round((p.px - cx) * 10) / 10,
+        offset_y: Math.round((p.py - cy) * 10) / 10,
+      },
+    ]),
+  );
+
+  return allObjects.map((o) => {
+    const nextPos = byId.get(o.object_id);
+    if (!nextPos) return o;
+    return {
+      ...o,
+      offset_x: nextPos.offset_x,
+      offset_y: nextPos.offset_y,
+      offset_z: 0,
+      drop_to_bed: true,
+    };
+  });
 }
 
 function SingleInstancePreview({
@@ -830,6 +1187,12 @@ export function Viewport3D({
   layerPauses = [],
   onAddLayerPause,
   onRemoveLayerPause,
+  sceneObjects = [],
+  selectedObjectIds = [],
+  onSelectObjects,
+  onChangeSceneObjects,
+  onSplitObjects,
+  isSplittingObjects = false,
 }: Viewport3DProps) {
   const [viewMode, setViewMode] = useState<'stl' | 'gcode'>('stl');
   const [pauseNoteDraft, setPauseNoteDraft] = useState<string>('');
@@ -864,9 +1227,84 @@ export function Viewport3D({
   const [cutKeepMode, setCutKeepMode] = useState<'upper' | 'lower' | 'both'>('both');
   const [measurePoints, setMeasurePoints] = useState<THREE.Vector3[]>([]);
 
+  const [groupScalePct, setGroupScalePct] = useState<number>(100);
+  const [marqueeRect, setMarqueeRect] = useState<{
+    startX: number;
+    startY: number;
+    curX: number;
+    curY: number;
+  } | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const projectorRef = useRef<
+    ((pos: [number, number, number]) => { x: number; y: number } | null) | null
+  >(null);
+
+  const selectedSet = useMemo(() => new Set(selectedObjectIds), [selectedObjectIds]);
+  const selectedSceneObjs = useMemo(
+    () => sceneObjects.filter((o) => selectedSet.has(o.object_id)),
+    [sceneObjects, selectedSet],
+  );
+  const groupCentroid = useMemo(() => {
+    if (selectedSceneObjs.length === 0) return { x: 0, y: 0, z: 0 };
+    const sx = selectedSceneObjs.reduce((acc, o) => acc + o.offset_x, 0);
+    const sy = selectedSceneObjs.reduce((acc, o) => acc + o.offset_y, 0);
+    const sz = selectedSceneObjs.reduce(
+      (acc, o) => acc + (o.drop_to_bed ? 0 : o.offset_z),
+      0,
+    );
+    return {
+      x: Math.round((sx / selectedSceneObjs.length) * 10) / 10,
+      y: Math.round((sy / selectedSceneObjs.length) * 10) / 10,
+      z: Math.round((sz / selectedSceneObjs.length) * 10) / 10,
+    };
+  }, [selectedSceneObjs]);
+
+  useEffect(() => {
+    setGroupScalePct(100);
+  }, [selectedObjectIds.join(',')]);
+
+  const handleDeleteSelectedObjects = useCallback(() => {
+    if (sceneObjects.length <= 1 || selectedObjectIds.length === 0 || !onChangeSceneObjects) return;
+    const rem = sceneObjects.filter((o) => !selectedSet.has(o.object_id));
+    if (rem.length === 0) return;
+    onChangeSceneObjects(rem);
+    onSelectObjects?.([rem[0].object_id]);
+  }, [sceneObjects, selectedObjectIds.length, selectedSet, onChangeSceneObjects, onSelectObjects]);
+
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Delete' && ev.key !== 'Backspace') return;
+      const tag = (ev.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (sceneObjects.length > 1 && selectedObjectIds.length > 0) {
+        ev.preventDefault();
+        handleDeleteSelectedObjects();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sceneObjects.length, selectedObjectIds.length, handleDeleteSelectedObjects]);
+
   const instances = useMemo(() => buildInitialInstances(transform), [transform]);
   const safeIdx = Math.min(instances.length - 1, Math.max(0, activeInstanceIdx));
-  const activeInstance = instances[safeIdx];
+  const selectedSceneObj =
+    selectedSceneObjs.length === 1 ? selectedSceneObjs[0] : null;
+  const activeInstance: ModelInstanceTransform = selectedSceneObj
+    ? {
+        instance_id: selectedSceneObj.object_id,
+        offset_x: selectedSceneObj.offset_x,
+        offset_y: selectedSceneObj.offset_y,
+        offset_z: selectedSceneObj.offset_z,
+        scale_percent: selectedSceneObj.scale_percent,
+        scale_x: selectedSceneObj.scale_x ?? null,
+        scale_y: selectedSceneObj.scale_y ?? null,
+        scale_z: selectedSceneObj.scale_z ?? null,
+        rot_x: selectedSceneObj.rot_x,
+        rot_y: selectedSceneObj.rot_y,
+        rot_z: selectedSceneObj.rot_z,
+        drop_to_bed: selectedSceneObj.drop_to_bed,
+      }
+    : instances[safeIdx];
   const uniformScale = transform.uniformScale ?? true;
 
   // Cargar geometría raw del STL / 3MF una vez por archivo
@@ -1080,8 +1518,77 @@ export function Viewport3D({
     }
   }, [parsedGcode, printer?.profile_id, printer?.printer_id]);
 
+  const applyGroupMoveDelta = useCallback(
+    (dx: number, dy: number, dz = 0) => {
+      if (sceneObjects.length === 0 || !onChangeSceneObjects) return;
+      const targetAll = selectedObjectIds.length === 0;
+      onChangeSceneObjects(
+        sceneObjects.map((o) => {
+          if (!targetAll && !selectedSet.has(o.object_id)) return o;
+          return {
+            ...o,
+            offset_x: Math.round((o.offset_x + dx) * 10) / 10,
+            offset_y: Math.round((o.offset_y + dy) * 10) / 10,
+            ...(dz !== 0 && !o.drop_to_bed
+              ? { offset_z: Math.max(0, Math.round((o.offset_z + dz) * 10) / 10) }
+              : {}),
+          };
+        }),
+      );
+    },
+    [sceneObjects, selectedObjectIds.length, selectedSet, onChangeSceneObjects],
+  );
+
+  const applyGroupScaleFactor = useCallback(
+    (factor: number, nextGroupPct: number) => {
+      if (sceneObjects.length === 0 || !onChangeSceneObjects || factor <= 0) return;
+      setGroupScalePct(nextGroupPct);
+      const targetAll = selectedObjectIds.length === 0;
+      onChangeSceneObjects(
+        sceneObjects.map((o) => {
+          if (!targetAll && !selectedSet.has(o.object_id)) return o;
+          const nextSp = Math.max(5, Math.min(2000, Math.round(o.scale_percent * factor * 10) / 10));
+          return {
+            ...o,
+            scale_percent: nextSp,
+            scale_x: o.scale_x ? Math.round(o.scale_x * factor * 10) / 10 : null,
+            scale_y: o.scale_y ? Math.round(o.scale_y * factor * 10) / 10 : null,
+            scale_z: o.scale_z ? Math.round(o.scale_z * factor * 10) / 10 : null,
+            offset_x: Math.round((groupCentroid.x + (o.offset_x - groupCentroid.x) * factor) * 10) / 10,
+            offset_y: Math.round((groupCentroid.y + (o.offset_y - groupCentroid.y) * factor) * 10) / 10,
+            drop_to_bed: true,
+            offset_z: 0,
+          };
+        }),
+      );
+    },
+    [sceneObjects, selectedObjectIds.length, selectedSet, groupCentroid.x, groupCentroid.y, onChangeSceneObjects],
+  );
+
   const updateActiveInstance = useCallback(
     (patch: Partial<ModelInstanceTransform>, extraRootPatch?: Partial<ModelTransform>) => {
+      if (sceneObjects.length > 0 && onChangeSceneObjects) {
+        const targetAll = selectedObjectIds.length === 0;
+        const nextObjs = sceneObjects.map((o) => {
+          if (!targetAll && !selectedSet.has(o.object_id)) return o;
+          return {
+            ...o,
+            ...(patch.offset_x !== undefined ? { offset_x: patch.offset_x } : {}),
+            ...(patch.offset_y !== undefined ? { offset_y: patch.offset_y } : {}),
+            ...(patch.offset_z !== undefined ? { offset_z: patch.offset_z } : {}),
+            ...(patch.rot_x !== undefined ? { rot_x: patch.rot_x } : {}),
+            ...(patch.rot_y !== undefined ? { rot_y: patch.rot_y } : {}),
+            ...(patch.rot_z !== undefined ? { rot_z: patch.rot_z } : {}),
+            ...(patch.scale_percent !== undefined ? { scale_percent: patch.scale_percent } : {}),
+            ...(patch.scale_x !== undefined ? { scale_x: patch.scale_x } : {}),
+            ...(patch.scale_y !== undefined ? { scale_y: patch.scale_y } : {}),
+            ...(patch.scale_z !== undefined ? { scale_z: patch.scale_z } : {}),
+            ...(patch.drop_to_bed !== undefined ? { drop_to_bed: patch.drop_to_bed } : {}),
+          };
+        });
+        onChangeSceneObjects(nextObjs);
+        return;
+      }
       const updated = instances.map((it, idx) =>
         idx === safeIdx ? { ...it, ...patch } : it,
       );
@@ -1103,10 +1610,29 @@ export function Viewport3D({
         instances: updated,
       });
     },
-    [instances, safeIdx, transform, onChangeTransform],
+    [
+      sceneObjects,
+      selectedObjectIds.length,
+      selectedSet,
+      onChangeSceneObjects,
+      instances,
+      safeIdx,
+      transform,
+      onChangeTransform,
+    ],
   );
 
   const rotateAxis = (axis: 'rot_x' | 'rot_y' | 'rot_z', delta: number) => {
+    if (sceneObjects.length > 0 && selectedSceneObjs.length >= 2 && onChangeSceneObjects) {
+      onChangeSceneObjects(
+        sceneObjects.map((o) => {
+          if (!selectedSet.has(o.object_id)) return o;
+          const nextVal = Math.round((((o[axis] + delta) % 360) + 360) % 360 * 10) / 10;
+          return { ...o, [axis]: nextVal, drop_to_bed: true, offset_z: 0 };
+        }),
+      );
+      return;
+    }
     const nextVal = Math.round((((activeInstance[axis] + delta) % 360) + 360) % 360 * 10) / 10;
     updateActiveInstance({
       [axis]: nextVal,
@@ -1267,8 +1793,27 @@ export function Viewport3D({
     }
   };
 
+  const isAllDropToBed =
+    sceneObjects.length > 0 && selectedSceneObjs.length > 0
+      ? selectedSceneObjs.every((o) => o.drop_to_bed)
+      : activeInstance.drop_to_bed;
+
   const handleToggleGravity = () => {
-    const nextDrop = !activeInstance.drop_to_bed;
+    const nextDrop = !isAllDropToBed;
+    if (sceneObjects.length > 0 && onChangeSceneObjects) {
+      const targetAll = selectedObjectIds.length === 0;
+      onChangeSceneObjects(
+        sceneObjects.map((o) => {
+          if (!targetAll && !selectedSet.has(o.object_id)) return o;
+          return {
+            ...o,
+            drop_to_bed: nextDrop,
+            ...(nextDrop ? { offset_z: 0 } : {}),
+          };
+        }),
+      );
+      return;
+    }
     updateActiveInstance({
       drop_to_bed: nextDrop,
       offset_z: nextDrop ? 0 : activeInstance.offset_z,
@@ -1336,7 +1881,61 @@ export function Viewport3D({
       : Math.max(printer?.bed_mm?.[0] ?? 220, printer?.bed_mm?.[1] ?? 220);
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl">
+    <div
+      ref={containerRef}
+      onPointerDown={(e) => {
+        if (e.button !== 0 || viewMode !== 'stl' || sceneObjects.length === 0) return;
+        if (e.shiftKey && e.target instanceof HTMLCanvasElement) {
+          const rect = containerRef.current?.getBoundingClientRect();
+          if (!rect) return;
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+          setMarqueeRect({ startX: x, startY: y, curX: x, curY: y });
+        }
+      }}
+      onPointerMove={(e) => {
+        if (!marqueeRect) return;
+        const rect = containerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        setMarqueeRect((prev) =>
+          prev ? { ...prev, curX: e.clientX - rect.left, curY: e.clientY - rect.top } : null,
+        );
+      }}
+      onPointerUp={() => {
+        if (!marqueeRect) return;
+        const minX = Math.min(marqueeRect.startX, marqueeRect.curX);
+        const maxX = Math.max(marqueeRect.startX, marqueeRect.curX);
+        const minY = Math.min(marqueeRect.startY, marqueeRect.curY);
+        const maxY = Math.max(marqueeRect.startY, marqueeRect.curY);
+        if (maxX - minX > 6 || maxY - minY > 6) {
+          const proj = projectorRef.current;
+          if (proj) {
+            const hits = sceneObjects
+              .filter((obj) => {
+                const pt = proj([obj.offset_x, (obj.dimensions_mm?.[2] || 10) * 0.4, -obj.offset_y]);
+                return pt && pt.x >= minX && pt.x <= maxX && pt.y >= minY && pt.y <= maxY;
+              })
+              .map((obj) => obj.object_id);
+            if (hits.length > 0) {
+              onSelectObjects?.(hits);
+            }
+          }
+        }
+        setMarqueeRect(null);
+      }}
+      className="relative h-full w-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl"
+    >
+      {marqueeRect && (
+        <div
+          style={{
+            left: Math.min(marqueeRect.startX, marqueeRect.curX),
+            top: Math.min(marqueeRect.startY, marqueeRect.curY),
+            width: Math.abs(marqueeRect.curX - marqueeRect.startX),
+            height: Math.abs(marqueeRect.curY - marqueeRect.startY),
+          }}
+          className="pointer-events-none absolute z-30 border border-dashed border-cyan-400 bg-cyan-400/15"
+        />
+      )}
       {/* Contenedor superior HUD + Submenú CAD (flujo vertical para evitar solapamientos) */}
       <div className="pointer-events-none absolute inset-x-4 top-4 z-20 flex flex-col items-start gap-2.5">
         {/* Barra superior HUD */}
@@ -1402,20 +2001,51 @@ export function Viewport3D({
               onClick={handleToggleGravity}
               title="Gravedad: caer automáticamente sobre Z = 0.0 mm"
               className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold transition ${
-                activeInstance.drop_to_bed
+                isAllDropToBed
                   ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40'
-                  : 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/40'
+                  : 'bg-slate-800 text-slate-300 ring-1 ring-slate-600/60'
               }`}
             >
               <ArrowDownToLine className="h-3.5 w-3.5" />
-              <span>Z=0 {activeInstance.drop_to_bed ? 'ON' : 'OFF'}</span>
+              <span>Z=0 {isAllDropToBed ? 'ON' : 'OFF'}</span>
             </button>
 
-            {onAutoArrange && (
+            {onSplitObjects && (
+              <button
+                type="button"
+                disabled={isSplittingObjects}
+                onClick={() => void onSplitObjects()}
+                title="Dividir malla en objetos independientes"
+                className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950/70 px-2 py-1 text-[11px] font-medium text-purple-200 hover:border-purple-500/60 disabled:opacity-50"
+              >
+                {isSplittingObjects ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Layers className="h-3.5 w-3.5" />
+                )}
+                <span>Dividir Objetos</span>
+              </button>
+            )}
+
+            {(onAutoArrange || sceneObjects.length > 1) && (
               <button
                 type="button"
                 disabled={isAutoArranging}
-                onClick={() => void onAutoArrange(instances)}
+                onClick={() => {
+                  if (sceneObjects.length > 1 && onChangeSceneObjects) {
+                    const useSelection =
+                      selectedObjectIds.length >= 2 &&
+                      selectedObjectIds.length < sceneObjects.length;
+                    const targetSetIds = useSelection
+                      ? new Set(selectedObjectIds)
+                      : new Set(sceneObjects.map((o) => o.object_id));
+                    onChangeSceneObjects(
+                      arrangeSceneObjectsOnBed(sceneObjects, targetSetIds, printer),
+                    );
+                  } else if (onAutoArrange) {
+                    void onAutoArrange(instances);
+                  }
+                }}
                 title="Auto-Ordenar piezas en la cama"
                 className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-950/70 px-2 py-1 text-[11px] font-medium text-cyan-200 hover:border-cyan-500/60 disabled:opacity-50"
               >
@@ -1513,8 +2143,80 @@ export function Viewport3D({
                 </button>
               </div>
 
-              <div className="max-h-32 space-y-1 overflow-y-auto pr-0.5">
-                {instances.map((it, idx) => (
+              <div className="max-h-36 space-y-1 overflow-y-auto pr-0.5">
+                {sceneObjects.length > 0 ? (
+                  <>
+                    <div className="mb-1 flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => onSelectObjects?.(sceneObjects.map((o) => o.object_id))}
+                        className="flex-1 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-1.5 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/25"
+                      >
+                        Seleccionar Todo ({sceneObjects.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onSelectObjects?.([])}
+                        className="rounded-lg border border-slate-700 bg-slate-950 px-1.5 py-1 text-[10px] text-slate-300 hover:border-slate-500"
+                      >
+                        Deseleccionar
+                      </button>
+                      {selectedObjectIds.length > 0 && sceneObjects.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={handleDeleteSelectedObjects}
+                          title="Eliminar piezas seleccionadas (Supr)"
+                          className="rounded-lg border border-rose-500/45 bg-rose-500/15 px-1.5 py-1 text-[10px] font-semibold text-rose-200 hover:bg-rose-500/25"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                    {sceneObjects.map((obj) => {
+                      const isSel = selectedSet.has(obj.object_id);
+                      return (
+                        <div
+                          key={obj.object_id}
+                          onClick={(e) => {
+                            if (e.shiftKey || e.metaKey || e.ctrlKey) {
+                              onSelectObjects?.(
+                                isSel
+                                  ? selectedObjectIds.filter((id) => id !== obj.object_id)
+                                  : [...selectedObjectIds, obj.object_id],
+                              );
+                            } else {
+                              onSelectObjects?.([obj.object_id]);
+                            }
+                          }}
+                          className={`flex cursor-pointer items-center justify-between gap-1.5 rounded-lg border px-2 py-1 text-[11px] ${
+                            isSel
+                              ? 'border-cyan-500/60 bg-cyan-500/15 text-cyan-100'
+                              : 'border-slate-800 bg-slate-950/70 text-slate-300'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSel}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              onSelectObjects?.(
+                                isSel
+                                  ? selectedObjectIds.filter((id) => id !== obj.object_id)
+                                  : [...selectedObjectIds, obj.object_id],
+                              );
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="accent-cyan-400"
+                          />
+                          <span className="min-w-0 flex-1 truncate">
+                            {obj.name} · ({obj.offset_x}, {obj.offset_y})
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </>
+                ) : (
+                  instances.map((it, idx) => (
                   <div
                     key={it.instance_id}
                     onClick={() => setActiveInstanceIdx(idx)}
@@ -1541,7 +2243,8 @@ export function Viewport3D({
                       </button>
                     )}
                   </div>
-                ))}
+                ))
+                )}
               </div>
             </>
           )}
@@ -1550,58 +2253,91 @@ export function Viewport3D({
             <>
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-slate-100">
-                  Mover Pieza #{safeIdx + 1} (mm)
+                  {selectedSceneObjs.length >= 2
+                    ? `Mover ${selectedSceneObjs.length} piezas seleccionadas`
+                    : `Mover Pieza (mm)`}
                 </span>
                 <button
                   type="button"
-                  onClick={() =>
-                    updateActiveInstance({ offset_x: 0, offset_y: 0, offset_z: 0 })
-                  }
+                  onClick={() => {
+                    if (selectedSceneObjs.length >= 2) {
+                      applyGroupMoveDelta(-groupCentroid.x, -groupCentroid.y);
+                    } else {
+                      updateActiveInstance({ offset_x: 0, offset_y: 0, offset_z: 0 });
+                    }
+                  }}
                   className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-cyan-500"
                 >
-                  Centrar
+                  {selectedSceneObjs.length >= 2 ? 'Centrar grupo' : 'Centrar'}
                 </button>
               </div>
               <div className="grid grid-cols-3 gap-1.5">
                 <div>
-                  <label className="mb-0.5 block text-[10px] text-slate-400">X (mm)</label>
+                  <label className="mb-0.5 block text-[10px] text-slate-400">
+                    {selectedSceneObjs.length >= 2 ? 'Cx (mm)' : 'X (mm)'}
+                  </label>
                   <input
                     type="number"
                     step={1}
-                    value={activeInstance.offset_x}
-                    onChange={(e) =>
-                      updateActiveInstance({ offset_x: Number(e.target.value) || 0 })
-                    }
-                    className="w-full rounded border border-slate-700 bg-slate-950 px-1.5 py-1 font-mono text-xs text-slate-100"
-                  />
-                </div>
-                <div>
-                  <label className="mb-0.5 block text-[10px] text-slate-400">Y (mm)</label>
-                  <input
-                    type="number"
-                    step={1}
-                    value={activeInstance.offset_y}
-                    onChange={(e) =>
-                      updateActiveInstance({ offset_y: Number(e.target.value) || 0 })
-                    }
+                    value={selectedSceneObjs.length >= 2 ? groupCentroid.x : activeInstance.offset_x}
+                    onChange={(e) => {
+                      const val = Number(e.target.value) || 0;
+                      if (selectedSceneObjs.length >= 2) {
+                        applyGroupMoveDelta(val - groupCentroid.x, 0);
+                      } else {
+                        updateActiveInstance({ offset_x: val });
+                      }
+                    }}
                     className="w-full rounded border border-slate-700 bg-slate-950 px-1.5 py-1 font-mono text-xs text-slate-100"
                   />
                 </div>
                 <div>
                   <label className="mb-0.5 block text-[10px] text-slate-400">
-                    Z {activeInstance.drop_to_bed ? '(Fija)' : '(mm)'}
+                    {selectedSceneObjs.length >= 2 ? 'Cy (mm)' : 'Y (mm)'}
+                  </label>
+                  <input
+                    type="number"
+                    step={1}
+                    value={selectedSceneObjs.length >= 2 ? groupCentroid.y : activeInstance.offset_y}
+                    onChange={(e) => {
+                      const val = Number(e.target.value) || 0;
+                      if (selectedSceneObjs.length >= 2) {
+                        applyGroupMoveDelta(0, val - groupCentroid.y);
+                      } else {
+                        updateActiveInstance({ offset_y: val });
+                      }
+                    }}
+                    className="w-full rounded border border-slate-700 bg-slate-950 px-1.5 py-1 font-mono text-xs text-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="mb-0.5 block text-[10px] text-slate-400">
+                    {selectedSceneObjs.length >= 2
+                      ? isAllDropToBed
+                        ? 'Cz (Fija)'
+                        : 'Cz (mm)'
+                      : `Z ${isAllDropToBed ? '(Fija)' : '(mm)'}`}
                   </label>
                   <input
                     type="number"
                     min={0}
                     step={1}
-                    disabled={activeInstance.drop_to_bed}
-                    value={activeInstance.drop_to_bed ? 0 : activeInstance.offset_z}
-                    onChange={(e) =>
-                      updateActiveInstance({
-                        offset_z: Math.max(0, Number(e.target.value) || 0),
-                      })
+                    disabled={isAllDropToBed}
+                    value={
+                      isAllDropToBed
+                        ? 0
+                        : selectedSceneObjs.length >= 2
+                          ? groupCentroid.z
+                          : activeInstance.offset_z
                     }
+                    onChange={(e) => {
+                      const val = Math.max(0, Number(e.target.value) || 0);
+                      if (selectedSceneObjs.length >= 2) {
+                        applyGroupMoveDelta(0, 0, val - groupCentroid.z);
+                      } else {
+                        updateActiveInstance({ offset_z: val });
+                      }
+                    }}
                     className="w-full rounded border border-slate-700 bg-slate-950 px-1.5 py-1 font-mono text-xs text-slate-100 disabled:opacity-45"
                   />
                 </div>
@@ -1690,7 +2426,57 @@ export function Viewport3D({
             </>
           )}
 
-          {activeCadTool === 'scale' && (
+          {activeCadTool === 'scale' && selectedSceneObjs.length >= 2 && (
+            <>
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-slate-100">
+                  Redimensionar {selectedSceneObjs.length} piezas
+                </span>
+                <span className="font-mono text-[10px] text-cyan-300">
+                  {groupScalePct}%
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextPct = Math.max(10, groupScalePct - 10);
+                    applyGroupScaleFactor(nextPct / groupScalePct, nextPct);
+                  }}
+                  className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-300 hover:border-cyan-500/60"
+                >
+                  -10%
+                </button>
+                <input
+                  type="number"
+                  min={10}
+                  max={500}
+                  step={5}
+                  value={groupScalePct}
+                  onChange={(e) => {
+                    const nextPct = Math.max(10, Math.min(500, Number(e.target.value) || 100));
+                    applyGroupScaleFactor(nextPct / groupScalePct, nextPct);
+                  }}
+                  className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-center font-mono text-xs text-cyan-300"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextPct = Math.min(500, groupScalePct + 10);
+                    applyGroupScaleFactor(nextPct / groupScalePct, nextPct);
+                  }}
+                  className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-300 hover:border-cyan-500/60"
+                >
+                  +10%
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Escala proporcionalmente alrededor del centroide manteniendo separación.
+              </p>
+            </>
+          )}
+
+          {activeCadTool === 'scale' && selectedSceneObjs.length < 2 && (
             <>
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-slate-100">Redimensionar</span>
@@ -2380,7 +3166,11 @@ export function Viewport3D({
         shadows
         gl={{ preserveDrawingBuffer: true }}
         camera={{ position: [230, 210, 250], fov: 42, near: 0.5, far: 5000 }}
+        onPointerMissed={() => {
+          if (!marqueeRect) onSelectObjects?.([]);
+        }}
       >
+        <MarqueeProjector projectorRef={projectorRef} />
         <color attach="background" args={['#070b14']} />
         <hemisphereLight
           args={['#f8fafc', '#334155', viewMode === 'gcode' ? 1.35 : 0.9]}
@@ -2398,8 +3188,62 @@ export function Viewport3D({
 
         <BuildPlate printer={printer} />
 
-        {/* Instancias STL / 3MF normales o Silueta Fantasma verde translúcida */}
-        {loadedModel &&
+        {/* Objetos independientes de .3MF / Dividir Objetos o Instancias STL normales */}
+        {sceneObjects.length > 0 &&
+        (viewMode === 'stl' || (viewMode === 'gcode' && showGhostMesh)) ? (
+          <>
+            {sceneObjects.map((obj) => {
+              const isSel = selectedSet.has(obj.object_id);
+              return (
+                <SceneObjectItemPreview
+                  key={obj.object_id}
+                  obj={obj}
+                  isSelected={isSel}
+                  fitsInVolume={fitsInVolume}
+                  ghostMode={viewMode === 'gcode'}
+                  extruderColors={extruderColors}
+                  partExtruderMap={partExtruderMap}
+                  activeCadTool={
+                    viewMode === 'stl' && selectedSceneObjs.length === 1
+                      ? activeCadTool
+                      : null
+                  }
+                  onSelect={(ev) => {
+                    if (ev.shiftKey || ev.metaKey || ev.ctrlKey) {
+                      onSelectObjects?.(
+                        isSel
+                          ? selectedObjectIds.filter((id) => id !== obj.object_id)
+                          : [...selectedObjectIds, obj.object_id],
+                      );
+                    } else {
+                      onSelectObjects?.([obj.object_id]);
+                    }
+                  }}
+                  onCommitOffset={(patch) => {
+                    if (!onChangeSceneObjects) return;
+                    onChangeSceneObjects(
+                      sceneObjects.map((o) =>
+                        o.object_id === obj.object_id ? { ...o, ...patch } : o,
+                      ),
+                    );
+                  }}
+                  onDraggingChange={setIsDraggingGizmo}
+                />
+              );
+            })}
+            {viewMode === 'stl' &&
+              selectedSceneObjs.length >= 2 &&
+              activeCadTool === 'move' && (
+                <GroupMoveGizmo
+                  centroid={groupCentroid}
+                  allowZ={!isAllDropToBed}
+                  onCommitDelta={applyGroupMoveDelta}
+                  onDraggingChange={setIsDraggingGizmo}
+                />
+              )}
+          </>
+        ) : (
+          loadedModel &&
           (viewMode === 'stl' || (viewMode === 'gcode' && showGhostMesh)) &&
           instances.map((inst, idx) => (
             <SingleInstancePreview
@@ -2419,7 +3263,8 @@ export function Viewport3D({
               onCommitOffset={(patch) => updateActiveInstance(patch)}
               onDraggingChange={setIsDraggingGizmo}
             />
-          ))}
+          ))
+        )}
 
         {/* Plano de corte 3D cuando está activa la herramienta Cortar */}
         {viewMode === 'stl' && stlFile && activeCadTool === 'cut' && (
@@ -2471,7 +3316,7 @@ export function Viewport3D({
 
         <OrbitControls
           makeDefault
-          enabled={!isDraggingGizmo}
+          enabled={!isDraggingGizmo && !marqueeRect}
           enableDamping
           dampingFactor={0.08}
           minDistance={25}

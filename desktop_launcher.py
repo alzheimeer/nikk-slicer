@@ -306,24 +306,59 @@ class DesktopApi:
                 pass
         return {"ok": True}
 
+    def focus_window_by_id(self, window_id: str) -> dict[str, object]:
+        def _do_focus() -> None:
+            try:
+                from AppKit import NSApp  # type: ignore[import-not-found]
+                from Foundation import NSOperationQueue  # type: ignore[import-not-found]
+
+                def _on_main():
+                    win = _WINDOW_BY_ID.get(str(window_id or ""))
+                    if win is not None:
+                        ns_win = getattr(win, "native", None)
+                        if ns_win is None and hasattr(win, "gui"):
+                            ns_win = getattr(win.gui, "window", None)
+                        if ns_win is not None:
+                            ns_win.makeKeyAndOrderFront_(None)
+                    NSApp.activateIgnoringOtherApps_(True)
+
+                NSOperationQueue.mainQueue().addOperationWithBlock_(_on_main)
+            except Exception:
+                pass
+
+        threading.Thread(target=_do_focus, daemon=True).start()
+        return {"focused": True}
+
 
 _MENU_TARGET = None
 _RECENT_SUBMENU = None
+_WINDOW_BY_ID: dict[str, object] = {}
 
 
-def _build_window_url(project_id: str | None = None) -> str:
+def _build_window_url(project_id: str | None = None) -> tuple[str, str]:
     wsid = uuid.uuid4().hex[:10]
     if project_id:
-        return f"{BASE_URL}/?window_session_id={wsid}&project_id={project_id}"
-    return f"{BASE_URL}/?window_session_id={wsid}"
+        return wsid, f"{BASE_URL}/?window_session_id={wsid}&project_id={project_id}"
+    return wsid, f"{BASE_URL}/?window_session_id={wsid}"
+
+
+def _register_window(wsid: str, win: object) -> None:
+    _WINDOW_BY_ID[wsid] = win
+    try:
+        def _on_closed():
+            _WINDOW_BY_ID.pop(wsid, None)
+
+        win.events.closed += _on_closed  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def open_new_project_window(project_id: str | None = None) -> None:
     try:
         import webview  # type: ignore[import-not-found]
 
-        url = _build_window_url(project_id)
-        webview.create_window(
+        wsid, url = _build_window_url(project_id)
+        win = webview.create_window(
             "Nikk Slicer",
             url,
             width=1440,
@@ -332,6 +367,8 @@ def open_new_project_window(project_id: str | None = None) -> None:
             background_color="#020617",
             js_api=DesktopApi(),
         )
+        if win is not None:
+            _register_window(wsid, win)
     except Exception:
         pass
 
@@ -380,50 +417,64 @@ def _install_macos_archivo_menu(logger: logging.Logger) -> None:
         )
         from Foundation import NSObject, NSOperationQueue  # type: ignore[import-not-found]
 
+        def _dispatch_js_async(script: str) -> None:
+            def _worker() -> None:
+                try:
+                    win = webview.active_window()
+                    if win is not None:
+                        win.evaluate_js(script)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_worker, daemon=True).start()
+
         class NikkMenuTarget(NSObject):
             def newProjectWindow_(self, _sender):
-                open_new_project_window()
+                threading.Thread(target=open_new_project_window, daemon=True).start()
 
             def openProjectsModal_(self, _sender):
-                win = webview.active_window()
-                if win is not None:
-                    win.evaluate_js(
-                        "window.dispatchEvent(new CustomEvent('nikk:menu-open-projects'))"
-                    )
+                _dispatch_js_async(
+                    "window.dispatchEvent(new CustomEvent('nikk:menu-open-projects'))"
+                )
 
             def saveProject_(self, _sender):
-                win = webview.active_window()
-                if win is not None:
-                    win.evaluate_js(
-                        "window.dispatchEvent(new CustomEvent('nikk:menu-save-project'))"
-                    )
+                _dispatch_js_async(
+                    "window.dispatchEvent(new CustomEvent('nikk:menu-save-project'))"
+                )
 
             def saveProjectAs_(self, _sender):
-                win = webview.active_window()
-                if win is not None:
-                    win.evaluate_js(
-                        "window.dispatchEvent(new CustomEvent('nikk:menu-save-project-as'))"
-                    )
+                _dispatch_js_async(
+                    "window.dispatchEvent(new CustomEvent('nikk:menu-save-project-as'))"
+                )
 
             def openRecentProject_(self, sender):
                 pid = str(sender.representedObject() or "")
                 if not pid:
                     return
-                win = webview.active_window()
-                if win is None:
-                    open_new_project_window(project_id=pid)
-                    return
-                has_model = False
-                try:
-                    has_model = bool(win.evaluate_js("Boolean(window.__nikkHasModel)"))
-                except Exception:
-                    has_model = False
-                if has_model:
-                    open_new_project_window(project_id=pid)
-                else:
-                    win.evaluate_js(
-                        f"window.dispatchEvent(new CustomEvent('nikk:open-project', {{ detail: {{ projectId: '{pid}' }} }}))"
-                    )
+
+                def _open_recent_worker() -> None:
+                    try:
+                        win = webview.active_window()
+                        if win is None:
+                            open_new_project_window(project_id=pid)
+                            return
+                        has_model = False
+                        try:
+                            has_model = bool(
+                                win.evaluate_js("Boolean(window.__nikkHasModel)")
+                            )
+                        except Exception:
+                            has_model = False
+                        if has_model:
+                            open_new_project_window(project_id=pid)
+                        else:
+                            win.evaluate_js(
+                                f"window.dispatchEvent(new CustomEvent('nikk:open-project', {{ detail: {{ projectId: '{pid}' }} }}))"
+                            )
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_open_recent_worker, daemon=True).start()
 
             def menuNeedsUpdate_(self, menu):
                 _populate_recent_submenu(menu)
@@ -488,6 +539,38 @@ def _install_macos_archivo_menu(logger: logging.Logger) -> None:
             insert_idx = 1 if main_menu.numberOfItems() >= 1 else 0
             main_menu.insertItem_atIndex_(archivo_item, insert_idx)
 
+            # Registrar menú nativo "Ventana" para Dock (clic derecho) y Cmd+`
+            has_ventana = any(
+                main_menu.itemAtIndex_(i).title() in ("Ventana", "Window")
+                for i in range(main_menu.numberOfItems())
+            )
+            if not has_ventana:
+                window_menu = NSMenu.alloc().initWithTitle_("Ventana")
+                it_min = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Minimizar", "performMiniaturize:", "m"
+                )
+                it_min.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+                window_menu.addItem_(it_min)
+
+                it_zoom = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Zoom", "performZoom:", ""
+                )
+                window_menu.addItem_(it_zoom)
+
+                window_menu.addItem_(NSMenuItem.separatorItem())
+
+                it_front = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Traer todas al frente", "arrangeInFront:", ""
+                )
+                window_menu.addItem_(it_front)
+
+                window_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Ventana", None, ""
+                )
+                window_item.setSubmenu_(window_menu)
+                main_menu.addItem_(window_item)
+                NSApp.setWindowsMenu_(window_menu)
+
         NSOperationQueue.mainQueue().addOperationWithBlock_(_setup_on_main)
     except Exception as exc:
         logger.warning("No se pudo instalar menú Archivo nativo: %s", exc)
@@ -500,15 +583,18 @@ def open_desktop_window(logger: logging.Logger) -> None:
 
         logger.info("Abriendo ventana nativa con pywebview...")
         _install_macos_open_file_handler(logger)
-        webview.create_window(
+        wsid, url = _build_window_url()
+        main_win = webview.create_window(
             "Nikk Slicer",
-            _build_window_url(),
+            url,
             width=1440,
             height=920,
             min_size=(1100, 720),
             background_color="#020617",
             js_api=DesktopApi(),
         )
+        if main_win is not None:
+            _register_window(wsid, main_win)
         _set_macos_dock_icon(logger)
 
         def _on_webview_ready():
