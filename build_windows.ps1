@@ -43,7 +43,10 @@ pyinstaller `
   --hidden-import "trimesh" `
   --hidden-import "webview" `
   --hidden-import "mcp.server.mcpserver" `
-  --collect-submodules "mcp" `
+  --collect-submodules "mcp.server" `
+  --collect-submodules "mcp.shared" `
+  --collect-submodules "mcp.types" `
+  --exclude-module "mcp.cli" `
   --collect-submodules "webview" `
   desktop_launcher.py
 

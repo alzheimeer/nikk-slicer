@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,12 @@ PROCESS_DIR = PROFILES_DIR / "process"
 CATALOG_PATH = PROFILES_DIR / "slicerhub_catalog.json"
 PRINTERS_CONFIG_PATH = BACKEND_DIR / "printers_config.json"
 BACKEND_ENV_PATH = BACKEND_DIR / ".env"
-TEMP_DIR = BACKEND_DIR / "temp"
+if getattr(sys, "frozen", False):
+    from app.core.platform_detector import get_user_data_dir
+
+    TEMP_DIR = get_user_data_dir() / "temp"
+else:
+    TEMP_DIR = BACKEND_DIR / "temp"
 MESH_CACHE_DIR = TEMP_DIR / "meshes"
 
 FLASH_STUDIO_CLI = Path(

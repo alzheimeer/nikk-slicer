@@ -14,14 +14,15 @@
 [![AI Copilot](https://img.shields.io/badge/AI%20Copilot-DeepSeek%20%7C%20Gemini-4D6BFE)](https://www.deepseek.com/)
 [![MCP Server](https://img.shields.io/badge/MCP-19%20Tools%20%7C%20HTTP%20%2B%20stdio-8A2BE2)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Download macOS DMG](https://img.shields.io/badge/Download-NikkSlicer%20v1.3.0%20(.dmg)-22c55e?logo=apple&logoColor=white)](https://github.com/alzheimeer/nikk-slicer/releases/latest)
+[![Download macOS DMG](https://img.shields.io/badge/Download-NikkSlicer_macOS.dmg-22c55e?logo=apple&logoColor=white)](https://github.com/alzheimeer/nikk-slicer/releases/latest)
+[![Download Windows Setup](https://img.shields.io/badge/Download-NikkSlicer_Windows_Setup.exe-0078D6?logo=windows&logoColor=white)](https://github.com/alzheimeer/nikk-slicer/releases/latest)
 [![Apoyar en PayPal](https://img.shields.io/badge/Apoyar-PayPal.me-00457C?style=flat&logo=paypal&logoColor=white)](https://paypal.me/niklaussMauricio)
 
-[Características](#-características-principales) • [Ecosistema & Hardware](#-ecosistema-e-impresoras-soportadas) • [MCP & IA](#-arquitectura-multiplataforma-ia-dual-y-servidor-mcp) • [Galería](#-galería-de-interfaces) • [Arquitectura](#-arquitectura-del-sistema) • [Instalación](#-instalación-macos-y-windows) • [API](#-endpoints-rest-principales)
+[Características](#-características-principales) • [Ecosistema & Hardware](#-ecosistema-e-impresoras-soportadas) • [MCP & IA](#-arquitectura-multiplataforma-ia-dual-y-servidor-mcp) • [Galería](#-galería-de-interfaces) • [Arquitectura](#-arquitectura-del-sistema) • [Descarga e Instalación](#-descarga-e-instalación-macos-dmg-y-windows-exe) • [API](#-endpoints-rest-y-mcp-principales)
 
 <br />
 
-📥 **Descarga directa para macOS (Apple Silicon M1–M4 e Intel):** [**NikkSlicer_macOS_Installer.dmg (v1.3.0)**](https://github.com/alzheimeer/nikk-slicer/releases/latest)
+📥 **Descarga oficial multiplataforma:** [**GitHub Releases (`NikkSlicer_macOS.dmg` y `NikkSlicer_Windows_Setup.exe`)**](https://github.com/alzheimeer/nikk-slicer/releases/latest)
 
 </div>
 
@@ -204,39 +205,68 @@ nikk-slicer/
 
 ---
 
-## Instalación (macOS y Windows)
+## Descarga e Instalación (macOS `.dmg` y Windows `.exe`)
 
-> **Requisitos previos en el equipo destino (Laminadores y Herramientas):**
->
-> Nikk Slicer actúa como orquestador unificado, visor 3D, servidor MCP, copiloto IA y controlador de granja; **no incluye los binarios pesados de los laminadores dentro del instalador**, sino que los detecta automáticamente al iniciar (o permite descargarlos / ubicarlos manualmente desde **`Entorno / MCP`**):
->
-> 1. **Laminadores CLI soportados (auto-detectados en macOS y Windows):**
->    - **OrcaSlicer** (`/Applications/OrcaSlicer.app` en macOS · `orca-slicer.exe` en Windows) — Motor CLI universal recomendado.
->    - **Orca-Flashforge / Flash Studio** (`/Applications/Flash Studio.app` / `Orca-Flashforge.app` en macOS · `Orca-Flashforge.exe` en Windows).
->    - **FLSUN Slicer** (`/Applications/FlsunSlicer.app` en macOS · `FlsunSlicer.exe` en Windows).
-> 2. **Python 3.10+** (para ejecutar desde código fuente o servidor MCP por `stdio`).
-> 3. **Ventana nativa:** `pywebview` viene incluido en `requirements.txt` para abrir una ventana nativa sin navegador (Cocoa/WebKit en macOS, Edge WebView2 en Windows), con fallback automático a Chrome/Edge en modo app.
+Descarga el instalador correspondiente desde [**GitHub Releases**](https://github.com/alzheimeer/nikk-slicer/releases/latest):
 
-### macOS — Método A: Instalación en un clic con `NikkSlicer_macOS_Installer.dmg`
-1. Descarga **`NikkSlicer_macOS_Installer.dmg`** desde [GitHub Releases](https://github.com/alzheimeer/nikk-slicer/releases/latest) y ábrelo con doble clic.
-2. Ejecuta **`Instalar_Nikk_Slicer.command`** (copiará el proyecto a `~/Apps/NikkSlicer`, creará el `.venv`, instalará dependencias e instalará **`/Applications/Nikk Slicer.app`**).
-3. Abre **Nikk Slicer** y configura tu API Key (**DeepSeek** o **Google Gemini**) y rutas de laminadores directamente desde el asistente **`Entorno / MCP`** (o en `backend/.env`).
+- **macOS (Apple Silicon & Intel):** **`NikkSlicer_macOS.dmg`** (bundle `Nikk Slicer.app` 100% autónomo con runtime Python, dependencias y frontend incluidos).
+- **Windows 10 / 11 (x64):** **`NikkSlicer_Windows_Setup.exe`** (instalador Inno Setup con Edge WebView2, accesos directos y asociaciones opcionales `.3mf` / `.stl`).
 
-### macOS — Método B: Clonado desde GitHub
-```bash
-git clone https://github.com/alzheimeer/nikk-slicer.git
-cd nikk-slicer
-./install_on_mac.sh
-```
-Luego abre **`/Applications/Nikk Slicer.app`**.
+### 1. Instalación Rápida
+- **En macOS:** abre **`NikkSlicer_macOS.dmg`** y arrastra **`Nikk Slicer.app`** a **`Applications`**.
+- **En Windows:** ejecuta **`NikkSlicer_Windows_Setup.exe`**, sigue el asistente e inicia **Nikk Slicer** desde el Menú Inicio o el Escritorio.
 
-### Windows 10 / 11 (x64)
-1. Descarga el artefacto **`NikkSlicer_Windows_Portable.zip`** generado por [GitHub Actions (`build-windows.yml`)](.github/workflows/build-windows.yml) o compílalo localmente en PowerShell:
-   ```powershell
-   .\build_windows.ps1
-   ```
-2. Descomprime el `.zip` y ejecuta **`NikkSlicer.exe`**.
-3. En el primer arranque, el asistente **`Entorno / MCP`** escaneará automáticamente **OrcaSlicer**, **Orca-Flashforge** y **FLSun Slicer** en Windows y te permitirá guardar tu API Key (**DeepSeek** o **Google Gemini**) en `%APPDATA%\NikkSlicer\`.
+### 2. Auto-Detección de Motores de Laminado
+Al iniciar, Nikk Slicer escanea automáticamente tu equipo (sin requerir rutas manuales) para detectar:
+- **OrcaSlicer** (`/Applications/OrcaSlicer.app` en macOS · `orca-slicer.exe` en Windows)
+- **FLSun Slicer** (`/Applications/FlsunSlicer.app` en macOS · `FlsunSlicer.exe` en Windows)
+- **Orca-Flashforge / Flash Studio / FlashPrint** (`/Applications/Flash Studio.app` / `Orca-Flashforge.app` en macOS · `Orca-Flashforge.exe` / `FlashPrint.exe` en Windows)
+
+Si alguno falta, el asistente **`Entorno / MCP`** muestra enlaces directos de descarga oficial y un botón para ubicar el ejecutable manualmente.
+
+### 3. Configurar API Key Opcional (DeepSeek o Google Gemini)
+Desde el botón **`Entorno / MCP`** en la barra superior puedes elegir tu proveedor de IA (**DeepSeek** o **Google Gemini**), pegar tu API Key y validarla con **`Probar conexión`** (se guarda localmente en `~/.nikk_slicer/` en macOS/Linux o `%APPDATA%\NikkSlicer\` en Windows).
+
+### 4. Conectar el Servidor MCP (`nikk-slicer`) en Antigravity IDE, Claude Desktop o Cursor
+Nikk Slicer expone **19 herramientas** y **3 recursos** MCP tanto por **Streamable HTTP** (`http://127.0.0.1:8000/mcp` cuando la app está abierta) como por **`stdio`** (`python3 -m backend.app.mcp_server`):
+
+- **Streamable HTTP (Antigravity IDE / Cursor — con Nikk Slicer abierto):**
+  ```json
+  {
+    "mcpServers": {
+      "nikk-slicer": {
+        "url": "http://127.0.0.1:8000/mcp"
+      }
+    }
+  }
+  ```
+- **Stdio local (Claude Desktop / Antigravity IDE / Cursor — funciona incluso con la UI cerrada):**
+  ```json
+  {
+    "mcpServers": {
+      "nikk-slicer": {
+        "command": "/ruta/a/nikk-slicer/backend/.venv/bin/python",
+        "args": ["-m", "backend.app.mcp_server"],
+        "env": {
+          "PYTHONPATH": "/ruta/a/nikk-slicer"
+        }
+      }
+    }
+  }
+  ```
+  También puedes copiar el bloque JSON listo para pegar desde **`Entorno / MCP` → `Copiar configuración JSON MCP`**.
+
+### Compilación desde Código Fuente (Opcional)
+- **macOS (`.app` y `.dmg`):**
+  ```bash
+  git clone https://github.com/alzheimeer/nikk-slicer.git
+  cd nikk-slicer
+  ./build_macos_dmg.sh   # genera dist_release/NikkSlicer_macOS.dmg
+  ```
+- **Windows (`.exe`):**
+  ```powershell
+  .\build_windows.ps1    # genera dist_release/NikkSlicer_Windows_Setup.exe
+  ```
 
 ### Acceso Directo por Red Local (sin instalar en otro equipo)
 Si `NIKKSLICER_HOST=0.0.0.0` y `NIKKSLICER_PORT=8000` están configurados en `backend/.env`, basta con abrir Nikk Slicer en el equipo principal y entrar desde el navegador de cualquier otro Mac, Windows o iPad de tu red local en:
