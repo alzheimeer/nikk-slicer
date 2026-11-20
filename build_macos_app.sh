@@ -76,11 +76,14 @@ fi
   --distpath "${DIST_TMP_DIR}" \
   --workpath "${BUILD_WORK_DIR}" \
   --specpath "${BUILD_WORK_DIR}" \
+  --paths "${PROJECT_DIR}/backend" \
   --add-data "${PROJECT_DIR}/frontend/dist:frontend/dist" \
   --add-data "${PROJECT_DIR}/frontend/public/nikk-logo.jpg:frontend/public" \
   --add-data "${PROJECT_DIR}/backend/app:backend/app" \
   --add-data "${PROJECT_DIR}/backend/profiles:backend/profiles" \
   --add-data "${PROJECT_DIR}/backend/printers_config.json:backend" \
+  --hidden-import "app.main" \
+  --hidden-import "app.mcp_server" \
   --hidden-import "uvicorn.logging" \
   --hidden-import "uvicorn.loops" \
   --hidden-import "uvicorn.loops.auto" \
@@ -89,11 +92,17 @@ fi
   --hidden-import "uvicorn.protocols.http.auto" \
   --hidden-import "uvicorn.lifespan.on" \
   --hidden-import "fastapi" \
+  --hidden-import "fastapi.middleware.cors" \
+  --hidden-import "starlette" \
+  --hidden-import "multipart" \
   --hidden-import "pydantic" \
   --hidden-import "httpx" \
   --hidden-import "trimesh" \
   --hidden-import "webview" \
   --hidden-import "mcp.server.mcpserver" \
+  --collect-submodules "fastapi" \
+  --collect-submodules "starlette" \
+  --collect-submodules "uvicorn" \
   --collect-submodules "mcp.server" \
   --collect-submodules "mcp.shared" \
   --collect-submodules "mcp.types" \
