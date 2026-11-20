@@ -169,7 +169,8 @@ flowchart LR
 ```text
 nikk-slicer/
 ├── .github/workflows/
-│   └── build-windows.yml                # Pipeline CI/CD para generar NikkSlicer_Windows_Portable.zip
+│   ├── build-macos.yml                  # Pipeline CI/CD macOS -> NikkSlicer_macOS.dmg
+│   └── build-windows.yml                # Pipeline CI/CD Windows -> NikkSlicer_Windows_Setup.exe
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                      # API FastAPI + servidor SPA (:8000) + montaje /mcp
@@ -195,10 +196,12 @@ nikk-slicer/
 │   ├── assets/                          # Logos DeepSeek/Klipper/FlashForge/Creality y fotos reales
 │   └── screenshots/                     # Capturas reales de la aplicación
 ├── desktop_launcher.py                  # Lanzador nativo macOS & Windows (puerto 8000 + menú Archivo)
-├── build_macos_app.sh                   # Empaquetador de Nikk Slicer.app + NikkSlicer.icns
-├── build_windows.ps1                    # Empaquetador portable Windows (.exe + backend + frontend)
+├── build_macos_app.sh                   # Empaquetador autónomo PyInstaller de Nikk Slicer.app + NikkSlicer.icns
+├── build_macos_dmg.sh                   # Generador de NikkSlicer_macOS.dmg (UDZO + /Applications)
+├── build_windows.ps1                    # Empaquetador Windows PyInstaller --onedir + nikk_slicer.ico
+├── installer_windows.iss                # Script Inno Setup 6 -> NikkSlicer_Windows_Setup.exe
 ├── install_on_mac.sh                    # Instalador automático macOS (.venv + .env + Nikk Slicer.app)
-├── package_release.sh                   # Generador de DMG y ZIP distribuibles
+├── package_release.sh                   # Generador de paquetes locales en dist_release/
 ├── LICENSE                              # Licencia MIT
 └── README.md
 ```
@@ -213,8 +216,9 @@ Descarga el instalador correspondiente desde [**GitHub Releases**](https://githu
 - **Windows 10 / 11 (x64):** **`NikkSlicer_Windows_Setup.exe`** (instalador Inno Setup con Edge WebView2, accesos directos y asociaciones opcionales `.3mf` / `.stl`).
 
 ### 1. Instalación Rápida
-- **En macOS:** abre **`NikkSlicer_macOS.dmg`** y arrastra **`Nikk Slicer.app`** a **`Applications`**.
-- **En Windows:** ejecuta **`NikkSlicer_Windows_Setup.exe`**, sigue el asistente e inicia **Nikk Slicer** desde el Menú Inicio o el Escritorio.
+- **En macOS:** abre [**`NikkSlicer_macOS.dmg`**](https://github.com/alzheimeer/nikk-slicer/releases/download/v1.0.0/NikkSlicer_macOS.dmg) y arrastra **`Nikk Slicer.app`** a **`Applications`**.
+  > **Nota macOS (primer arranque):** como la app usa firma ad-hoc local, si macOS muestra aviso de desarrollador no identificado al abrirla por primera vez, haz **clic derecho → Abrir** o ejecuta `xattr -cr "/Applications/Nikk Slicer.app"`.
+- **En Windows:** descarga y ejecuta [**`NikkSlicer_Windows_Setup.exe`**](https://github.com/alzheimeer/nikk-slicer/releases/download/v1.0.0/NikkSlicer_Windows_Setup.exe), sigue el asistente (opcionalmente marca la asociación de archivos `.3mf` / `.stl`) e inicia **Nikk Slicer** desde el Menú Inicio o el Escritorio.
 
 ### 2. Auto-Detección de Motores de Laminado
 Al iniciar, Nikk Slicer escanea automáticamente tu equipo (sin requerir rutas manuales) para detectar:
@@ -255,6 +259,16 @@ Nikk Slicer expone **19 herramientas** y **3 recursos** MCP tanto por **Streamab
   }
   ```
   También puedes copiar el bloque JSON listo para pegar desde **`Entorno / MCP` → `Copiar configuración JSON MCP`**.
+
+#### Catálogo de Herramientas y Recursos MCP (`19` Tools · `3` Resources)
+| Categoría | Herramientas MCP |
+| :--- | :--- |
+| **Entorno e IA** | `nikk_get_system_environment`, `nikk_rescan_slicers`, `nikk_set_slicer_path`, `nikk_configure_ai` |
+| **Geometría 3D & `.3mf`** | `nikk_analyze_model`, `nikk_split_objects`, `nikk_auto_arrange`, `nikk_evaluate_orientations` |
+| **Copiloto IA & Laminado** | `nikk_ai_analyze_model`, `nikk_slice_model`, `nikk_apply_layer_pauses`, `nikk_calculate_quote` |
+| **Proyectos `.nikkproj`** | `nikk_list_recent_projects`, `nikk_get_project`, `nikk_delete_project` |
+| **Granja & Bitácora** | `nikk_get_printers_status`, `nikk_upload_and_print`, `nikk_control_printer`, `nikk_get_error_journal` |
+| **Recursos MCP** | `nikk://printers`, `nikk://projects/recent`, `nikk://environment` |
 
 ### Compilación desde Código Fuente (Opcional)
 - **macOS (`.app` y `.dmg`):**
@@ -309,11 +323,11 @@ http://<IP_DEL_EQUIPO_PRINCIPAL>:8000
   ```bash
   ./build_macos_app.sh
   ```
-- **macOS — Generar nuevos instaladores `.dmg` y `.zip` en `dist_release/`:**
+- **macOS — Generar imagen distribuible `dist_release/NikkSlicer_macOS.dmg`:**
   ```bash
-  ./package_release.sh
+  ./build_macos_dmg.sh
   ```
-- **Windows — Recompilar frontend y generar ejecutable portable:**
+- **Windows — Recompilar frontend y generar `dist_release/NikkSlicer_Windows_Setup.exe`:**
   ```powershell
   .\build_windows.ps1
   ```
