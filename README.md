@@ -229,8 +229,12 @@ Al iniciar, Nikk Slicer escanea automáticamente tu equipo (sin requerir rutas m
 
 Si alguno falta, el asistente **`Entorno / MCP`** muestra enlaces directos de descarga oficial y un botón para ubicar el ejecutable manualmente.
 
-### 3. Configurar API Key Opcional (DeepSeek o Google Gemini)
+### 3. Consigue tu API Key de DeepSeek (o Google Gemini)
 Desde el botón **`Entorno / MCP`** en la barra superior puedes elegir tu proveedor de IA (**DeepSeek** o **Google Gemini**), pegar tu API Key y validarla con **`Probar conexión`** (se guarda localmente en `~/.nikk_slicer/` en macOS/Linux o `%APPDATA%\NikkSlicer\` en Windows).
+
+> 🔑 **Consigue tu API Key de DeepSeek:** [**https://platform.deepseek.com/sign_in**](https://platform.deepseek.com/sign_in)
+> 1. Inicia sesión en **DeepSeek Platform** y ve a **`Top up`** para recargar saldo. **Con solo $5 USD alcanza para muchísimo:** en uso real, más de **350 consultas IA (~500K tokens) cuestan menos de $0.10 USD**, por lo que una recarga de $5 USD rinde para meses de análisis de modelos, orientaciones y compendios.
+> 2. Entra a **`API keys` → `Create new API key`**, copia tu clave (`sk-...`) y pégala en **`Entorno / MCP`** dentro de Nikk Slicer.
 
 ### 4. Conectar el Servidor MCP (`nikk-slicer`) en Antigravity IDE, Claude Desktop o Cursor
 Nikk Slicer expone **19 herramientas** y **3 recursos** MCP tanto por **Streamable HTTP** (`http://127.0.0.1:8000/mcp` cuando la app está abierta) como por **`stdio`** (`python3 -m backend.app.mcp_server`):

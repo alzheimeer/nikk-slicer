@@ -708,6 +708,65 @@ code {
   color: var(--text-muted);
 }
 
+/* DeepSeek API Key Banner */
+.api-key-banner {
+  margin-top: 2.5rem;
+  display: grid;
+  grid-template-columns: 1.45fr 0.75fr;
+  gap: 2rem;
+  align-items: center;
+  border-color: rgba(16, 185, 129, 0.35);
+  background: linear-gradient(135deg, rgba(17, 24, 39, 0.9) 0%, rgba(6, 78, 59, 0.22) 100%);
+}
+
+.api-key-head {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  margin-bottom: 0.85rem;
+}
+
+.api-key-head img {
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 4px;
+  object-fit: contain;
+}
+
+.api-key-head h3 {
+  margin: 0.35rem 0 0;
+  font-size: 1.3rem;
+  font-weight: 800;
+}
+
+.api-key-copy p {
+  margin: 0 0 0.9rem;
+  color: var(--text-muted);
+  font-size: 0.94rem;
+}
+
+.api-steps {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: #cbd5e1;
+  font-size: 0.88rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.api-key-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.65rem;
+  text-align: center;
+}
+
+.api-key-note {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
 /* Printers Grid */
 .printers-grid {
   display: grid;
@@ -917,7 +976,8 @@ code {
 /* Responsive */
 @media (max-width: 1024px) {
   .hero-grid,
-  .mcp-grid {
+  .mcp-grid,
+  .api-key-banner {
     grid-template-columns: 1fr;
   }
 
