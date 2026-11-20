@@ -30,6 +30,8 @@ pyinstaller `
   --add-data "frontend/dist;frontend/dist" `
   --add-data "backend;backend" `
   --add-data "nikk_slicer.ico;." `
+  --paths "backend" `
+  --hidden-import "app.main" `
   --hidden-import "uvicorn.logging" `
   --hidden-import "uvicorn.loops" `
   --hidden-import "uvicorn.loops.auto" `
@@ -38,18 +40,26 @@ pyinstaller `
   --hidden-import "uvicorn.protocols.http.auto" `
   --hidden-import "uvicorn.lifespan.on" `
   --hidden-import "fastapi" `
+  --collect-submodules "fastapi" `
+  --collect-submodules "starlette" `
   --hidden-import "pydantic" `
   --hidden-import "httpx" `
   --hidden-import "trimesh" `
+  --hidden-import "serial" `
+  --hidden-import "serial.tools.list_ports" `
+  --hidden-import "multipart" `
   --hidden-import "webview" `
   --hidden-import "mcp.server.mcpserver" `
   --collect-submodules "mcp.server" `
   --collect-submodules "mcp.shared" `
   --collect-submodules "mcp.types" `
   --exclude-module "mcp.cli" `
-  --collect-submodules "webview" `
+  --collect-all "webview" `
+  --collect-all "clr_loader" `
+  --collect-all "pythonnet" `
   desktop_launcher.py
 
+Copy-Item -Force "nikk_slicer.ico" "dist_win\Nikk Slicer\nikk_slicer.ico"
 Write-Host "==> Build PyInstaller completado en dist_win/Nikk Slicer/"
 
 $iscc = Get-Command "iscc.exe" -ErrorAction SilentlyContinue

@@ -41,19 +41,19 @@ Name: "assocstl"; Description: "Asociar archivos .stl con Nikk Slicer"; GroupDes
 Source: "dist_win\Nikk Slicer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\nikk_slicer.ico"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\nikk_slicer.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
 Root: HKA; Subkey: "Software\Classes\.3mf\OpenWithProgids"; ValueType: string; ValueName: "NikkSlicer.3mf"; ValueData: ""; Flags: uninsdeletevalue; Tasks: assoc3mf
 Root: HKA; Subkey: "Software\Classes\NikkSlicer.3mf"; ValueType: string; ValueName: ""; ValueData: "Proyecto 3D (.3mf) - Nikk Slicer"; Flags: uninsdeletekey; Tasks: assoc3mf
-Root: HKA; Subkey: "Software\Classes\NikkSlicer.3mf\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\nikk_slicer.ico,0"; Tasks: assoc3mf
+Root: HKA; Subkey: "Software\Classes\NikkSlicer.3mf\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: assoc3mf
 Root: HKA; Subkey: "Software\Classes\NikkSlicer.3mf\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: assoc3mf
 
 Root: HKA; Subkey: "Software\Classes\.stl\OpenWithProgids"; ValueType: string; ValueName: "NikkSlicer.stl"; ValueData: ""; Flags: uninsdeletevalue; Tasks: assocstl
 Root: HKA; Subkey: "Software\Classes\NikkSlicer.stl"; ValueType: string; ValueName: ""; ValueData: "Malla 3D (.stl) - Nikk Slicer"; Flags: uninsdeletekey; Tasks: assocstl
-Root: HKA; Subkey: "Software\Classes\NikkSlicer.stl\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\nikk_slicer.ico,0"; Tasks: assocstl
+Root: HKA; Subkey: "Software\Classes\NikkSlicer.stl\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: assocstl
 Root: HKA; Subkey: "Software\Classes\NikkSlicer.stl\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: assocstl
 
 [Run]

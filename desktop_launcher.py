@@ -20,6 +20,56 @@ from pathlib import Path
 IS_MACOS = sys.platform == "darwin"
 IS_WINDOWS = sys.platform.startswith("win")
 
+
+class _SafeLogStream:
+    """Flujo seguro para sys.stdout/sys.stderr en ejecutables --windowed sin consola."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, data: str) -> int:
+        try:
+            res = self._stream.write(data)
+            self._stream.flush()
+            return res
+        except Exception:
+            return len(data) if isinstance(data, str) else 0
+
+    def flush(self) -> None:
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def isatty(self) -> bool:
+        return False
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
+def _ensure_stdio_streams() -> None:
+    """Redirige sys.stdout/sys.stderr cuando son None (PyInstaller --windowed en Windows)."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        if IS_WINDOWS:
+            base = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")) / "NikkSlicer"
+        else:
+            base = Path.home() / ".nikk_slicer"
+        base.mkdir(parents=True, exist_ok=True)
+        log_path = base / "launcher.log"
+        stream = _SafeLogStream(open(log_path, "a", encoding="utf-8", errors="replace"))
+    except Exception:
+        stream = _SafeLogStream(open(os.devnull, "w", encoding="utf-8"))
+    if sys.stdout is None:
+        sys.stdout = stream  # type: ignore[assignment]
+    if sys.stderr is None:
+        sys.stderr = stream  # type: ignore[assignment]
+
+
+_ensure_stdio_streams()
+
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     PROJECT_ROOT = Path(sys._MEIPASS)  # type: ignore[attr-defined]
 else:
@@ -188,7 +238,13 @@ def start_embedded_uvicorn(logger: logging.Logger):
     server = uvicorn.Server(config)
     server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
 
-    thread = threading.Thread(target=server.run, name="nikkslicer-uvicorn", daemon=True)
+    def _run_uvicorn() -> None:
+        try:
+            server.run()
+        except BaseException:
+            logger.exception("Error fatal ejecutando servidor embebido uvicorn")
+
+    thread = threading.Thread(target=_run_uvicorn, name="nikkslicer-uvicorn", daemon=True)
     thread.start()
     logger.info("Servidor embebido uvicorn iniciado en http://%s:%s (UI local %s)", BIND_HOST, PORT, BASE_URL)
     return server, thread
@@ -773,8 +829,8 @@ def open_desktop_window(logger: logging.Logger, initial_project_id: str | None =
 
         webview.start(**start_kwargs)
         return
-    except ImportError:
-        pass
+    except Exception as exc:
+        logger.warning("pywebview no disponible o falló (%s); usando fallback de navegador.", exc)
 
     if IS_WINDOWS:
         program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
