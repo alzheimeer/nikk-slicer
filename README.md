@@ -2,7 +2,7 @@
 
 <img src="frontend/public/nikk-logo.jpg" alt="Nikk Slicer Logo" width="112" style="border-radius: 22px;" />
 
-# Nikk Slicer
+# Nikk Slicer · AI & MCP Server
 
 **Unified 3D Slicer, MCP Server & Multi-Printer Farm Monitor for macOS & Windows — FLSUN Klipper/Moonraker + FlashForge LAN**  
 *Laminador 3D unificado, visor WebGL multicolor multi-objeto, servidor MCP interno y centro de control de granja FDM con Copiloto IA (DeepSeek / Gemini) para macOS y Windows.*
@@ -217,9 +217,9 @@ Descarga el instalador correspondiente desde [**GitHub Releases**](https://githu
 - **Windows 10 / 11 (x64):** **`NikkSlicer_Windows_Setup.exe`** (instalador Inno Setup con Edge WebView2, accesos directos y asociaciones opcionales `.3mf` / `.stl`).
 
 ### 1. Instalación Rápida
-- **En macOS:** abre [**`NikkSlicer_macOS.dmg`**](https://github.com/alzheimeer/nikk-slicer/releases/download/v1.0.0/NikkSlicer_macOS.dmg) y arrastra **`Nikk Slicer.app`** a **`Applications`**.
+- **En macOS:** abre [**`NikkSlicer_macOS.dmg`**](https://github.com/alzheimeer/nikk-slicer/releases/latest/download/NikkSlicer_macOS.dmg) y arrastra **`Nikk Slicer.app`** a **`Applications`**.
   > **Nota macOS (primer arranque):** como la app usa firma ad-hoc local, si macOS muestra aviso de desarrollador no identificado al abrirla por primera vez, haz **clic derecho → Abrir** o ejecuta `xattr -cr "/Applications/Nikk Slicer.app"`.
-- **En Windows:** descarga y ejecuta [**`NikkSlicer_Windows_Setup.exe`**](https://github.com/alzheimeer/nikk-slicer/releases/download/v1.0.0/NikkSlicer_Windows_Setup.exe), sigue el asistente (opcionalmente marca la asociación de archivos `.3mf` / `.stl`) e inicia **Nikk Slicer** desde el Menú Inicio o el Escritorio.
+- **En Windows:** descarga y ejecuta [**`NikkSlicer_Windows_Setup.exe`**](https://github.com/alzheimeer/nikk-slicer/releases/latest/download/NikkSlicer_Windows_Setup.exe), sigue el asistente (opcionalmente marca la asociación de archivos `.3mf` / `.stl`) e inicia **Nikk Slicer** desde el Menú Inicio o el Escritorio.
 
 ### 2. Auto-Detección de Motores de Laminado
 Al iniciar, Nikk Slicer escanea automáticamente tu equipo (sin requerir rutas manuales) para detectar:
@@ -250,30 +250,47 @@ Nikk Slicer expone **19 herramientas** y **3 recursos** MCP tanto por **Streamab
   }
   ```
 - **Stdio local (Claude Desktop / Antigravity IDE / Cursor — funciona incluso con la UI cerrada):**
-  ```json
-  {
-    "mcpServers": {
-      "nikk-slicer": {
-        "command": "/ruta/a/nikk-slicer/backend/.venv/bin/python",
-        "args": ["-m", "backend.app.mcp_server"],
-        "env": {
-          "PYTHONPATH": "/ruta/a/nikk-slicer"
+  - *macOS / Linux:*
+    ```json
+    {
+      "mcpServers": {
+        "nikk-slicer": {
+          "command": "/ruta/a/nikk-slicer/backend/.venv/bin/python",
+          "args": ["-m", "backend.app.mcp_server"],
+          "env": {
+            "PYTHONPATH": "/ruta/a/nikk-slicer"
+          }
         }
       }
     }
-  }
-  ```
+    ```
+  - *Windows:*
+    ```json
+    {
+      "mcpServers": {
+        "nikk-slicer": {
+          "command": "python",
+          "args": ["-m", "backend.app.mcp_server"],
+          "env": {
+            "PYTHONPATH": "C:\\ruta\\a\\nikk-slicer"
+          }
+        }
+      }
+    }
+    ```
   También puedes copiar el bloque JSON listo para pegar desde **`Entorno / MCP` → `Copiar configuración JSON MCP`**.
 
-#### Catálogo de Herramientas y Recursos MCP (`19` Tools · `3` Resources)
-| Categoría | Herramientas MCP |
+#### Catálogo Completo de Herramientas y Recursos MCP (`19` Tools · `3` Resources)
+| Categoría | Herramientas / Recursos MCP |
 | :--- | :--- |
-| **Entorno e IA** | `nikk_get_system_environment`, `nikk_rescan_slicers`, `nikk_set_slicer_path`, `nikk_configure_ai` |
-| **Geometría 3D & `.3mf`** | `nikk_analyze_model`, `nikk_split_objects`, `nikk_auto_arrange`, `nikk_evaluate_orientations` |
-| **Copiloto IA & Laminado** | `nikk_ai_analyze_model`, `nikk_slice_model`, `nikk_apply_layer_pauses`, `nikk_calculate_quote` |
-| **Proyectos `.nikkproj`** | `nikk_list_recent_projects`, `nikk_get_project`, `nikk_delete_project` |
-| **Granja & Bitácora** | `nikk_get_printers_status`, `nikk_upload_and_print`, `nikk_control_printer`, `nikk_get_error_journal` |
-| **Recursos MCP** | `nikk://printers`, `nikk://projects/recent`, `nikk://environment` |
+| **Entorno e IA (4)** | `nikk_get_system_environment`, `nikk_rescan_slicers`, `nikk_set_slicer_path`, `nikk_configure_ai` |
+| **Geometría 3D & `.3mf` (4)** | `nikk_analyze_model`, `nikk_split_objects`, `nikk_auto_arrange`, `nikk_evaluate_orientations` |
+| **Copiloto IA & Laminado (4)** | `nikk_ai_analyze_model`, `nikk_slice_model`, `nikk_apply_layer_pauses`, `nikk_calculate_quote` |
+| **Proyectos `.nikkproj` (3)** | `nikk_list_recent_projects`, `nikk_get_project`, `nikk_delete_project` |
+| **Granja & Bitácora (4)** | `nikk_get_printers_status`, `nikk_upload_and_print`, `nikk_control_printer`, `nikk_get_error_journal` |
+| **Recursos MCP (3)** | `nikk://printers`, `nikk://projects/recent`, `nikk://environment` |
+
+> **Ejemplos de uso desde tu agente IA:** *"Analiza `pieza.3mf` con Nikk Slicer, evalúa la mejor orientación sin soportes, lamina en PLA 0.16 mm para FLSUN T1 Pro, agrega una pausa en la capa 40 para insertar un imán, calcula la cotización en COP y envíalo a imprimir."*
 
 ### Compilación desde Código Fuente (Opcional)
 - **macOS (`.app` y `.dmg`):**

@@ -708,6 +708,50 @@ code {
   color: var(--text-muted);
 }
 
+/* MCP Complete Catalog */
+.mcp-catalog {
+  margin-top: 2.5rem;
+}
+
+.mcp-catalog-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.15rem;
+}
+
+.mcp-catalog-head h3 {
+  margin: 0;
+  font-size: 1.18rem;
+  font-weight: 700;
+}
+
+.mcp-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.mcp-cat-card {
+  padding: 1.15rem;
+}
+
+.mcp-cat-card h4 {
+  margin: 0 0 0.7rem;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.mcp-res-card {
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.mcp-res-card code {
+  color: #34d399;
+}
+
 /* DeepSeek API Key Banner */
 .api-key-banner {
   margin-top: 2.5rem;
@@ -981,7 +1025,8 @@ code {
     grid-template-columns: 1fr;
   }
 
-  .features-grid {
+  .features-grid,
+  .mcp-catalog-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1000,6 +1045,7 @@ code {
   }
 
   .features-grid,
+  .mcp-catalog-grid,
   .downloads-grid {
     grid-template-columns: 1fr;
   }

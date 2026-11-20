@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Nikk Slicer — Laminador 3D Inteligente, Multi-Objeto y Controlado por IA</title>
+    <title>Nikk Slicer + MCP — Laminador 3D Inteligente, Multi-Objeto y Controlado por IA</title>
     <meta
       name="description"
       content="Laminador 3D unificado, visor WebGL multicolor multi-objeto, servidor MCP interno (19 herramientas) y monitor de granja FDM con Copiloto IA (DeepSeek / Gemini) para macOS y Windows."
@@ -69,12 +69,12 @@
                 <span class="dot"></span>
                 <span id="release-version-badge">Última versión</span>
               </span>
-              <span class="pill pill-emerald">macOS &amp; Windows</span>
-              <span class="pill pill-amber">Open Source · MIT</span>
+              <span class="pill pill-emerald">Servidor MCP Integrado · 19 Tools</span>
+              <span class="pill pill-amber">macOS &amp; Windows · MIT</span>
             </div>
 
             <h1 class="hero-title">
-              Laminador 3D Inteligente, <span class="text-gradient">Multi-Objeto</span> y Controlado por IA
+              Laminador 3D Inteligente, <span class="text-gradient">Multi-Objeto</span> con IA y Servidor MCP
             </h1>
 
             <p class="hero-subtitle">
@@ -300,6 +300,70 @@
             <pre class="code-body"><code id="mcp-json-code"></code></pre>
             <div class="code-footer">
               <span id="mcp-hint-text">Conecta con Nikk Slicer abierto en <code>http://127.0.0.1:8000/mcp</code>.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Catálogo Completo MCP (19 Herramientas + 3 Recursos) -->
+        <div class="container">
+          <div class="mcp-catalog reveal">
+            <div class="mcp-catalog-head">
+              <h3>Catálogo Completo MCP (<code>19</code> Herramientas · <code>3</code> Recursos)</h3>
+              <span class="mono-meta">SDK oficial <code>mcp</code> · Compatible con Antigravity IDE, Claude Desktop y Cursor</span>
+            </div>
+            <div class="mcp-catalog-grid">
+              <div class="card mcp-cat-card">
+                <h4>Entorno e IA (4)</h4>
+                <div class="tool-tags">
+                  <code>nikk_get_system_environment</code>
+                  <code>nikk_rescan_slicers</code>
+                  <code>nikk_set_slicer_path</code>
+                  <code>nikk_configure_ai</code>
+                </div>
+              </div>
+              <div class="card mcp-cat-card">
+                <h4>Geometría 3D &amp; <code>.3mf</code> (4)</h4>
+                <div class="tool-tags">
+                  <code>nikk_analyze_model</code>
+                  <code>nikk_split_objects</code>
+                  <code>nikk_auto_arrange</code>
+                  <code>nikk_evaluate_orientations</code>
+                </div>
+              </div>
+              <div class="card mcp-cat-card">
+                <h4>Copiloto IA &amp; Laminado (4)</h4>
+                <div class="tool-tags">
+                  <code>nikk_ai_analyze_model</code>
+                  <code>nikk_slice_model</code>
+                  <code>nikk_apply_layer_pauses</code>
+                  <code>nikk_calculate_quote</code>
+                </div>
+              </div>
+              <div class="card mcp-cat-card">
+                <h4>Proyectos <code>.nikkproj</code> (3)</h4>
+                <div class="tool-tags">
+                  <code>nikk_list_recent_projects</code>
+                  <code>nikk_get_project</code>
+                  <code>nikk_delete_project</code>
+                </div>
+              </div>
+              <div class="card mcp-cat-card">
+                <h4>Granja &amp; Bitácora (4)</h4>
+                <div class="tool-tags">
+                  <code>nikk_get_printers_status</code>
+                  <code>nikk_upload_and_print</code>
+                  <code>nikk_control_printer</code>
+                  <code>nikk_get_error_journal</code>
+                </div>
+              </div>
+              <div class="card mcp-cat-card mcp-res-card">
+                <h4>Recursos MCP (3)</h4>
+                <div class="tool-tags">
+                  <code>nikk://printers</code>
+                  <code>nikk://projects/recent</code>
+                  <code>nikk://environment</code>
+                </div>
+              </div>
             </div>
           </div>
         </div>
