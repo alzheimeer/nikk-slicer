@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nikk Slicer — Laminador 3D Inteligente, Multi-Objeto y Controlado por IA</title>
+    <meta
+      name="description"
+      content="Laminador 3D unificado, visor WebGL multicolor multi-objeto, servidor MCP interno (19 herramientas) y monitor de granja FDM con Copiloto IA (DeepSeek / Gemini) para macOS y Windows."
+    />
+    <meta name="theme-color" content="#0B1120" />
+    <link rel="icon" type="image/jpeg" href="assets/nikk-logo.jpg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow-cyan" aria-hidden="true"></div>
+    <div class="bg-glow bg-glow-emerald" aria-hidden="true"></div>
+
+    <!-- Navbar fija -->
+    <header class="navbar">
+      <div class="container nav-inner">
+        <a href="#top" class="brand" aria-label="Nikk Slicer Inicio">
+          <img src="assets/nikk-logo.jpg" alt="Logo Nikk Slicer" class="brand-logo" width="38" height="38" />
+          <div class="brand-text">
+            <span class="brand-name">Nikk Slicer</span>
+            <span class="brand-sub">CAD · AI · MCP</span>
+          </div>
+        </a>
+
+        <nav class="nav-links" aria-label="Navegación principal">
+          <a href="#caracteristicas">Características</a>
+          <a href="#ia-mcp">IA &amp; MCP</a>
+          <a href="#impresoras">Impresoras</a>
+          <a href="#descargas">Descargas</a>
+        </nav>
+
+        <div class="nav-actions">
+          <a
+            href="https://github.com/alzheimeer/nikk-slicer"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="btn btn-github"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+              <path
+                d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.7 1.25 3.36.96.1-.74.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.17 1.18a11.03 11.03 0 0 1 5.78 0c2.2-1.49 3.16-1.18 3.16-1.18.63 1.58.24 2.75.12 3.04.74.8 1.18 1.83 1.18 3.08 0 4.41-2.69 5.39-5.26 5.67.42.36.79 1.06.79 2.14 0 1.54-.01 2.79-.01 3.17 0 .31.21.68.8.56A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z"
+              />
+            </svg>
+            <span>Ver en GitHub ↗</span>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <main id="top">
+      <!-- Hero Section -->
+      <section class="hero">
+        <div class="container hero-grid">
+          <div class="hero-copy">
+            <div class="hero-badges">
+              <span class="pill pill-cyan">
+                <span class="dot"></span>
+                <span id="release-version-badge">Última versión</span>
+              </span>
+              <span class="pill pill-emerald">macOS &amp; Windows</span>
+              <span class="pill pill-amber">Open Source · MIT</span>
+            </div>
+
+            <h1 class="hero-title">
+              Laminador 3D Inteligente, <span class="text-gradient">Multi-Objeto</span> y Controlado por IA
+            </h1>
+
+            <p class="hero-subtitle">
+              Unifica tu flujo FDM en una sola app nativa: escena <code>.3mf</code> multi-objeto multicolor
+              (<code>T0–T3</code>), Copiloto IA con <strong>DeepSeek</strong> o <strong>Google Gemini</strong>,
+              servidor <strong>MCP interno</strong> de 19 herramientas y monitor LAN en vivo para granjas
+              <strong>FLSUN Klipper</strong>, <strong>FlashForge</strong> y <strong>Creality</strong>.
+            </p>
+
+            <!-- Botones dinámicos según SO -->
+            <div class="hero-cta" id="hero-cta-group">
+              <a
+                id="primary-download-btn"
+                href="https://github.com/alzheimeer/nikk-slicer/releases/latest"
+                class="btn btn-primary btn-lg"
+              >
+                <span class="btn-icon" id="primary-os-icon" aria-hidden="true">⬇</span>
+                <span class="btn-label">
+                  <strong id="primary-download-label">Descargar última versión</strong>
+                  <small id="primary-download-meta">Detectando sistema operativo...</small>
+                </span>
+              </a>
+
+              <a
+                id="secondary-download-btn"
+                href="https://github.com/alzheimeer/nikk-slicer/releases/latest"
+                class="btn btn-secondary btn-lg"
+              >
+                <span class="btn-label">
+                  <strong id="secondary-download-label">Otra plataforma</strong>
+                  <small id="secondary-download-meta">Instalador oficial</small>
+                </span>
+              </a>
+            </div>
+
+            <div class="hero-links">
+              <a
+                href="https://github.com/alzheimeer/nikk-slicer/releases"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-link"
+              >
+                Todos los Releases en GitHub →
+              </a>
+              <span class="sep" aria-hidden="true">•</span>
+              <span class="mono-meta" id="release-meta-line">Consultando GitHub Releases API...</span>
+            </div>
+          </div>
+
+          <div class="hero-visual">
+            <div class="window-frame">
+              <div class="window-bar">
+                <div class="window-dots" aria-hidden="true">
+                  <span class="wd-red"></span>
+                  <span class="wd-amber"></span>
+                  <span class="wd-green"></span>
+                </div>
+                <span class="window-title">Nikk Slicer — Visor WebGL Multicolor T0–T3</span>
+                <span class="window-tag">60 FPS · WebGL</span>
+              </div>
+              <img
+                src="screenshots/02-visor-3d-multicolor.png"
+                alt="Interfaz de Nikk Slicer mostrando visor 3D WebGL multicolor T0-T3 con múltiples objetos y gizmos CAD"
+                class="hero-screenshot"
+                fetchpriority="high"
+                width="1280"
+                height="800"
+              />
+            </div>
+
+            <div class="floating-stat stat-left">
+              <span class="stat-value text-cyan">19 Tools</span>
+              <span class="stat-label">Servidor MCP Nativo</span>
+            </div>
+            <div class="floating-stat stat-right">
+              <span class="stat-value text-emerald">0.08–0.28 mm</span>
+              <span class="stat-label">Perfiles Dinámicos Q_max</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Características Principales (6 tarjetas) -->
+      <section id="caracteristicas" class="section">
+        <div class="container">
+          <div class="section-head reveal">
+            <span class="section-kicker">INGENIERÍA FDM DE PRECISIÓN</span>
+            <h2>Todo tu taller 3D en un solo motor nativo</h2>
+            <p>
+              Diseñado para producción real: desde la geometría multi-pieza hasta la telemetría continua
+              <code>0% → 100%</code> y el aprendizaje entre corridas.
+            </p>
+          </div>
+
+          <div class="features-grid">
+            <article class="card feature-card reveal">
+              <div class="card-icon icon-cyan" aria-hidden="true">◈</div>
+              <h3>Escena Multi-Objeto <code>.3mf</code> Real</h3>
+              <p>
+                Importa y separa piezas independientes con colores <code>T0–T3</code>, selección múltiple con
+                <code>Cmd/Ctrl+Clic</code> o recuadro, gizmo <code>X/Y/Z</code> siempre visible sobre mallas,
+                <code>Z=0</code> por pieza y auto-ordenado circular o rectangular.
+              </p>
+            </article>
+
+            <article class="card feature-card reveal">
+              <div class="card-icon icon-emerald" aria-hidden="true">✦</div>
+              <h3>Copiloto IA (DeepSeek &amp; Gemini BYOK)</h3>
+              <p>
+                Conecta tu propia API Key de <strong>DeepSeek</strong> o <strong>Google Gemini</strong>. Genera análisis
+                automático al laminar, perfiles recomendados con nombres cortos en español y auto-orientación óptima con
+                previsualización 3D en vivo.
+              </p>
+            </article>
+
+            <article class="card feature-card reveal">
+              <div class="card-icon icon-amber" aria-hidden="true">⌘</div>
+              <h3>Servidor MCP Interno (<code>nikk-slicer</code>)</h3>
+              <p>
+                Expone <strong>19 herramientas</strong> y <strong>3 recursos</strong> compatibles con
+                <strong>Antigravity IDE</strong>, <strong>Claude Desktop</strong> y <strong>Cursor</strong> vía
+                Streamable HTTP (<code>/mcp</code>) y <code>stdio</code> para automatizar análisis, laminado y envíos.
+              </p>
+            </article>
+
+            <article class="card feature-card reveal">
+              <div class="card-icon icon-cyan" aria-hidden="true">▤</div>
+              <h3>Blindaje de Calidad &amp; Primera Capa</h3>
+              <p>
+                Patrón <code>monotonic</code>, control de flujo volumétrico <code>Q_max</code>, retracción/wipe y Z-hop
+                anti-stringing calibrado para PLA/PETG/ABS/TPU, modo Litofanía HD y pausas programadas por capa
+                (<code>PAUSE</code> / <code>M25</code>).
+              </p>
+            </article>
+
+            <article class="card feature-card reveal">
+              <div class="card-icon icon-emerald" aria-hidden="true">◉</div>
+              <h3>Monitor LAN Multi-Impresora en Vivo</h3>
+              <p>
+                Soporte nativo para <strong>FlashForge Creator 5 Pro</strong> (HTTP puerto <code>8898</code>) y granjas
+                <strong>Klipper / Moonraker</strong> (FLSUN T1 Pro, V400) más USB Serial Marlin. Incluye cámaras con
+                auto-suspensión, LEDs, timelapses y compendios IA.
+              </p>
+            </article>
+
+            <article class="card feature-card reveal">
+              <div class="card-icon icon-amber" aria-hidden="true">⚙</div>
+              <h3>Auto-Detección Multiplataforma</h3>
+              <p>
+                Escanea automáticamente Windows y macOS para encontrar <strong>OrcaSlicer</strong>,
+                <strong>FLSun Slicer</strong> y <strong>Orca-Flashforge / Flash Studio</strong> sin rutas manuales,
+                guardando datos de usuario en <code>%APPDATA%\NikkSlicer</code> o <code>~/.nikk_slicer</code>.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Sección Interactiva MCP & IA -->
+      <section id="ia-mcp" class="section section-alt">
+        <div class="container mcp-grid">
+          <div class="mcp-info reveal">
+            <span class="section-kicker">MODEL CONTEXT PROTOCOL · MCP</span>
+            <h2>Controla tu laminador y tu granja desde tu IDE o agente IA</h2>
+            <p>
+              Nikk Slicer levanta un servidor MCP oficial integrado. Pide a tu asistente en lenguaje natural que analice
+              un <code>.3mf</code>, calcule la mejor orientación, inserte una pausa para imanes en la capa 42, cotice
+              el costo en <code>COP$</code> y envíe el G-code directo a la impresora.
+            </p>
+
+            <div class="mcp-stats">
+              <div class="mini-stat">
+                <strong>19</strong>
+                <span>Herramientas MCP</span>
+              </div>
+              <div class="mini-stat">
+                <strong>3</strong>
+                <span>Recursos vivos</span>
+              </div>
+              <div class="mini-stat">
+                <strong>2</strong>
+                <span>Transportes (HTTP + stdio)</span>
+              </div>
+            </div>
+
+            <div class="tool-tags" aria-label="Ejemplos de herramientas MCP">
+              <code>nikk_analyze_model</code>
+              <code>nikk_evaluate_orientations</code>
+              <code>nikk_slice_model</code>
+              <code>nikk_apply_layer_pauses</code>
+              <code>nikk_calculate_quote</code>
+              <code>nikk_upload_and_print</code>
+              <code>nikk_get_printers_status</code>
+            </div>
+          </div>
+
+          <div class="code-panel reveal">
+            <div class="code-header">
+              <div class="code-tabs" role="tablist" aria-label="Modo de conexión MCP">
+                <button
+                  type="button"
+                  class="code-tab active"
+                  role="tab"
+                  aria-selected="true"
+                  data-mcp-tab="http"
+                >
+                  Streamable HTTP (Antigravity / Cursor)
+                </button>
+                <button
+                  type="button"
+                  class="code-tab"
+                  role="tab"
+                  aria-selected="false"
+                  data-mcp-tab="stdio"
+                >
+                  stdio Local (Claude Desktop)
+                </button>
+              </div>
+              <button type="button" id="copy-mcp-btn" class="btn-copy">
+                Copiar JSON
+              </button>
+            </div>
+            <pre class="code-body"><code id="mcp-json-code"></code></pre>
+            <div class="code-footer">
+              <span id="mcp-hint-text">Conecta con Nikk Slicer abierto en <code>http://127.0.0.1:8000/mcp</code>.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Ecosistema de Impresoras -->
+      <section id="impresoras" class="section">
+        <div class="container">
+          <div class="section-head reveal">
+            <span class="section-kicker">HARDWARE VALIDADO EN PRODUCCIÓN</span>
+            <h2>Ecosistema Multi-Impresora Nativo</h2>
+            <p>Perfiles calibrados por cinemática (Delta Klipper, CoreXY 4-Tool y Cartesiana Marlin 2).</p>
+          </div>
+
+          <div class="printers-grid">
+            <article class="card printer-card reveal">
+              <img
+                src="assets/flsun-t1-pro.png"
+                alt="FLSUN T1 Pro"
+                loading="lazy"
+                width="200"
+                height="160"
+              />
+              <h3>FLSUN T1 Pro</h3>
+              <span class="printer-spec">Delta Klipper · Ø260×330 mm</span>
+              <span class="printer-proto">Moonraker :7125 + MJPEG</span>
+            </article>
+
+            <article class="card printer-card reveal">
+              <img
+                src="assets/flsun-v400.png"
+                alt="FLSUN V400"
+                loading="lazy"
+                width="200"
+                height="160"
+              />
+              <h3>FLSUN V400</h3>
+              <span class="printer-spec">Delta Klipper · Ø300×410 mm</span>
+              <span class="printer-proto">Moonraker :80 + MJPEG</span>
+            </article>
+
+            <article class="card printer-card reveal">
+              <img
+                src="assets/flashforge-creator5-pro.jpg"
+                alt="FlashForge Creator 5 Pro"
+                loading="lazy"
+                width="200"
+                height="160"
+              />
+              <h3>Creator 5 Pro</h3>
+              <span class="printer-spec">CoreXY 4-Tool (T0–T3) · 256³ mm</span>
+              <span class="printer-proto">FlashForge LAN :8898</span>
+            </article>
+
+            <article class="card printer-card reveal">
+              <img
+                src="assets/flsun-super-racer.png"
+                alt="FLSUN Super Racer"
+                loading="lazy"
+                width="200"
+                height="160"
+              />
+              <h3>FLSUN Super Racer</h3>
+              <span class="printer-spec">Delta · Ø260×330 mm</span>
+              <span class="printer-proto">USB Serial / SD</span>
+            </article>
+
+            <article class="card printer-card reveal">
+              <img
+                src="assets/creality-ender3-s1-pro.jpg"
+                alt="Creality Ender 3 S1 Pro"
+                loading="lazy"
+                width="200"
+                height="160"
+              />
+              <h3>Ender 3 S1 Pro</h3>
+              <span class="printer-spec">Cartesiana Marlin 2 · 220×220×270</span>
+              <span class="printer-proto">USB Serial / SD</span>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Sección de Descargas -->
+      <section id="descargas" class="section section-alt">
+        <div class="container">
+          <div class="section-head reveal">
+            <span class="section-kicker">INSTALADORES AUTÓNOMOS OFICIALES</span>
+            <h2>Descarga Nikk Slicer gratis</h2>
+            <p>
+              Bundles 100% autónomos con runtime Python, frontend compilado y servidor MCP incluidos. Versión actual:
+              <strong id="downloads-version-label" class="text-cyan">Último Release</strong>.
+            </p>
+          </div>
+
+          <div class="downloads-grid">
+            <article class="card download-card reveal" id="card-windows">
+              <div class="dl-head">
+                <span class="dl-os-badge badge-win">Windows 10 / 11 (x64)</span>
+                <span class="dl-size" id="win-size-badge">Inno Setup .exe</span>
+              </div>
+              <h3>NikkSlicer_Windows_Setup.exe</h3>
+              <p>
+                Instalador nativo con Edge WebView2, accesos directos con icono oficial y asociación opcional de
+                archivos <code>.3mf</code> y <code>.stl</code>.
+              </p>
+              <a
+                id="win-download-card-btn"
+                href="https://github.com/alzheimeer/nikk-slicer/releases/latest"
+                class="btn btn-primary btn-full"
+              >
+                Descargar para Windows (.exe)
+              </a>
+            </article>
+
+            <article class="card download-card reveal" id="card-macos">
+              <div class="dl-head">
+                <span class="dl-os-badge badge-mac">macOS Apple Silicon &amp; Intel</span>
+                <span class="dl-size" id="mac-size-badge">Imagen .dmg</span>
+              </div>
+              <h3>NikkSlicer_macOS.dmg</h3>
+              <p>
+                Arrastra <code>Nikk Slicer.app</code> a <code>Applications</code>. Si Gatekeeper solicita confirmación
+                en el primer arranque: clic derecho → Abrir o <code>xattr -cr "/Applications/Nikk Slicer.app"</code>.
+              </p>
+              <a
+                id="mac-download-card-btn"
+                href="https://github.com/alzheimeer/nikk-slicer/releases/latest"
+                class="btn btn-secondary btn-full"
+              >
+                Descargar para macOS (.dmg)
+              </a>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="container footer-inner">
+        <div class="footer-brand">
+          <img src="assets/nikk-logo.jpg" alt="Nikk Slicer" width="32" height="32" loading="lazy" />
+          <div>
+            <strong>Nikk Slicer</strong> · Open Source bajo licencia MIT
+            <div class="footer-copy">© 2026 Niklauss Mauricio Quintero Romero</div>
+          </div>
+        </div>
+
+        <div class="footer-links">
+          <a href="https://github.com/alzheimeer/nikk-slicer" target="_blank" rel="noopener noreferrer">
+            Repositorio GitHub
+          </a>
+          <a href="https://github.com/alzheimeer/nikk-slicer/releases" target="_blank" rel="noopener noreferrer">
+            Releases
+          </a>
+          <a
+            href="https://paypal.me/niklaussMauricio"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="btn-support"
+          >
+            ♥ Apoyar proyecto (PayPal)
+          </a>
+        </div>
+      </div>
+      <div class="container footer-colombia">
+        <span>Apoyo voluntario en Colombia: Llave Bre-B <code>@NIKLAUSS</code> · Nequi <code>319 377 9313</code></span>
+      </div>
+    </footer>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

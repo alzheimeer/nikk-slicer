@@ -22,6 +22,7 @@
 
 <br />
 
+🌐 **Web Oficial (GitHub Pages):** [**https://alzheimeer.github.io/nikk-slicer/**](https://alzheimeer.github.io/nikk-slicer/)  
 📥 **Descarga oficial multiplataforma:** [**GitHub Releases (`NikkSlicer_macOS.dmg` y `NikkSlicer_Windows_Setup.exe`)**](https://github.com/alzheimeer/nikk-slicer/releases/latest)
 
 </div>
