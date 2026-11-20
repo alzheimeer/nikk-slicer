@@ -192,7 +192,7 @@ if DEFAULT_DEEPSEEK_API_KEY:
 
 @dataclass(frozen=True)
 class PrinterConfig:
-    """Definición de hardware y rutas CLI para un perfil base de impresora de la granja."""
+    """Definición de hardware y rutas CLI para un perfil base o impresora personalizada."""
 
     printer_id: str
     profile_id: str
@@ -207,6 +207,14 @@ class PrinterConfig:
     usable_edge_z_mm: float | None
     max_volumetric_flow_mm3_s: float
     extruder_slots: int = 1
+    vendor: str = ""
+    model_name: str = ""
+    gcode_flavor: str = "klipper"
+    is_multicolor: bool = False
+    has_heated_chamber: bool = False
+    is_high_speed: bool = False
+    nozzle_diameter: float = 0.4
+    bed_shape: str = "rectangular"
 
 
 DISPLAY_NAMES: dict[str, str] = {
@@ -472,9 +480,31 @@ MACHINE_THERMAL_KINEMATIC_LIMITS: dict[str, dict[str, Any]] = {
 def get_machine_thermal_kinematic_limits(printer_id: str) -> dict[str, Any]:
     """Devuelve los límites térmicos y cinemáticos auditados para `printer_id`."""
     profile_id = resolve_profile_id(printer_id)
-    return MACHINE_THERMAL_KINEMATIC_LIMITS.get(
-        profile_id, MACHINE_THERMAL_KINEMATIC_LIMITS["creator5_pro"]
+    base_limits = dict(
+        MACHINE_THERMAL_KINEMATIC_LIMITS.get(
+            profile_id, MACHINE_THERMAL_KINEMATIC_LIMITS["creator5_pro"]
+        )
     )
+    configs = load_printers_config()
+    inst = configs.get(printer_id)
+    if inst and inst.get("is_custom"):
+        q_est = float(inst.get("estimated_q_max") or 18.0)
+        ratio = max(0.5, min(2.2, q_est / 19.0))
+        base_q = base_limits.get("max_volumetric_speed", {})
+        base_limits["max_volumetric_speed"] = {
+            "pla": round(q_est, 1),
+            "petg": round(q_est * 0.72, 1),
+            "abs": round(q_est * 0.80, 1),
+            "tpu": round(min(10.0, q_est * 0.45), 1),
+        } if not base_q else {
+            k: round(max(6.0, float(v) * ratio), 1) if k != "tpu" else float(v)
+            for k, v in base_q.items()
+        }
+        if inst.get("max_accel_mm_s2"):
+            acc = int(inst["max_accel_mm_s2"])
+            base_limits["default_acceleration"] = min(acc, 15000)
+            base_limits["outer_wall_acceleration"] = min(int(acc * 0.45), 6000)
+    return base_limits
 
 
 def clamp_speed_by_volumetric_flow(
@@ -754,43 +784,90 @@ def _normalize_printer_entry(instance_id: str, cfg: dict[str, Any]) -> dict[str,
 
 
 def load_printers_config() -> dict[str, dict[str, Any]]:
-    """Carga todas las instancias de impresoras configuradas desde `printers_config.json`."""
-    if PRINTERS_CONFIG_PATH.is_file():
-        with PRINTERS_CONFIG_PATH.open("r", encoding="utf-8") as fh:
-            stored = json.load(fh)
-        if isinstance(stored, dict) and stored:
-            # Migrar automáticamente formato antiguo (5 claves sin `profile_id` ni `flsun_t1_pro_1`)
-            is_legacy = all(k in PRINTER_REGISTRY and not isinstance(v.get("profile_id"), str) for k, v in stored.items() if isinstance(v, dict))
-            if not is_legacy:
-                normalized: dict[str, dict[str, Any]] = {}
-                for pid, cfg in stored.items():
-                    if isinstance(cfg, dict):
-                        normalized[str(pid)] = _normalize_printer_entry(str(pid), cfg)
-                if normalized:
-                    return normalized
+    """Carga todas las instancias de impresoras configuradas desde `user_printers.json`."""
+    from app.core.printer_registry import ensure_user_printers_initialized
 
-    return {
+    legacy_seed: dict[str, dict[str, Any]] = {
         pid: dict(defaults) for pid, defaults in DEFAULT_PRINTERS_CONFIG.items()
     }
+    if PRINTERS_CONFIG_PATH.is_file():
+        try:
+            stored = json.loads(PRINTERS_CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(stored, dict) and stored:
+                is_legacy = all(
+                    k in PRINTER_REGISTRY and not isinstance(v.get("profile_id"), str)
+                    for k, v in stored.items()
+                    if isinstance(v, dict)
+                )
+                if not is_legacy:
+                    normalized: dict[str, dict[str, Any]] = {}
+                    for pid, cfg in stored.items():
+                        if isinstance(cfg, dict):
+                            normalized[str(pid)] = _normalize_printer_entry(str(pid), cfg)
+                    if normalized:
+                        legacy_seed = normalized
+        except Exception:
+            pass
+
+    return ensure_user_printers_initialized(legacy_seed, PRINTER_REGISTRY)
 
 
 def save_printers_config(data: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Persiste la granja multi-impresora (creación, edición o eliminación) en JSON."""
+    """Persiste la granja multi-impresora (creación, edición o eliminación) en `user_printers.json`."""
+    from app.core.printer_registry import (
+        _enrich_builtin_entry,
+        load_user_printers_raw,
+        save_user_printers_raw,
+    )
+
+    existing = load_user_printers_raw()
     normalized: dict[str, dict[str, Any]] = {}
     for pid, entry in data.items():
         clean_id = str(pid).strip()
         if not clean_id or not isinstance(entry, dict):
             continue
-        normalized[clean_id] = _normalize_printer_entry(clean_id, entry)
+        merged = {**existing.get(clean_id, {}), **entry}
+        norm_entry = _normalize_printer_entry(clean_id, merged)
+        for extra_k in (
+            "catalog_id",
+            "vendor",
+            "model_name",
+            "connection_mode",
+            "is_custom",
+            "bed_shape",
+            "bed_width_mm",
+            "bed_depth_mm",
+            "bed_diameter_mm",
+            "max_height_mm",
+            "kinematics",
+            "gcode_flavor",
+            "max_speed_mm_s",
+            "max_accel_mm_s2",
+            "estimated_q_max",
+            "is_multicolor",
+            "tool_count",
+            "has_heated_chamber",
+            "is_high_speed",
+            "nozzle_diameter",
+            "profile_sub_path",
+        ):
+            if extra_k in merged:
+                norm_entry[extra_k] = merged[extra_k]
+        normalized[clean_id] = _enrich_builtin_entry(clean_id, norm_entry, PRINTER_REGISTRY)
 
     if not normalized:
         normalized = {
-            pid: dict(defaults) for pid, defaults in DEFAULT_PRINTERS_CONFIG.items()
+            pid: _enrich_builtin_entry(pid, dict(defaults), PRINTER_REGISTRY)
+            for pid, defaults in DEFAULT_PRINTERS_CONFIG.items()
         }
 
-    with PRINTERS_CONFIG_PATH.open("w", encoding="utf-8") as fh:
-        json.dump(normalized, fh, indent=2, ensure_ascii=False)
-        fh.write("\n")
+    save_user_printers_raw(normalized)
+    try:
+        with PRINTERS_CONFIG_PATH.open("w", encoding="utf-8") as fh:
+            json.dump(normalized, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    except Exception:
+        pass
     return normalized
 
 
@@ -846,9 +923,48 @@ def resolve_profile_id(printer_id: str) -> str:
 
 
 def get_printer_config(printer_id: str) -> PrinterConfig:
-    """Obtiene el `PrinterConfig` técnico del perfil asociado a `printer_id`."""
+    """Obtiene el `PrinterConfig` técnico (incluyendo dimensiones y capacidades personalizadas)."""
     profile_id = resolve_profile_id(printer_id)
-    return PRINTER_REGISTRY[profile_id]
+    base = PRINTER_REGISTRY[profile_id]
+    configs = load_printers_config()
+    inst = configs.get(printer_id)
+    if not inst:
+        return base
+
+    is_delta = str(inst.get("kinematics") or base.kinematics) == "delta" or str(inst.get("bed_shape")) == "circular"
+    bed_shape = "circular" if is_delta else "rectangular"
+    diam = float(inst["bed_diameter_mm"]) if (is_delta and inst.get("bed_diameter_mm")) else (base.diameter_mm if is_delta else None)
+    bw = float(inst.get("bed_width_mm") or (base.bed_mm[0] if base.bed_mm else 220.0))
+    bd = float(inst.get("bed_depth_mm") or (base.bed_mm[1] if base.bed_mm else 220.0))
+    bh = float(inst.get("max_height_mm") or base.height_mm)
+    bed_tuple = None if is_delta else (bw, bd, bh)
+    is_mc = bool(inst.get("is_multicolor", base.extruder_slots > 1))
+    tools = int(inst.get("tool_count") or (base.extruder_slots if is_mc else 1))
+    slots = max(1, tools) if is_mc else 1
+
+    return PrinterConfig(
+        printer_id=printer_id,
+        profile_id=profile_id,
+        display_name=str(inst.get("name") or base.display_name),
+        kinematics=str(inst.get("kinematics") or base.kinematics),
+        origin="center" if is_delta else "bottom_left",
+        cli_binary=base.cli_binary,
+        machine_profile=base.machine_profile,
+        diameter_mm=diam,
+        height_mm=bh,
+        bed_mm=bed_tuple,
+        usable_edge_z_mm=base.usable_edge_z_mm if not inst.get("is_custom") else None,
+        max_volumetric_flow_mm3_s=float(inst.get("estimated_q_max") or base.max_volumetric_flow_mm3_s),
+        extruder_slots=slots,
+        vendor=str(inst.get("vendor") or ""),
+        model_name=str(inst.get("model_name") or base.display_name),
+        gcode_flavor=str(inst.get("gcode_flavor") or "klipper"),
+        is_multicolor=is_mc,
+        has_heated_chamber=bool(inst.get("has_heated_chamber", False)),
+        is_high_speed=bool(inst.get("is_high_speed", False)),
+        nozzle_diameter=float(inst.get("nozzle_diameter") or 0.4),
+        bed_shape=bed_shape,
+    )
 
 
 def get_printer_instance(printer_id: str) -> tuple[str, dict[str, Any]]:

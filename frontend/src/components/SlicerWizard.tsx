@@ -470,6 +470,8 @@ interface SlicerWizardProps {
   highSpeedVolumetricLimits: Record<string, Record<string, number>>;
   selectedPrinterId: PrinterId;
   onSelectPrinter: (id: PrinterId) => void;
+  onOpenAddPrinter?: () => void;
+  onDeletePrinter?: (id: PrinterId) => void;
   stlFile: File | null;
   onSelectStl: (file: File) => void;
   analysis: MeshAnalysisResponse | null;
@@ -638,6 +640,8 @@ export function SlicerWizard({
   highSpeedVolumetricLimits,
   selectedPrinterId,
   onSelectPrinter,
+  onOpenAddPrinter,
+  onDeletePrinter,
   stlFile,
   onSelectStl,
   analysis,
@@ -880,6 +884,11 @@ export function SlicerWizard({
   const selectedPrinter = printers.find((p) => p.printer_id === selectedPrinterId);
   const selectedProfileId: ProfileId =
     selectedPrinter?.profile_id ?? (selectedPrinterId as ProfileId);
+  const isMulticolorPrinter = Boolean(
+    selectedPrinter?.is_multicolor ||
+      (selectedPrinter?.extruder_slots ?? 1) > 1 ||
+      selectedProfileId === 'creator5_pro',
+  );
 
   useEffect(() => {
     if (!sliceResult) {
@@ -1145,7 +1154,7 @@ export function SlicerWizard({
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pr-2">
         {/* PASO 1: Selector de impresora */}
         <section className="rounded-xl border border-slate-800 bg-slate-900/75 p-3.5">
-          <div className="mb-2.5 flex items-center justify-between">
+          <div className="mb-2.5 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[11px] font-bold text-cyan-300">
                 1
@@ -1154,38 +1163,51 @@ export function SlicerWizard({
                 Impresora
               </h2>
             </div>
-            <span className="text-[11px] text-slate-400">
-              {printers.length} máquinas
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-slate-400">
+                {printers.length} máquinas
+              </span>
+              {onOpenAddPrinter && (
+                <button
+                  type="button"
+                  onClick={onOpenAddPrinter}
+                  className="inline-flex items-center gap-1 rounded-lg border border-cyan-500/45 bg-cyan-500/15 px-2 py-1 text-[11px] font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
+                >
+                  <Plus className="h-3 w-3" />
+                  <span>Agregar Impresora</span>
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-1.5">
             {printers.map((p) => {
               const active = p.printer_id === selectedPrinterId;
-              const volLabel =
-                p.kinematics === 'delta'
-                  ? `Ø${p.diameter_mm}×${p.height_mm} mm`
-                  : `${p.bed_mm?.join('×')} mm`;
-              const kinLabel =
-                p.kinematics === 'delta'
-                  ? 'Delta Klipper'
-                  : p.kinematics === 'corexy_toolchanger_4x'
-                    ? 'CoreXY 4-Tool'
-                    : 'Cartesiana Marlin 2';
+              const isDelta = p.kinematics === 'delta' || p.bed_shape === 'circular';
+              const volLabel = isDelta
+                ? `Ø${p.diameter_mm}×${p.height_mm} mm`
+                : `${p.bed_mm?.join('×')} mm`;
+              const kinLabel = isDelta
+                ? `Delta ${p.gcode_flavor ? p.gcode_flavor.toUpperCase() : 'Klipper'}`
+                : p.kinematics === 'corexy_toolchanger_4x' || p.kinematics === 'corexy'
+                  ? `CoreXY${p.is_multicolor ? ` ${p.tool_count ?? p.extruder_slots}C` : ''}`
+                  : `Cartesiana ${p.gcode_flavor ? p.gcode_flavor.toUpperCase() : 'Marlin 2'}`;
 
               return (
-                <button
+                <div
                   key={p.printer_id}
-                  type="button"
-                  data-printer-id={p.printer_id}
-                  onClick={() => onSelectPrinter(p.printer_id)}
-                  className={`flex cursor-pointer items-center justify-between rounded-xl border px-3 py-2 text-left transition ${
+                  className={`flex items-center justify-between rounded-xl border px-3 py-2 transition ${
                     active
                       ? 'border-cyan-500/70 bg-cyan-500/10 shadow-sm shadow-cyan-500/10'
                       : 'border-slate-800 bg-slate-950/60 hover:border-slate-700'
                   }`}
                 >
-                  <div className="min-w-0 pr-2">
+                  <button
+                    type="button"
+                    data-printer-id={p.printer_id}
+                    onClick={() => onSelectPrinter(p.printer_id)}
+                    className="min-w-0 flex-1 cursor-pointer pr-2 text-left"
+                  >
                     <div className="flex items-center gap-2">
                       <Cpu
                         className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-cyan-400' : 'text-slate-500'}`}
@@ -1202,11 +1224,28 @@ export function SlicerWizard({
                     <p className="mt-0.5 pl-5 text-[11px] text-slate-400">
                       {kinLabel} · {volLabel}
                     </p>
+                  </button>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {p.is_multicolor && (
+                      <span className="rounded-md border border-purple-500/40 bg-purple-500/15 px-1.5 py-0.5 font-mono text-[10px] text-purple-200">
+                        {p.tool_count ?? p.extruder_slots}C
+                      </span>
+                    )}
+                    <span className="rounded-md bg-slate-800/90 px-2 py-0.5 font-mono text-[11px] text-cyan-300">
+                      {p.max_volumetric_flow_mm3_s} mm³/s
+                    </span>
+                    {p.is_custom && onDeletePrinter && printers.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => onDeletePrinter(p.printer_id)}
+                        title="Eliminar impresora personalizada"
+                        className="rounded p-1 text-slate-500 transition hover:bg-rose-500/15 hover:text-rose-300"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    )}
                   </div>
-                  <span className="shrink-0 rounded-md bg-slate-800/90 px-2 py-0.5 font-mono text-[11px] text-cyan-300">
-                    {p.max_volumetric_flow_mm3_s} mm³/s
-                  </span>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -1921,8 +1960,22 @@ export function SlicerWizard({
             )}
           </div>
 
-          {/* Panel Multicabezal T0..T3 solo para FlashForge Creator 5 Pro (oculto en Modo Litofanía) */}
-          {selectedProfileId === 'creator5_pro' && !lithophaneMode && (
+          {/* Sugerencia M600 cuando la impresora es monocolor pero el .3mf tiene varios colores */}
+          {!isMulticolorPrinter && analysis?.is_multicolor && !lithophaneMode && (
+            <div className="mt-2.5 rounded-xl border border-amber-500/35 bg-amber-950/20 p-2.5 text-[11px] text-amber-200">
+              <div className="flex items-center gap-1.5 font-semibold">
+                <Palette className="h-3.5 w-3.5 text-amber-400" />
+                <span>Modelo multicolor en impresora monocolor</span>
+              </div>
+              <p className="mt-1 text-[10px] leading-relaxed text-amber-200/80">
+                Esta máquina está configurada como monocolor. Puedes laminar normalmente o usar{' '}
+                <strong>+ Pausa aquí (M600 / PAUSE)</strong> en el visor G-code para cambiar de filamento por capa.
+              </p>
+            </div>
+          )}
+
+          {/* Panel Multicabezal T0..Tn para impresoras multicolor (oculto en Modo Litofanía) */}
+          {isMulticolorPrinter && !lithophaneMode && (
             <div className="mt-2.5 space-y-2.5 rounded-xl border border-purple-500/35 bg-purple-950/15 p-2.5">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-semibold text-purple-200">

@@ -473,6 +473,55 @@ def nikk_get_error_journal(limit: int = 20) -> str:
     return _json_str({"entries": read_error_journal(limit=limit)})
 
 
+@mcp.tool()
+def nikk_search_printer_catalog(
+    query: str = "",
+    vendor: str = "",
+    multicolor_only: bool = False,
+    limit: int = 30,
+) -> str:
+    """Busca impresoras en el Catálogo Universal de OrcaSlicer por marca, modelo o soporte multicolor."""
+    from app.core.orca_catalog import search_orca_catalog
+
+    return _json_str(
+        search_orca_catalog(
+            q=query,
+            vendor=vendor,
+            multicolor_only=multicolor_only,
+            limit=limit,
+        )
+    )
+
+
+@mcp.tool()
+def nikk_add_custom_printer(
+    catalog_id: str,
+    display_name: str = "",
+    nozzle_diameter: float = 0.4,
+    connection_mode: Literal["lan", "usb_sd"] = "lan",
+    ip: str = "",
+    port: int | None = None,
+    protocol: str = "",
+    is_multicolor: bool | None = None,
+    tool_count: int | None = None,
+) -> str:
+    """Agrega una impresora del catálogo OrcaSlicer a la granja del usuario (`user_printers.json`)."""
+    from app.core.printer_registry import add_user_printer_from_catalog
+
+    record = add_user_printer_from_catalog(
+        catalog_id=catalog_id,
+        display_name=display_name or None,
+        nozzle_diameter=nozzle_diameter,
+        connection_mode=connection_mode,
+        ip=ip,
+        port=port,
+        protocol=protocol or None,
+        is_multicolor=is_multicolor,
+        tool_count=tool_count,
+    )
+    return _json_str({"ok": True, "printer": record})
+
+
 def get_mcp_asgi_app():
     """Devuelve la sub-aplicación ASGI Streamable HTTP de MCP para montar en `/mcp`."""
     return mcp.streamable_http_app(streamable_http_path="/")

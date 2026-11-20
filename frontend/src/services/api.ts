@@ -64,19 +64,30 @@ export interface PrinterInfo {
   printer_id: PrinterId;
   profile_id: ProfileId;
   display_name: string;
+  vendor?: string;
+  model_name?: string;
   ip?: string;
   port?: number;
   protocol?: 'moonraker' | 'flashforge_lan' | 'marlin_serial';
+  connection_mode?: 'lan' | 'usb_sd';
   camera_url?: string;
   enabled?: boolean;
+  is_custom?: boolean;
   kinematics: string;
   origin: 'center' | 'bottom_left';
+  bed_shape?: 'circular' | 'rectangular';
   diameter_mm: number | null;
   height_mm: number;
   bed_mm: [number, number, number] | null;
   usable_edge_z_mm: number | null;
   max_volumetric_flow_mm3_s: number;
   extruder_slots: number;
+  gcode_flavor?: string;
+  is_multicolor?: boolean;
+  tool_count?: number;
+  has_heated_chamber?: boolean;
+  is_high_speed?: boolean;
+  nozzle_diameter?: number;
   cli_binary: string;
 }
 
@@ -1884,4 +1895,95 @@ export async function saveUserPrefs(payload: Record<string, unknown>): Promise<v
 
 export async function clearLastSession(): Promise<void> {
   await fetchWithTimeout(`${API_BASE_URL}/prefs/last-session`, { method: 'DELETE' }, 6000);
+}
+
+export interface OrcaCatalogCapabilities {
+  is_multicolor: boolean;
+  tool_count: number;
+  has_heated_chamber: boolean;
+  is_high_speed: boolean;
+}
+
+export interface OrcaCatalogPrinter {
+  catalog_id: string;
+  vendor: string;
+  vendor_key: string;
+  model_name: string;
+  nozzle_diameters: number[];
+  profile_sub_path: string;
+  bed_shape: 'rectangular' | 'circular';
+  bed_width_mm: number;
+  bed_depth_mm: number;
+  bed_diameter_mm: number | null;
+  max_height_mm: number;
+  kinematics: string;
+  gcode_flavor: string;
+  max_speed_mm_s: number;
+  max_accel_mm_s2: number;
+  estimated_q_max: number;
+  capabilities: OrcaCatalogCapabilities;
+}
+
+export interface OrcaCatalogSearchResponse {
+  printers: OrcaCatalogPrinter[];
+  total: number;
+  catalog_total: number;
+  vendors: string[];
+}
+
+export interface AddPrinterPayload {
+  catalog_id: string;
+  display_name?: string;
+  nozzle_diameter?: number;
+  connection_mode?: 'lan' | 'usb_sd';
+  ip?: string;
+  port?: number;
+  protocol?: 'moonraker' | 'flashforge_lan' | 'marlin_serial';
+  is_multicolor?: boolean;
+  tool_count?: number;
+}
+
+export async function fetchPrinterCatalog(params: {
+  q?: string;
+  vendor?: string;
+  multicolor_only?: boolean;
+  limit?: number;
+}): Promise<OrcaCatalogSearchResponse> {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set('q', params.q);
+  if (params.vendor) qs.set('vendor', params.vendor);
+  if (params.multicolor_only) qs.set('multicolor_only', 'true');
+  if (params.limit) qs.set('limit', String(params.limit));
+  const res = await fetchWithTimeout(`${API_BASE_URL}/printers/catalog?${qs.toString()}`, {}, 10000);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<OrcaCatalogSearchResponse>;
+}
+
+export async function syncPrinterCatalog(): Promise<{ synced_count: number; vendors: number }> {
+  const res = await fetchWithTimeout(`${API_BASE_URL}/printers/catalog/sync`, { method: 'POST' }, 45000);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<{ synced_count: number; vendors: number }>;
+}
+
+export async function addCustomPrinter(payload: AddPrinterPayload): Promise<{ ok: boolean; printer: { id: string } & Record<string, unknown> }> {
+  const res = await fetchWithTimeout(
+    `${API_BASE_URL}/printers/add`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    10000,
+  );
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<{ ok: boolean; printer: { id: string } & Record<string, unknown> }>;
+}
+
+export async function deleteUserPrinter(printerId: string): Promise<void> {
+  const res = await fetchWithTimeout(
+    `${API_BASE_URL}/printers/${encodeURIComponent(printerId)}`,
+    { method: 'DELETE' },
+    8000,
+  );
+  if (!res.ok) throw new Error(await parseError(res));
 }

@@ -76,6 +76,15 @@ from app.core.platform_detector import (
     scan_installed_slicers,
     set_slicer_path,
 )
+from app.core.orca_catalog import (
+    search_orca_catalog,
+    sync_orca_catalog_from_github,
+)
+from app.core.printer_registry import (
+    add_user_printer_from_catalog,
+    delete_user_printer,
+    update_user_printer,
+)
 from app.core.project_manager import (
     delete_full_project,
     get_full_project,
@@ -397,25 +406,37 @@ def get_catalog() -> dict[str, Any]:
         base = PRINTER_REGISTRY.get(profile_id)
         if not base:
             continue
+        resolved = get_printer_config(inst_id)
         printers.append(
             {
                 "printer_id": inst_id,
                 "profile_id": profile_id,
-                "display_name": inst_cfg.get("name") or base.display_name,
+                "display_name": inst_cfg.get("name") or resolved.display_name,
+                "vendor": resolved.vendor,
+                "model_name": resolved.model_name,
                 "ip": inst_cfg.get("ip", ""),
                 "port": inst_cfg.get("port", 7125),
                 "protocol": inst_cfg.get("protocol", "moonraker"),
+                "connection_mode": inst_cfg.get("connection_mode", "lan" if inst_cfg.get("ip") else "usb_sd"),
                 "camera_url": inst_cfg.get("camera_url", ""),
                 "enabled": bool(inst_cfg.get("enabled", True)),
-                "kinematics": base.kinematics,
-                "origin": base.origin,
-                "diameter_mm": base.diameter_mm,
-                "height_mm": base.height_mm,
-                "bed_mm": list(base.bed_mm) if base.bed_mm else None,
-                "usable_edge_z_mm": base.usable_edge_z_mm,
-                "max_volumetric_flow_mm3_s": base.max_volumetric_flow_mm3_s,
-                "extruder_slots": base.extruder_slots,
-                "cli_binary": str(base.cli_binary),
+                "is_custom": bool(inst_cfg.get("is_custom", False)),
+                "kinematics": resolved.kinematics,
+                "origin": resolved.origin,
+                "bed_shape": resolved.bed_shape,
+                "diameter_mm": resolved.diameter_mm,
+                "height_mm": resolved.height_mm,
+                "bed_mm": list(resolved.bed_mm) if resolved.bed_mm else None,
+                "usable_edge_z_mm": resolved.usable_edge_z_mm,
+                "max_volumetric_flow_mm3_s": resolved.max_volumetric_flow_mm3_s,
+                "extruder_slots": resolved.extruder_slots,
+                "gcode_flavor": resolved.gcode_flavor,
+                "is_multicolor": resolved.is_multicolor,
+                "tool_count": resolved.extruder_slots,
+                "has_heated_chamber": resolved.has_heated_chamber,
+                "is_high_speed": resolved.is_high_speed,
+                "nozzle_diameter": resolved.nozzle_diameter,
+                "cli_binary": str(resolved.cli_binary),
             }
         )
 
@@ -1471,6 +1492,66 @@ def _build_printers_config_response() -> PrintersConfigResponse:
         detected_volumes=volumes,
         **keys_meta,
     )
+
+
+@app.get("/api/printers/catalog")
+def get_printers_catalog_endpoint(
+    q: str = "",
+    vendor: str = "",
+    multicolor_only: bool = False,
+    limit: int = 120,
+) -> dict[str, Any]:
+    """Busca en el Catálogo Universal de Impresoras OrcaSlicer por marca, modelo o multicolor."""
+    return search_orca_catalog(q=q, vendor=vendor, multicolor_only=multicolor_only, limit=limit)
+
+
+@app.post("/api/printers/catalog/sync")
+def sync_printers_catalog_endpoint() -> dict[str, Any]:
+    """Sincroniza el catálogo de impresoras desde el repositorio oficial OrcaSlicer/OrcaSlicer."""
+    return sync_orca_catalog_from_github()
+
+
+@app.post("/api/printers/add")
+def add_printer_endpoint(payload: dict[str, Any]) -> dict[str, Any]:
+    """Registra una impresora del catálogo OrcaSlicer en `user_printers.json`."""
+    catalog_id = str(payload.get("catalog_id") or "").strip()
+    if not catalog_id:
+        raise HTTPException(status_code=400, detail="catalog_id es requerido.")
+    try:
+        record = add_user_printer_from_catalog(
+            catalog_id=catalog_id,
+            display_name=payload.get("display_name"),
+            nozzle_diameter=float(payload.get("nozzle_diameter") or 0.4),
+            connection_mode=str(payload.get("connection_mode") or "lan"),
+            ip=str(payload.get("ip") or ""),
+            port=int(payload["port"]) if payload.get("port") else None,
+            protocol=payload.get("protocol"),
+            is_multicolor=payload.get("is_multicolor"),
+            tool_count=int(payload["tool_count"]) if payload.get("tool_count") else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "printer": record}
+
+
+@app.patch("/api/printers/{printer_id}")
+def patch_printer_endpoint(printer_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Edita IP, boquilla, capacidades o nombre de una impresora del usuario."""
+    try:
+        record = update_user_printer(printer_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "printer": record}
+
+
+@app.delete("/api/printers/{printer_id}")
+def delete_printer_endpoint(printer_id: str) -> dict[str, Any]:
+    """Elimina una impresora personalizada o instancia del usuario."""
+    try:
+        removed = delete_user_printer(printer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "deleted": removed}
 
 
 @app.get("/api/printers/config", response_model=PrintersConfigResponse)

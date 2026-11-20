@@ -10,6 +10,7 @@ import {
   clearLastSession,
   cutMeshByPlane,
   deleteFullProject,
+  deleteUserPrinter,
   fetchAIRecommendation,
   fetchCachedMeshFile,
   fetchCatalog,
@@ -59,6 +60,7 @@ import {
   type SupportType,
   type ZColorRange,
 } from './services/api';
+import { AddPrinterModal } from './components/AddPrinterModal';
 import { FarmDashboard } from './components/FarmDashboard';
 import { PrinterSettingsModal } from './components/PrinterSettingsModal';
 import {
@@ -198,6 +200,7 @@ export function App() {
   const [selectedPrinterId, setSelectedPrinterId] = useState<PrinterId>(
     initialPrefs.selectedPrinterId || 'flsun_t1_pro_1',
   );
+  const [addPrinterOpen, setAddPrinterOpen] = useState(false);
 
   const [stlFile, setStlFile] = useState<File | null>(null);
   const [meshId, setMeshId] = useState<string | null>(null);
@@ -2802,6 +2805,10 @@ export function App() {
             highSpeedVolumetricLimits={highSpeedVolumetricLimits}
             selectedPrinterId={selectedPrinterId}
             onSelectPrinter={handleSelectPrinter}
+            onOpenAddPrinter={() => setAddPrinterOpen(true)}
+            onDeletePrinter={(id) => {
+              void deleteUserPrinter(id).then(() => refreshCatalog());
+            }}
             stlFile={stlFile}
             onSelectStl={handleSelectStl}
             analysis={analysis}
@@ -2997,9 +3004,20 @@ export function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         machineProfiles={machineProfiles}
+        onOpenAddCatalog={() => setAddPrinterOpen(true)}
         onSaved={(cfg) => {
           setPrintersConfig(cfg);
           void refreshCatalog();
+        }}
+      />
+
+      <AddPrinterModal
+        open={addPrinterOpen}
+        onClose={() => setAddPrinterOpen(false)}
+        onAdded={(newPrinterId) => {
+          void refreshCatalog().then(() => {
+            handleSelectPrinter(newPrinterId);
+          });
         }}
       />
 

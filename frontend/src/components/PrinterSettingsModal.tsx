@@ -32,7 +32,8 @@ interface PrinterSettingsModalProps {
   open: boolean;
   onClose: () => void;
   machineProfiles: MachineProfileInfo[];
-  onSaved?: (cfg: PrintersConfigResponse) => void;
+  onSaved?: (config: PrintersConfigResponse) => void;
+  onOpenAddCatalog?: () => void;
 }
 
 const DEFAULT_PROFILE_META: Array<{
@@ -51,6 +52,7 @@ export function PrinterSettingsModal({
   onClose,
   machineProfiles,
   onSaved,
+  onOpenAddCatalog,
 }: PrinterSettingsModalProps) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -321,6 +323,19 @@ export function PrinterSettingsModal({
             </h2>
           </div>
           <div className="flex items-center gap-2">
+            {onOpenAddCatalog && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenAddCatalog();
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-cyan-500/50 bg-cyan-500/15 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/25"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Agregar desde Catálogo</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void loadConfig()}

@@ -370,6 +370,24 @@ def patch_profiles_for_job(
     machine_data["max_layer_height"] = [str(max_lh_for_nozzle)] * slots
     machine_data["min_layer_height"] = [str(min_lh_for_nozzle)] * slots
 
+    # Adaptar geometría de cama, firmware y multicolor para impresoras personalizadas del catálogo OrcaSlicer
+    if printer.printer_id != printer.profile_id:
+        machine_data["printable_height"] = str(int(round(printer.height_mm)))
+        if printer.gcode_flavor in ("klipper", "marlin2", "reprap"):
+            machine_data["gcode_flavor"] = printer.gcode_flavor
+        if printer.bed_shape == "circular" and printer.diameter_mm:
+            r = printer.diameter_mm / 2.0
+            pts = []
+            for i in range(72):
+                ang = (2.0 * math.pi * i) / 72.0
+                pts.append(f"{r * math.cos(ang):.2f}x{r * math.sin(ang):.2f}")
+            machine_data["printable_area"] = pts
+        elif printer.bed_mm:
+            bx, by, _ = printer.bed_mm
+            machine_data["printable_area"] = ["0x0", f"{bx:.1f}x0", f"{bx:.1f}x{by:.1f}", f"0x{by:.1f}"]
+        if printer.is_multicolor and slots > 1:
+            machine_data["single_extruder_multi_material"] = "1"
+
     flow_table_key = (
         "high_speed_volumetric_limits_mm3_s"
         if request.high_speed_filament
