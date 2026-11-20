@@ -69,9 +69,17 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) todo el f
 | :---: | :---: |
 | ![Laminado y Costos](docs/screenshots/12-laminado-costos-envio.jpg) | ![Compendio Final IA](docs/screenshots/09-compendio-final-ia.jpg) |
 
+| Catálogo Universal de Impresoras (`273` Modelos) | Calculadora Comercial de Cotización 3D (`COP$`) |
+| :---: | :---: |
+| ![Catálogo Universal OrcaSlicer](docs/screenshots/13-catalogo-universal-orcaslicer.jpg) | ![Calculadora Cotización 3D](docs/screenshots/14-calculadora-cotizacion-cop.jpg) |
+
 ---
 
 ## Características Principales
+
+- **Catálogo Universal de Impresoras (`273` modelos · `25` marcas desde OrcaSlicer):**
+  - Buscador instantáneo por marca o modelo (Bambu, Creality, Prusa, Voron, Anker, Anycubic, Elegoo, FLSUN, FlashForge, etc.), filtro por marca y toggle **`Solo Multicolor`**, con botón **`Sincronizar OrcaSlicer`**.
+  - Detección automática de volumen de cama, cinemática, `Q_max`, diámetro de boquilla (`0.4 mm`), sistema multicolor (`AMS / CFS / ACE / MMU`) y selección de modo de conexión (**`Red LAN / Klipper`** con IP opcional o **`Exportar .gcode USB/SD`**) para agregar cualquier máquina al taller en un clic.
 
 - **Escena `.3mf` Multi-Objeto Independiente, Multi-Selección y Gizmos CAD (`Viewport3D.tsx`):**
   - Al abrir un `.3mf` con múltiples piezas, extrae cada objeto por separado preservando nombre, posición/rotación/escala original y colores `T0–T3` (`paint_color`) sin fusionarlos en un solo bloque; incluye división geométrica (`POST /api/models/split-objects`) y auto-ordenado en cama.
