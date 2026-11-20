@@ -90,9 +90,23 @@ def _slicer_catalog_specs() -> list[dict[str, Any]]:
                 str(Path.home() / "Library/Application Support/Orca-Flashforge"),
                 str(Path.home() / "Library/Application Support/Flash Studio"),
             ],
-            "win_exe_names": ["Orca-Flashforge.exe", "Flash Studio.exe", "FlashPrint.exe"],
-            "win_dirs": ["Orca-Flashforge", "FlashForge\\Orca-Flashforge", "FlashForge\\FlashPrint 5"],
-            "win_profiles": ["Orca-Flashforge", "Flash Studio"],
+            "win_exe_names": [
+                "flash studio.exe",
+                "Flash Studio.exe",
+                "Orca-Flashforge.exe",
+                "FlashPrint.exe",
+            ],
+            "win_dirs": [
+                "Flashforge\\Flash Studio Desktop",
+                "FlashForge\\Flash Studio Desktop",
+                "Flashforge\\Flash Studio",
+                "Flash Studio Desktop",
+                "Flash Studio",
+                "Orca-Flashforge",
+                "FlashForge\\Orca-Flashforge",
+                "FlashForge\\FlashPrint 5",
+            ],
+            "win_profiles": ["Orca-Flashforge", "Flash Studio", "Flash Studio Desktop"],
         },
         {
             "id": "flsun_slicer",
@@ -109,7 +123,7 @@ def _slicer_catalog_specs() -> list[dict[str, Any]]:
             ],
             "win_exe_names": ["FlsunSlicer.exe", "FLSUN Slicer.exe"],
             "win_dirs": ["FlsunSlicer", "FLSUN Slicer"],
-            "win_profiles": ["FlsunSlicer"],
+            "win_profiles": ["FlsunSlicer", "FlsunSlicerInternal"],
         },
     ]
 
