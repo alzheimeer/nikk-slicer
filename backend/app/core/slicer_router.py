@@ -7,9 +7,11 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.config import PrinterConfig, get_optimal_chamber_config, resolve_profile_id
 from app.core.error_journal import record_error
@@ -516,8 +518,15 @@ def run_slicer_cli(
     cmd, has_3mf = _build_slicer_cli_cmd(printer, model_paths, patched, out_dir, filament_ids)
 
     def _run_once(run_cmd: list[str]) -> tuple[int, str, list[Path]]:
+        run_kwargs: dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "timeout": timeout_sec,
+        }
+        if sys.platform.startswith("win") and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         try:
-            proc = subprocess.run(run_cmd, capture_output=True, text=True, timeout=timeout_sec)
+            proc = subprocess.run(run_cmd, **run_kwargs)
         except subprocess.TimeoutExpired:
             msg = f"Tiempo agotado ({timeout_sec}s) ejecutando {printer.cli_binary.name}."
             record_error(

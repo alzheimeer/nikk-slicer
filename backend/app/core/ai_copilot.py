@@ -1130,19 +1130,28 @@ def generate_post_print_compendium(
 
 
 def _call_ai_json(prompt: str) -> tuple[dict[str, Any] | None, str]:
-    """Llama a DeepSeek (o Gemini como respaldo) y devuelve `(json_dict, provider)`."""
+    """Llama al proveedor IA activo (DeepSeek o Google Gemini) y devuelve `(json_dict, provider)`."""
+    from app.core.platform_detector import get_active_ai_config
+
+    cfg = get_active_ai_config()
+    preferred = cfg.get("provider", "deepseek")
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if deepseek_key:
+
+    order = (
+        [("gemini", gemini_key), ("deepseek", deepseek_key)]
+        if preferred == "gemini"
+        else [("deepseek", deepseek_key), ("gemini", gemini_key)]
+    )
+    for prov, key in order:
+        if not key:
+            continue
         try:
-            return _call_deepseek(prompt, deepseek_key), "DEEPSEEK_API"
+            if prov == "gemini":
+                return _call_gemini(prompt, key), "GEMINI_API"
+            return _call_deepseek(prompt, key), "DEEPSEEK_API"
         except (urllib.error.URLError, KeyError, ValueError, TimeoutError):
-            pass
-    if gemini_key:
-        try:
-            return _call_gemini(prompt, gemini_key), "GEMINI_API"
-        except (urllib.error.URLError, KeyError, ValueError, TimeoutError):
-            pass
+            continue
     return None, "HEURISTICA_LOCAL"
 
 

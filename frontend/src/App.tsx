@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Plus, Settings, Sliders } from 'lucide-react';
+import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Plus, Server, Settings, Sliders } from 'lucide-react';
 import { ErrorJournalModal } from './components/ErrorJournalModal';
 import { QuoteCalculatorModal } from './components/QuoteCalculatorModal';
+import { SystemSetupModal } from './components/SystemSetupModal';
 import {
   analyzeMesh,
   applyLayerPauses,
@@ -18,6 +19,7 @@ import {
   fetchPrintersConfig,
   fetchRecentProjects,
   fetchSavedProjects,
+  fetchSystemEnvironment,
   fetchUserPrefs,
   getProjectModelFileUrl,
   requestAIAnalyzeModel,
@@ -181,6 +183,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [journalOpen, setJournalOpen] = useState(false);
   const [quoteCalculatorOpen, setQuoteCalculatorOpen] = useState(false);
+  const [systemSetupOpen, setSystemSetupOpen] = useState(false);
 
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [machineProfiles, setMachineProfiles] = useState<MachineProfileInfo[]>([]);
@@ -1548,6 +1551,13 @@ export function App() {
     void fetchRecentProjects(5)
       .then((list) => setRecentProjects(list))
       .catch(() => {});
+    void fetchSystemEnvironment()
+      .then((env) => {
+        if (!env.has_primary_slicer) {
+          setSystemSetupOpen(true);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -2764,6 +2774,15 @@ export function App() {
           </button>
           <button
             type="button"
+            onClick={() => setSystemSetupOpen(true)}
+            title="Entorno del sistema, laminadores, IA (BYOK) y servidor MCP"
+            className="flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:border-emerald-400"
+          >
+            <Server className="h-3.5 w-3.5 text-emerald-400" />
+            Entorno / MCP
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsOpen(true)}
             title="Configurar IPs, puertos USB/SD y API Keys de IA"
             className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-500/60"
@@ -2987,6 +3006,11 @@ export function App() {
       <ErrorJournalModal
         open={journalOpen}
         onClose={() => setJournalOpen(false)}
+      />
+
+      <SystemSetupModal
+        open={systemSetupOpen}
+        onClose={() => setSystemSetupOpen(false)}
       />
 
       <QuoteCalculatorModal

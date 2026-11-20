@@ -1430,6 +1430,89 @@ export async function applyLayerPauses({
   return res.json() as Promise<ApplyPausesResponse>;
 }
 
+export interface DetectedSlicerInfo {
+  id: 'orcaslicer' | 'orca_flashforge' | 'flsun_slicer';
+  name: string;
+  required: boolean;
+  description: string;
+  detected: boolean;
+  executable_path: string | null;
+  profiles_path: string | null;
+  download_url: string;
+}
+
+export interface SystemEnvironmentResponse {
+  os: string;
+  platform: string;
+  user_data_dir: string;
+  slicers: DetectedSlicerInfo[];
+  has_primary_slicer: boolean;
+  missing_required: string[];
+  ai_config: {
+    provider: 'deepseek' | 'gemini';
+    has_api_key: boolean;
+    masked_key: string;
+  };
+  mcp: {
+    http_url: string;
+    stdio_command: string;
+    tools_count: number;
+  };
+}
+
+export async function fetchSystemEnvironment(): Promise<SystemEnvironmentResponse> {
+  const res = await fetch(`${API_BASE_URL}/system/environment`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<SystemEnvironmentResponse>;
+}
+
+export async function rescanSystemSlicers(): Promise<{
+  slicers: DetectedSlicerInfo[];
+  environment: SystemEnvironmentResponse;
+}> {
+  const res = await fetch(`${API_BASE_URL}/system/rescan`, { method: 'POST' });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<{
+    slicers: DetectedSlicerInfo[];
+    environment: SystemEnvironmentResponse;
+  }>;
+}
+
+export async function setManualSlicerPath(
+  slicerId: string,
+  executablePath: string,
+): Promise<{ environment: SystemEnvironmentResponse }> {
+  const res = await fetch(`${API_BASE_URL}/system/set-slicer-path`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slicer_id: slicerId, executable_path: executablePath }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<{ environment: SystemEnvironmentResponse }>;
+}
+
+export async function saveSystemAIConfig(
+  provider: 'deepseek' | 'gemini',
+  apiKey: string,
+): Promise<{ ai_config: SystemEnvironmentResponse['ai_config'] }> {
+  const res = await fetch(`${API_BASE_URL}/system/ai-config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, api_key: apiKey }),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<{ ai_config: SystemEnvironmentResponse['ai_config'] }>;
+}
+
+export async function testSystemAIConnection(): Promise<{
+  connected: boolean;
+  provider: string;
+}> {
+  const res = await fetch(`${API_BASE_URL}/system/ai-test`, { method: 'POST' });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<{ connected: boolean; provider: string }>;
+}
+
 export function getGcodeUrl(gcodeUrlOrJobId: string, customFilename?: string): string {
   let base: string;
   if (

@@ -221,19 +221,35 @@ PROFILE_PROTOCOL_DEFAULTS: dict[str, tuple[str, int]] = {
 
 
 def resolve_cli_binary(printer_id: str, catalog_binary: str | None = None) -> Path:
-    """Resuelve el binario CLI disponible en `/Applications/` de macOS."""
-    if printer_id == "ender3_s1_pro" and ORCA_SLICER_CLI.exists():
-        return ORCA_SLICER_CLI
+    """Resuelve el binario CLI disponible en macOS o Windows mediante auto-detección multiplataforma."""
+    from app.core.platform_detector import get_detected_slicer_executable
+
+    if printer_id == "ender3_s1_pro":
+        orca_det = get_detected_slicer_executable("orcaslicer")
+        if orca_det is not None:
+            return orca_det
+        if ORCA_SLICER_CLI.exists():
+            return ORCA_SLICER_CLI
     if catalog_binary:
         candidate = Path(catalog_binary)
         if candidate.exists():
             return candidate
+    ff_det = get_detected_slicer_executable("orca_flashforge")
+    if ff_det is not None:
+        return ff_det
     if FLASH_STUDIO_CLI.exists():
         return FLASH_STUDIO_CLI
+    orca_det = get_detected_slicer_executable("orcaslicer")
+    if orca_det is not None:
+        return orca_det
     if ORCA_SLICER_CLI.exists():
         return ORCA_SLICER_CLI
+    flsun_det = get_detected_slicer_executable("flsun_slicer")
+    if flsun_det is not None:
+        return flsun_det
     raise FileNotFoundError(
-        "No se encontró un binario CLI compatible en /Applications/ (Flash Studio.app u OrcaSlicer.app)."
+        "No se encontró un binario CLI compatible (OrcaSlicer / Orca-Flashforge / FLSun Slicer). "
+        "Configúralo desde Entorno del Sistema."
     )
 
 

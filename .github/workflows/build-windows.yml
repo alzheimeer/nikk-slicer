@@ -1,0 +1,52 @@
+name: Build Windows Installer
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published, created]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build Windows App & Installer (NikkSlicer_Windows_Setup.exe)
+        shell: pwsh
+        run: ./build_windows.ps1
+
+      - name: Upload Windows Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NikkSlicer_Windows_Setup
+          path: dist_release/NikkSlicer_Windows_Setup.exe
+
+      - name: Attach to GitHub Release (on tag push or release)
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist_release/NikkSlicer_Windows_Setup.exe

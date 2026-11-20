@@ -17,11 +17,26 @@ import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+IS_MACOS = sys.platform == "darwin"
+IS_WINDOWS = sys.platform.startswith("win")
+
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    PROJECT_ROOT = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent
+
 BACKEND_DIR = PROJECT_ROOT / "backend"
-LOG_DIR = Path.home() / "Library" / "Logs" / "NikkSlicer"
+if IS_MACOS:
+    LOG_DIR = Path.home() / "Library" / "Logs" / "NikkSlicer"
+    CHROME_PROFILE_DIR = Path.home() / "Library" / "Application Support" / "NikkSlicer" / "ChromeAppProfile"
+elif IS_WINDOWS:
+    _local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    LOG_DIR = _local_app_data / "NikkSlicer" / "Logs"
+    CHROME_PROFILE_DIR = _local_app_data / "NikkSlicer" / "ChromeAppProfile"
+else:
+    LOG_DIR = Path.home() / ".nikk_slicer" / "logs"
+    CHROME_PROFILE_DIR = Path.home() / ".nikk_slicer" / "chrome_profile"
 LOG_FILE = LOG_DIR / "nikkslicer.log"
-CHROME_PROFILE_DIR = Path.home() / "Library" / "Application Support" / "NikkSlicer" / "ChromeAppProfile"
 
 
 def _load_backend_env() -> None:
@@ -92,33 +107,66 @@ def check_nikkslicer_health(timeout: float = 1.2) -> bool:
         return False
 
 
+def _win_no_window_kwargs() -> dict[str, object]:
+    if IS_WINDOWS and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 def cleanup_stale_port(port: int, logger: logging.Logger) -> None:
-    try:
-        out = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True).strip()
-    except subprocess.CalledProcessError:
-        return
-    pids = [int(x) for x in out.splitlines() if x.strip().isdigit()]
     my_pid = os.getpid()
-    pids = [p for p in pids if p != my_pid]
+    pids: list[int] = []
+    if IS_WINDOWS:
+        try:
+            out = subprocess.check_output(
+                ["netstat", "-ano", "-p", "TCP"],
+                text=True,
+                errors="ignore",
+                **_win_no_window_kwargs(),
+            )
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and f":{port}" in parts[1] and parts[3].upper() == "LISTENING":
+                    if parts[4].isdigit() and int(parts[4]) != my_pid:
+                        pids.append(int(parts[4]))
+        except Exception:
+            return
+    else:
+        try:
+            out = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True).strip()
+        except subprocess.CalledProcessError:
+            return
+        pids = [int(x) for x in out.splitlines() if x.strip().isdigit() and int(x) != my_pid]
+
     if not pids:
         return
 
     logger.info("Limpiando proceso previo en puerto %s: %s", port, pids)
     for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+        if IS_WINDOWS:
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                **_win_no_window_kwargs(),
+            )
+        else:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
     deadline = time.time() + 2.5
     while time.time() < deadline:
         if not is_port_open(LOCAL_HOST, port, timeout=0.2):
             return
         time.sleep(0.2)
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
+    if not IS_WINDOWS:
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
     time.sleep(0.3)
 
 
@@ -329,6 +377,18 @@ class DesktopApi:
         threading.Thread(target=_do_focus, daemon=True).start()
         return {"focused": True}
 
+    def pick_slicer_executable(self) -> dict[str, object]:
+        import webview  # type: ignore[import-not-found]
+
+        win = webview.active_window()
+        if win is None:
+            return {"cancelled": True}
+        selected = win.create_file_dialog(webview.OPEN_DIALOG)
+        if not selected:
+            return {"cancelled": True}
+        chosen = selected[0] if isinstance(selected, (list, tuple)) else selected
+        return {"cancelled": False, "path": str(chosen)}
+
 
 _MENU_TARGET = None
 _RECENT_SUBMENU = None
@@ -354,6 +414,23 @@ def _register_window(wsid: str, win: object) -> None:
 
 
 def open_new_project_window(project_id: str | None = None) -> None:
+    if IS_WINDOWS:
+        try:
+            cmd = [sys.executable]
+            if not getattr(sys, "frozen", False):
+                cmd.append(str(Path(__file__).resolve()))
+            cmd.append("--new-window")
+            if project_id:
+                cmd.append(f"--project-id={project_id}")
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **_win_no_window_kwargs(),
+            )
+            return
+        except Exception:
+            pass
     try:
         import webview  # type: ignore[import-not-found]
 
@@ -576,14 +653,95 @@ def _install_macos_archivo_menu(logger: logging.Logger) -> None:
         logger.warning("No se pudo instalar menú Archivo nativo: %s", exc)
 
 
-def open_desktop_window(logger: logging.Logger) -> None:
+def _find_windows_icon() -> Path | None:
+    for candidate in (
+        PROJECT_ROOT / "nikk_slicer.ico",
+        PROJECT_ROOT / "frontend" / "public" / "nikk_slicer.ico",
+        Path(sys.executable).resolve().parent / "nikk_slicer.ico",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _build_windows_menu(logger: logging.Logger) -> list[object]:
     try:
-        _configure_macos_app_identity(logger)
+        import webview  # type: ignore[import-not-found]
+        from webview.menu import Menu, MenuAction, MenuSeparator  # type: ignore[import-not-found]
+
+        def _dispatch(script: str) -> None:
+            def _run() -> None:
+                try:
+                    win = webview.active_window()
+                    if win is not None:
+                        win.evaluate_js(script)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        recent_items: list[object] = []
+        try:
+            sys.path.insert(0, str(BACKEND_DIR))
+            from app.core.project_manager import list_recent_projects  # type: ignore[import-not-found]
+
+            for proj in list_recent_projects(limit=5):
+                title = str(proj.get("title") or proj.get("original_filename") or "Proyecto")
+                pid = str(proj.get("project_id") or "")
+                recent_items.append(
+                    MenuAction(
+                        title,
+                        lambda _pid=pid: _dispatch(
+                            f"window.dispatchEvent(new CustomEvent('nikk:menu-open-recent', {{ detail: {{ projectId: '{_pid}' }} }}))"
+                        ),
+                    )
+                )
+        except Exception:
+            pass
+
+        if not recent_items:
+            recent_items.append(MenuAction("Sin proyectos recientes", lambda: None))
+
+        archivo_items: list[object] = [
+            MenuAction("Nuevo proyecto (Ctrl+N)", lambda: threading.Thread(target=open_new_project_window, daemon=True).start()),
+            MenuAction("Abrir proyecto... (Ctrl+O)", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-open-projects'))")),
+            MenuAction("Guardar proyecto (Ctrl+S)", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-save-project'))")),
+            MenuAction("Guardar proyecto como...", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-save-project-as'))")),
+            MenuSeparator(),
+            Menu("Proyectos recientes", recent_items),
+            MenuSeparator(),
+            MenuAction("Salir", lambda: [w.destroy() for w in list(webview.windows)]),
+        ]
+
+        ver_items: list[object] = [
+            MenuAction("Recargar", lambda: _dispatch("window.location.reload()")),
+            MenuAction("Pantalla completa", lambda: webview.active_window().toggle_fullscreen() if webview.active_window() else None),
+        ]
+
+        ventana_items: list[object] = [
+            MenuAction("Nueva ventana", lambda: threading.Thread(target=open_new_project_window, daemon=True).start()),
+        ]
+
+        return [
+            Menu("Archivo", archivo_items),
+            Menu("Ver", ver_items),
+            Menu("Ventana", ventana_items),
+        ]
+    except Exception as exc:
+        logger.warning("No se pudo construir menú nativo de Windows: %s", exc)
+        return []
+
+
+def open_desktop_window(logger: logging.Logger, initial_project_id: str | None = None) -> None:
+    try:
+        if IS_MACOS:
+            _configure_macos_app_identity(logger)
         import webview  # type: ignore[import-not-found]
 
         logger.info("Abriendo ventana nativa con pywebview...")
-        _install_macos_open_file_handler(logger)
-        wsid, url = _build_window_url()
+        if IS_MACOS:
+            _install_macos_open_file_handler(logger)
+        wsid, url = _build_window_url(initial_project_id)
         main_win = webview.create_window(
             "Nikk Slicer",
             url,
@@ -595,24 +753,48 @@ def open_desktop_window(logger: logging.Logger) -> None:
         )
         if main_win is not None:
             _register_window(wsid, main_win)
-        _set_macos_dock_icon(logger)
+        if IS_MACOS:
+            _set_macos_dock_icon(logger)
 
         def _on_webview_ready():
             time.sleep(0.35)
-            _install_macos_archivo_menu(logger)
+            if IS_MACOS:
+                _install_macos_archivo_menu(logger)
 
-        webview.start(func=_on_webview_ready)
+        start_kwargs: dict[str, object] = {"func": _on_webview_ready}
+        if IS_WINDOWS:
+            start_kwargs["gui"] = "edgechromium"
+            win_menus = _build_windows_menu(logger)
+            if win_menus:
+                start_kwargs["menu"] = win_menus
+            win_icon = _find_windows_icon()
+            if win_icon is not None:
+                start_kwargs["icon"] = str(win_icon)
+
+        webview.start(**start_kwargs)
         return
     except ImportError:
         pass
 
-    chrome_candidates = [
-        Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-        Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
-        Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
-        Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
-    ]
-    chrome_bin = next((c for c in chrome_candidates if c.is_file()), None)
+    if IS_WINDOWS:
+        program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+        browser_candidates = [
+            program_files_x86 / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            program_files / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            program_files / "Google" / "Chrome" / "Application" / "chrome.exe",
+            program_files_x86 / "Google" / "Chrome" / "Application" / "chrome.exe",
+            local_app_data / "Google" / "Chrome" / "Application" / "chrome.exe",
+        ]
+    else:
+        browser_candidates = [
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+            Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ]
+    chrome_bin = next((c for c in browser_candidates if c.is_file()), None)
     if chrome_bin is not None:
         CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         cmd = [
@@ -630,6 +812,7 @@ def open_desktop_window(logger: logging.Logger) -> None:
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            **_win_no_window_kwargs(),
         )
         proc.wait()
         elapsed = time.time() - started
@@ -640,6 +823,11 @@ def open_desktop_window(logger: logging.Logger) -> None:
             )
         return
 
+    if IS_WINDOWS:
+        logger.info("Abriendo Nikk Slicer en el navegador predeterminado de Windows...")
+        os.startfile(BASE_URL)  # type: ignore[attr-defined]
+        return
+
     logger.info("Abriendo Nikk Slicer en Safari...")
     subprocess.run(["open", "-a", "Safari", BASE_URL], check=False)
 
@@ -647,6 +835,13 @@ def open_desktop_window(logger: logging.Logger) -> None:
 def main() -> int:
     logger = setup_logging()
     logger.info("=== Iniciando Nikk Slicer Desktop Launcher ===")
+
+    initial_project_id: str | None = None
+    for arg in sys.argv[1:]:
+        if arg.startswith("--project-id="):
+            initial_project_id = arg.split("=", 1)[1].strip() or None
+        elif not arg.startswith("-"):
+            _queue_open_file(arg, logger)
 
     reused_existing = False
     server = None
@@ -669,7 +864,7 @@ def main() -> int:
             return 1
 
     try:
-        open_desktop_window(logger)
+        open_desktop_window(logger, initial_project_id=initial_project_id)
     finally:
         if server is not None and server_thread is not None:
             logger.info("Ventana cerrada: deteniendo uvicorn...")

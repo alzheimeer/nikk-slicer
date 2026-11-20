@@ -61,6 +61,7 @@ from app.connectors import (
     upload_and_start_moonraker,
 )
 from app.core.ai_copilot import (
+    _call_ai_json,
     analyze_model_for_ai,
     diagnose_live_telemetry,
     diagnose_print_defect,
@@ -68,6 +69,12 @@ from app.core.ai_copilot import (
     generate_ai_recommendation,
     generate_ai_support_decision,
     optimize_slice_with_ai,
+)
+from app.core.platform_detector import (
+    get_system_environment,
+    save_ai_config,
+    scan_installed_slicers,
+    set_slicer_path,
 )
 from app.core.project_manager import (
     delete_full_project,
@@ -183,6 +190,10 @@ async def lifespan(_app: FastAPI):
         telemetry_recorder_worker(_poll_enabled_for_recorder, interval_sec=10.0)
     )
     try:
+        from app.mcp_server import mcp as _mcp_server
+        async with _mcp_server.session_manager.run():
+            yield
+    except ImportError:
         yield
     finally:
         worker_task.cancel()
@@ -2236,6 +2247,73 @@ async def ai_diagnose_defect_endpoint(req: AIDefectDiagnoseRequest) -> AIDefectD
     if not proj_data:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado para diagnosticar.")
     return await asyncio.to_thread(diagnose_print_defect, req, proj_data)
+
+
+@app.get("/api/system/environment")
+def system_environment_endpoint() -> dict[str, Any]:
+    """Devuelve SO, estado de laminadores detectados, configuración IA y servidor MCP."""
+    return get_system_environment(mcp_tools_count=19)
+
+
+@app.post("/api/system/rescan")
+def system_rescan_endpoint() -> dict[str, Any]:
+    """Vuelve a escanear los laminadores instalados en el equipo."""
+    slicers = scan_installed_slicers()
+    return {"slicers": slicers, "environment": get_system_environment(mcp_tools_count=19)}
+
+
+@app.post("/api/system/set-slicer-path")
+def system_set_slicer_path_endpoint(payload: dict[str, str]) -> dict[str, Any]:
+    """Configura manualmente la ruta ejecutable de un laminador."""
+    slicer_id = str(payload.get("slicer_id") or "").strip()
+    executable_path = str(payload.get("executable_path") or "").strip()
+    if not slicer_id or not executable_path:
+        raise HTTPException(status_code=400, detail="slicer_id y executable_path son requeridos.")
+    try:
+        res = set_slicer_path(slicer_id, executable_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {**res, "environment": get_system_environment(mcp_tools_count=19)}
+
+
+@app.post("/api/system/ai-config")
+def system_ai_config_endpoint(payload: dict[str, str]) -> dict[str, Any]:
+    """Guarda el proveedor IA (deepseek/gemini) y la API Key del usuario."""
+    provider = str(payload.get("provider") or "deepseek").strip()
+    api_key = str(payload.get("api_key") or "").strip()
+    try:
+        cfg = save_ai_config(provider, api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ai_config": cfg}
+
+
+@app.post("/api/system/ai-test")
+def system_ai_test_endpoint() -> dict[str, Any]:
+    """Prueba la conexión con el motor IA activo (DeepSeek o Gemini)."""
+    raw, prov = _call_ai_json('Responde exactamente con el JSON: {"status": "ok"}')
+    return {
+        "connected": raw is not None and prov != "HEURISTICA_LOCAL",
+        "provider": prov,
+    }
+
+
+try:
+    from app.mcp_server import get_mcp_asgi_app
+
+    class _MCPPathRewriteMiddleware:
+        def __init__(self, asgi_app):
+            self.asgi_app = asgi_app
+
+        async def __call__(self, scope, receive, send):
+            if scope.get("type") == "http" and scope.get("path") == "/mcp":
+                scope = dict(scope, path="/mcp/")
+            await self.asgi_app(scope, receive, send)
+
+    app.add_middleware(_MCPPathRewriteMiddleware)
+    app.mount("/mcp", get_mcp_asgi_app())
+except Exception:
+    pass
 
 
 FRONTEND_DIST_DIR = PROJECT_ROOT / "frontend" / "dist"
