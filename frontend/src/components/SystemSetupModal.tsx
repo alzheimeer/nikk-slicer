@@ -21,6 +21,7 @@ import {
   testSystemAIConnection,
   type SystemEnvironmentResponse,
 } from '../services/api';
+import { useI18n } from '../i18n/I18nContext';
 
 export interface SystemSetupModalProps {
   open: boolean;
@@ -28,6 +29,7 @@ export interface SystemSetupModalProps {
 }
 
 export function SystemSetupModal({ open, onClose }: SystemSetupModalProps) {
+  const { t } = useI18n();
   const [env, setEnv] = useState<SystemEnvironmentResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [rescanning, setRescanning] = useState(false);
@@ -176,10 +178,10 @@ export function SystemSetupModal({ open, onClose }: SystemSetupModalProps) {
             </div>
             <div>
               <h2 className="text-sm font-bold text-white">
-                Entorno del Sistema y Motores 3D
+                {t.systemSetup.title}
               </h2>
               <p className="text-[11px] text-slate-400">
-                {env ? `${env.os} · Datos: ${env.user_data_dir}` : 'Detectando sistema...'}
+                {env ? `${env.os} · ${env.user_data_dir}` : t.systemSetup.scanning}
               </p>
             </div>
           </div>
@@ -195,7 +197,7 @@ export function SystemSetupModal({ open, onClose }: SystemSetupModalProps) {
               ) : (
                 <RefreshCw className="h-3.5 w-3.5" />
               )}
-              Volver a buscar en el equipo
+              {rescanning ? t.systemSetup.scanning : t.systemSetup.rescan}
             </button>
             <button
               type="button"
@@ -238,11 +240,11 @@ export function SystemSetupModal({ open, onClose }: SystemSetupModalProps) {
                           {s.detected ? (
                             <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
                               <CheckCircle2 className="h-3 w-3" />
-                              Instalado
+                              {t.systemSetup.installed}
                             </span>
                           ) : (
                             <span className="rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
-                              Falta instalar
+                              {t.systemSetup.missing}
                             </span>
                           )}
                         </div>
@@ -325,7 +327,7 @@ export function SystemSetupModal({ open, onClose }: SystemSetupModalProps) {
                     onClick={() => void handleTestAi()}
                     className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 font-medium text-slate-200 hover:border-emerald-500/50 disabled:opacity-50"
                   >
-                    {testingAi ? 'Probando...' : 'Probar conexión'}
+                    {testingAi ? '...' : t.systemSetup.testConnection}
                   </button>
                 </div>
                 {aiTestMsg && <p className="text-[11px] text-cyan-200">{aiTestMsg}</p>}
@@ -336,10 +338,10 @@ export function SystemSetupModal({ open, onClose }: SystemSetupModalProps) {
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-200">
                     <Server className="h-3.5 w-3.5 text-emerald-400" />
-                    Servidor MCP Interno (Control por IA Externa)
+                    {t.systemSetup.mcpServer}
                   </span>
                   <span className="rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-300">
-                    {env?.mcp.tools_count ?? 19} herramientas · 3 recursos
+                    {env?.mcp.tools_count ?? 19} tools · 3 resources
                   </span>
                 </div>
                 <div className="grid grid-cols-1 gap-1.5 font-mono text-[10px] text-slate-300 sm:grid-cols-2">
@@ -360,12 +362,12 @@ export function SystemSetupModal({ open, onClose }: SystemSetupModalProps) {
                   {mcpCopied ? (
                     <>
                       <Check className="h-3.5 w-3.5" />
-                      Configuración JSON MCP copiada
+                      {t.systemSetup.copied}
                     </>
                   ) : (
                     <>
                       <Copy className="h-3.5 w-3.5" />
-                      Copiar configuración JSON MCP
+                      {t.systemSetup.copyMcpJson}
                     </>
                   )}
                 </button>

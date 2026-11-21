@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Plus, Server, Settings, Sliders } from 'lucide-react';
+import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Globe, Plus, Server, Settings, Sliders } from 'lucide-react';
+import { useI18n } from './i18n/I18nContext';
 import { ErrorJournalModal } from './components/ErrorJournalModal';
 import { QuoteCalculatorModal } from './components/QuoteCalculatorModal';
 import { SystemSetupModal } from './components/SystemSetupModal';
@@ -164,6 +165,7 @@ function parseTimeStrToSeconds(txt: string): number {
 }
 
 export function App() {
+  const { lang, toggleLang, t } = useI18n();
   const [initialPrefs] = useState<SavedUserPrefs>(() => loadSavedUserPrefs());
   const initLithophane = Boolean(initialPrefs.lithophaneMode);
   const initMat: MaterialType = initLithophane
@@ -2737,7 +2739,7 @@ export function App() {
               }`}
           >
             <Sliders className="h-3.5 w-3.5" />
-            Laminador (Wizard)
+            {t.header.wizard}
           </button>
           <button
             type="button"
@@ -2748,7 +2750,7 @@ export function App() {
               }`}
           >
             <Activity className="h-3.5 w-3.5" />
-            Monitor en Vivo ({printers.length || 6} Máquinas)
+            {t.header.liveMonitor} ({printers.length || 6} {t.header.machines})
           </button>
         </nav>
 
@@ -2760,38 +2762,47 @@ export function App() {
           <button
             type="button"
             onClick={() => setQuoteCalculatorOpen(true)}
-            title="Calculadora comercial de cotización 3D"
+            title={t.header.quoteTitle}
             className="flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-200 hover:border-amber-400"
           >
             <Calculator className="h-3.5 w-3.5 text-amber-400" />
-            Cotizar
+            {t.header.quote}
           </button>
           <button
             type="button"
             onClick={() => setJournalOpen(true)}
-            title="Consultar bitácora de errores y fallos"
+            title={t.header.journalTitle}
             className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-amber-500/60"
           >
             <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
-            Bitácora
+            {t.header.journal}
           </button>
           <button
             type="button"
             onClick={() => setSystemSetupOpen(true)}
-            title="Entorno del sistema, laminadores, IA (BYOK) y servidor MCP"
+            title={t.header.envMcpTitle}
             className="flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:border-emerald-400"
           >
             <Server className="h-3.5 w-3.5 text-emerald-400" />
-            Entorno / MCP
+            {t.header.envMcp}
           </button>
           <button
             type="button"
             onClick={() => setSettingsOpen(true)}
-            title="Configurar IPs, puertos USB/SD y API Keys de IA"
+            title={t.header.settingsTitle}
             className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-500/60"
           >
             <Settings className="h-3.5 w-3.5 text-cyan-400" />
-            Configuración
+            {t.header.settings}
+          </button>
+          <button
+            type="button"
+            onClick={toggleLang}
+            title={t.header.languageTitle}
+            className="flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-cyan-500/60 hover:text-cyan-200"
+          >
+            <Globe className="h-3.5 w-3.5 text-cyan-400" />
+            <span>{lang === 'es' ? 'ES | EN' : 'EN | ES'}</span>
           </button>
         </div>
       </header>
@@ -3058,10 +3069,10 @@ export function App() {
           <div className="w-full max-w-md space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl">
             <div className="space-y-1">
               <h2 className="text-sm font-semibold text-slate-100">
-                ¿Continuar con el último proyecto?
+                {t.startup.title}
               </h2>
               <p className="text-xs text-slate-400">
-                Se encontró tu sesión anterior guardada antes de cerrar:
+                {t.startup.subtitle}
               </p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-xs">
@@ -3069,7 +3080,7 @@ export function App() {
                 {pendingRestoreSession.file_name}
               </p>
               <p className="mt-0.5 font-mono text-[10px] text-slate-400">
-                Impresora: {pendingRestoreSession.printer_id || selectedPrinterId}
+                {t.startup.printerLabel} {pendingRestoreSession.printer_id || selectedPrinterId}
                 {pendingRestoreSession.saved_at
                   ? ` · ${new Date(pendingRestoreSession.saved_at).toLocaleString()}`
                   : ''}
@@ -3087,7 +3098,7 @@ export function App() {
                 className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-cyan-200 hover:border-cyan-500/60 hover:bg-slate-800 disabled:opacity-40"
               >
                 <FolderOpen className="h-3.5 w-3.5 text-cyan-400" />
-                Abrir proyecto
+                {t.startup.openProject}
               </button>
               <button
                 type="button"
@@ -3098,7 +3109,7 @@ export function App() {
                 }}
                 className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-40"
               >
-                Proyecto nuevo
+                {t.startup.newProject}
               </button>
               <button
                 type="button"
@@ -3154,7 +3165,7 @@ export function App() {
                 }}
                 className="rounded-xl bg-cyan-500 px-3.5 py-1.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
               >
-                {isRestoringSession ? 'Abriendo...' : 'Abrir último proyecto'}
+                {isRestoringSession ? '...' : t.startup.openLastProject}
               </button>
             </div>
           </div>

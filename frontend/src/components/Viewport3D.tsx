@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
 import { applyThreeMfTrianglePaintGroups } from '../utils/threeMfPaint';
+import { useI18n } from '../i18n/I18nContext';
 import {
   ArrowDownToLine,
   Box,
@@ -1194,6 +1195,7 @@ export function Viewport3D({
   onSplitObjects,
   isSplittingObjects = false,
 }: Viewport3DProps) {
+  const { t } = useI18n();
   const [viewMode, setViewMode] = useState<'stl' | 'gcode'>('stl');
   const [pauseNoteDraft, setPauseNoteDraft] = useState<string>('');
   const [showPauseInput, setShowPauseInput] = useState<boolean>(false);
@@ -1964,13 +1966,13 @@ export function Viewport3D({
           <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-xl border border-slate-800/95 bg-slate-900/90 p-1 backdrop-blur">
             {(
               [
-                ['select', 'Seleccionar / Clonar', MousePointerClick],
-                ['move', 'Mover', Move],
-                ['rotate', 'Rotar', RotateCw],
-                ['scale', 'Redimensionar', Scaling],
-                ['lay_on_face', 'Colocar en Cara', FlipVertical2],
-                ['cut', 'Cortar', Scissors],
-                ['measure', 'Medir', Ruler],
+                ['select', t.step2.select, MousePointerClick],
+                ['move', t.step2.move, Move],
+                ['rotate', t.step2.rotate, RotateCw],
+                ['scale', t.step2.scale, Scaling],
+                ['lay_on_face', t.step2.place, FlipVertical2],
+                ['cut', t.step2.cut, Scissors],
+                ['measure', t.step2.measure, Ruler],
               ] as const
             ).map(([toolId, label, Icon]) => {
               const active = activeCadTool === toolId;
@@ -2023,7 +2025,7 @@ export function Viewport3D({
                 ) : (
                   <Layers className="h-3.5 w-3.5" />
                 )}
-                <span>Dividir Objetos</span>
+                <span>{t.step2.splitObjects}</span>
               </button>
             )}
 

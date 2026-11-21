@@ -1,5 +1,7 @@
 <div align="center">
 
+**🌐 Idioma:** Español | [English](README.en.md)
+
 <img src="frontend/public/nikk-logo.jpg" alt="Nikk Slicer Logo" width="112" style="border-radius: 22px;" />
 
 # Nikk Slicer · AI & MCP Server
