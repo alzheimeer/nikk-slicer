@@ -2454,6 +2454,86 @@ def _normalize_deg_signed(deg: float) -> float:
     return val
 
 
+def _count_xy_contact_zones_and_span(
+    touch_xy: np.ndarray,
+    cluster_radius: float = 15.0,
+) -> tuple[int, float]:
+    """Agrupa puntos de contacto en XY (z <= min_z + 0.6 mm) y calcula zonas distintas + separación máxima (mm)."""
+    if len(touch_xy) == 0:
+        return 0, 0.0
+    if len(touch_xy) == 1:
+        return 1, 0.0
+
+    # Separación máxima entre puntos de apoyo
+    # Usar submuestreo si hay muchos puntos para mantener O(1) ms
+    pts = touch_xy[:: max(1, len(touch_xy) // 128)]
+    diffs = pts[:, None, :] - pts[None, :, :]
+    span_mm = float(np.sqrt((diffs * diffs).sum(axis=2)).max())
+
+    # Clustering greedy por radio en XY
+    centers: list[np.ndarray] = []
+    r2 = cluster_radius * cluster_radius
+    for p in pts:
+        matched = False
+        for c in centers:
+            d = p - c
+            if float(d[0] * d[0] + d[1] * d[1]) <= r2:
+                matched = True
+                break
+        if not matched:
+            centers.append(p)
+    return len(centers), span_mm
+
+
+def _collect_multipoint_candidate_mats(
+    raw_mesh: trimesh.Trimesh,
+    hull: trimesh.Trimesh,
+    pts: np.ndarray,
+) -> list[np.ndarray]:
+    """Genera matrices candidatas desde compute_stable_poses, caras 3D del convex hull y aristas 2D en YZ/XZ."""
+    mats: list[np.ndarray] = []
+    # 1) Poses estables físicas de trimesh
+    try:
+        stable_mats, _ = trimesh.poses.compute_stable_poses(raw_mesh, n_samples=16)
+        for m4 in stable_mats[:10]:
+            mats.append(np.asarray(m4[:3, :3], dtype=np.float64))
+    except Exception:
+        pass
+
+    # 2) Caras más grandes del convex hull 3D alineadas con -Z
+    if len(hull.faces) > 0:
+        down_vec = np.array([0.0, 0.0, -1.0])
+        for f_idx in np.argsort(hull.area_faces)[::-1][:8]:
+            rot_4x4 = trimesh.geometry.align_vectors(hull.face_normals[f_idx], down_vec)
+            mats.append(np.asarray(rot_4x4[:3, :3], dtype=np.float64))
+
+    # 3) Aristas del Convex Hull 2D en planos YZ (Rx) y XZ (Ry)
+    try:
+        from scipy.spatial import ConvexHull  # type: ignore[import-not-found]
+
+        if len(pts) >= 6:
+            yz_hull = ConvexHull(pts[:, [1, 2]])
+            for simplex in yz_hull.simplices:
+                v0, v1 = pts[simplex[0], [1, 2]], pts[simplex[1], [1, 2]]
+                ang = math.degrees(math.atan2(float(v1[1] - v0[1]), float(v1[0] - v0[0])))
+                mats.append(_rot_x_mat(-ang))
+                mats.append(_rot_x_mat(180.0 - ang))
+
+            xz_hull = ConvexHull(pts[:, [0, 2]])
+            for simplex in xz_hull.simplices:
+                v0, v1 = pts[simplex[0], [0, 2]], pts[simplex[1], [0, 2]]
+                ang = math.degrees(math.atan2(float(v1[1] - v0[1]), float(v1[0] - v0[0])))
+                mats.append(_rot_y_mat(ang))
+                mats.append(_rot_y_mat(180.0 + ang))
+    except Exception:
+        pass
+
+    # 4) Barrido fino de inclinación trasera (-88°..-55°) para apoyo doble cabeza + talones
+    for deg_int in range(-88, -54, 2):
+        mats.append(_rot_x_mat(float(deg_int)))
+    return mats
+
+
 def _detect_hero_face_normal(
     raw_mesh: trimesh.Trimesh,
     extracted_parts: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]],
@@ -2573,15 +2653,28 @@ def evaluate_orientation_candidates(
         raw_vol_cm3 = float(b_ext[0] * b_ext[1] * b_ext[2]) * 0.25 / 1000.0
 
     def _eval_r_mat(r_mat: np.ndarray, explicit_euler: tuple[float, float, float] | None = None) -> dict[str, Any]:
+        m4 = np.eye(4)
+        m4[:3, :3] = r_mat
+        # trimesh quaternion_from_matrix devuelve [w, x, y, z] -> convertir a [qx, qy, qz, qw]
+        q_wxyz = trimesh.transformations.quaternion_from_matrix(m4)
+        quat_xyzw = [
+            round(float(q_wxyz[1]), 6),
+            round(float(q_wxyz[2]), 6),
+            round(float(q_wxyz[3]), 6),
+            round(float(q_wxyz[0]), 6),
+        ]
         if explicit_euler is not None:
             rx, ry, rz = (_normalize_deg_signed(a) for a in explicit_euler)
         else:
-            m4 = np.eye(4)
-            m4[:3, :3] = r_mat
             rx, ry, rz = (
                 _normalize_deg_signed(math.degrees(a))
                 for a in trimesh.transformations.euler_from_matrix(m4, axes="sxyz")
             )
+            # Evitar descomposición redundante 180° / ry / 180° -> simplificar a rotación limpia
+            if abs(abs(rx) - 180.0) < 1.0 and abs(abs(rz) - 180.0) < 1.0:
+                rx = 0.0
+                ry = _normalize_deg_signed(180.0 - ry)
+                rz = 0.0
 
         rot_hull = base_hull @ r_mat.T
         p_min = rot_hull.min(axis=0)
@@ -2608,10 +2701,11 @@ def evaluate_orientation_candidates(
         oh_mask = (rot_n[:, 2] < -oh_45_cos) & (z_rel > 0.35)
         oh_ratio = float(areas_sub[oh_mask].sum()) / tot_area
 
-        bed_contact_mask = (z_bed_rel <= 0.25) & (rot_n[:, 2] < -0.5)
+        # Área acumulada de todas las caras coplanares apoyadas en la cama (z <= min_z + 0.4 mm)
+        bed_contact_mask = (z_bed_rel <= 0.4) & (rot_n[:, 2] < -0.5)
         base_contact_area_mm2 = float(areas_sub[bed_contact_mask].sum()) * (scale_factor ** 2) * float(step)
         if base_contact_area_mm2 < 1.0:
-            bed_pts = rot_hull[rot_hull[:, 2] <= float(p_min[2]) + 0.25]
+            bed_pts = rot_hull[rot_hull[:, 2] <= float(p_min[2]) + 0.4]
             if len(bed_pts) >= 3:
                 b_ext_2d = bed_pts[:, :2].max(axis=0) - bed_pts[:, :2].min(axis=0)
                 base_contact_area_mm2 = max(1.0, float(b_ext_2d[0] * b_ext_2d[1]) * 0.5)
@@ -2619,7 +2713,7 @@ def evaluate_orientation_candidates(
                 base_contact_area_mm2 = 1.0
 
         stability_warning: str | None = None
-        if base_contact_area_mm2 < 120.0 and dz > 80.0:
+        if base_contact_area_mm2 < 120.0:
             stability_warning = "Base muy pequeña · Requiere Brim/Balsa y Soportes"
 
         purge_weight = 0.55 if is_multicolor else 0.0
@@ -2632,14 +2726,18 @@ def evaluate_orientation_candidates(
                 1,
             )
             if hero_elev_deg < -8.0:
-                # Cara mirando hacia abajo -> soportes sobre el rostro
-                hero_penalty = 1.85
+                # Prohibido: cara mirando hacia abajo (-Z) -> soportes sobre el rostro
+                hero_penalty = 9.0
             elif hero_elev_deg > 65.0:
                 # Cara casi paralela a la cama (<25° respecto a XY) -> efecto escalera en frente/ojos
-                hero_penalty = 1.45
+                hero_penalty = 1.55
             elif 15.0 <= hero_elev_deg <= 60.0:
                 # Ángulo óptimo de personaje (reclinado 20-45° / elevación frontal 45-75°)
-                hero_penalty = 0.78
+                hero_penalty = 0.72
+
+        # Zonas de contacto y separación máxima (span_mm) en z <= min_z + 0.6 mm
+        touch_xy = rot_hull[rot_hull[:, 2] <= float(p_min[2]) + 0.6][:, :2]
+        contact_zones_count, contact_span_mm = _count_xy_contact_zones_and_span(touch_xy)
 
         est_time_proxy = (
             dz * (1.0 + oh_ratio * 0.45 + purge_weight)
@@ -2649,12 +2747,15 @@ def evaluate_orientation_candidates(
             "rx": rx,
             "ry": ry,
             "rz": rz,
+            "quaternion": quat_xyzw,
             "dx": round(dx, 1),
             "dy": round(dy, 1),
             "dz": round(dz, 1),
             "fits_bed": bool(fits),
             "overhang_ratio_pct": round(oh_ratio * 100.0, 1),
             "contact_area_mm2": round(base_contact_area_mm2, 1),
+            "contact_zones_count": int(contact_zones_count),
+            "contact_span_mm": round(contact_span_mm, 1),
             "stability_warning": stability_warning,
             "est_time_proxy": est_time_proxy,
             "hero_face_elevation_deg": hero_elev_deg,
@@ -2665,72 +2766,54 @@ def evaluate_orientation_candidates(
     back_eval = _eval_r_mat(_rot_x_mat(-90.0), (-90.0, 0.0, 0.0))
     tilt_eval = _eval_r_mat(_rot_x_mat(-45.0), (-45.0, 0.0, 0.0))
 
-    # Pool de candidatos para Mínimo Tiempo (Z) y Máxima Estabilidad
-    pool_mats: list[np.ndarray] = [
-        _rot_x_mat(90.0),
-        _rot_x_mat(-90.0),
-        _rot_y_mat(90.0),
-        _rot_y_mat(-90.0),
-        _rot_x_mat(180.0),
-        _rot_x_mat(45.0),
-        _rot_x_mat(-45.0),
-        _rot_y_mat(45.0),
-        _rot_y_mat(-45.0),
-    ]
-    if len(hull.faces) > 0:
-        hull_area_order = np.argsort(hull.area_faces)[::-1][:8]
-        down_vec = np.array([0.0, 0.0, -1.0])
-        for f_idx in hull_area_order:
-            n_vec = hull.face_normals[f_idx]
-            rot_4x4 = trimesh.geometry.align_vectors(n_vec, down_vec)
-            pool_mats.append(rot_4x4[:3, :3])
+    # De Lado / Perfil (Cara Limpia): evalúa Ry = -90° y Ry = +90° y elige el que mejor protege el rostro
+    side_neg = _eval_r_mat(_rot_y_mat(-90.0), (0.0, -90.0, 0.0))
+    side_pos = _eval_r_mat(_rot_y_mat(90.0), (0.0, 90.0, 0.0))
+    side_eval = min(
+        [side_neg, side_pos],
+        key=lambda e: (
+            0 if e["fits_bed"] else 1,
+            float(e.get("hero_face_penalty", 1.0)),
+            e["overhang_ratio_pct"],
+            e["dz"],
+        ),
+    )
 
-    for perm in itertools.permutations([0, 1, 2]):
-        for sx, sy, sz in itertools.product([-1.0, 1.0], repeat=3):
-            p_mat = np.zeros((3, 3))
-            p_mat[0, perm[0]] = sx
-            p_mat[1, perm[1]] = sy
-            p_mat[2, perm[2]] = sz
-            if round(float(np.linalg.det(p_mat))) == 1:
-                pool_mats.append(p_mat @ r_obb)
-
-    pool_evals: list[dict[str, Any]] = []
+    # Apoyo Multi-Punto en Cama (multi_point_bed_contact) desde compute_stable_poses + Convex Hull 3D/2D (YZ/XZ)
+    mp_mats = _collect_multipoint_candidate_mats(raw_mesh, hull, base_hull)
+    mp_evals: list[dict[str, Any]] = []
     seen_keys: set[tuple[float, float, float]] = set()
-    for r_m in pool_mats:
-        ev = _eval_r_mat(r_m)
-        key = (ev["rx"], ev["ry"], ev["rz"])
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        pool_evals.append(ev)
-
-    fitting_pool = [e for e in pool_evals if e["fits_bed"]] or pool_evals
     used_keys = {
         (orig_eval["rx"], orig_eval["ry"], orig_eval["rz"]),
         (back_eval["rx"], back_eval["ry"], back_eval["rz"]),
         (tilt_eval["rx"], tilt_eval["ry"], tilt_eval["rz"]),
+        (side_eval["rx"], side_eval["ry"], side_eval["rz"]),
     }
+    for r_m in mp_mats:
+        ev = _eval_r_mat(r_m)
+        if abs(ev["rx"]) < 5.0 and abs(ev["ry"]) < 5.0:
+            continue
+        if hero_face_detected and ev.get("hero_face_elevation_deg") is not None and float(ev["hero_face_elevation_deg"]) < -8.0:
+            continue
+        key = (ev["rx"], ev["ry"], ev["rz"])
+        if key in seen_keys or key in used_keys:
+            continue
+        seen_keys.add(key)
+        mp_evals.append(ev)
 
-    min_z_sorted = sorted(
-        fitting_pool,
-        key=lambda e: (e["dz"], e["overhang_ratio_pct"], -e["contact_area_mm2"]),
-    )
-    min_z_eval = next(
-        (e for e in min_z_sorted if (e["rx"], e["ry"], e["rz"]) not in used_keys),
-        min_z_sorted[0],
-    )
-    used_keys.add((min_z_eval["rx"], min_z_eval["ry"], min_z_eval["rz"]))
-
-    stab_sorted = sorted(
-        fitting_pool,
+    fitting_mp = [e for e in mp_evals if e["fits_bed"]] or mp_evals or [back_eval]
+    multi_eval = max(
+        fitting_mp,
         key=lambda e: (
-            -(e["contact_area_mm2"] / (1.0 + e["overhang_ratio_pct"] / 45.0)),
-            e["dz"],
+            1 if int(e.get("contact_zones_count", 1)) >= 2 else 0,
+            1 if float(e.get("contact_span_mm", 0.0)) >= 40.0 else 0,
+            1 if ((abs(e["ry"]) < 1.0 and abs(e["rz"]) < 1.0) or (abs(e["rx"]) < 1.0 and abs(e["rz"]) < 1.0)) else 0,
+            min(4, int(e.get("contact_zones_count", 1))),
+            -float(e.get("hero_face_penalty", 1.0)),
+            -float(e["overhang_ratio_pct"]),
+            -float(e["dz"]),
+            float(e.get("contact_span_mm", 0.0)),
         ),
-    )
-    stab_eval = next(
-        (e for e in stab_sorted if (e["rx"], e["ry"], e["rz"]) not in used_keys),
-        stab_sorted[0],
     )
 
     orig_time = max(orig_eval["est_time_proxy"], 1e-6)
@@ -2750,20 +2833,31 @@ def evaluate_orientation_candidates(
             return "Sin Soportes"
         if oid == "original":
             return "Original"
+        if oid == "double_support":
+            z_cnt = int(ev.get("contact_zones_count", 1))
+            span = float(ev.get("contact_span_mm", 0.0))
+            return f"{z_cnt} zonas · {span:.0f} mm"
+        if oid == "side_profile":
+            return "Rostro de perfil · Sin escalones"
         if oid == "back_down":
-            return "Cara Libre · Soportes Atrás" if oh > 2.0 else "Cara Limpia"
+            return "Espalda apoyada · Frente libre"
         if oid == "tilted_45":
-            return "Requiere Soportes" if warn else "Soportes en Espalda"
-        if oid == "min_z":
-            return "Menos Tiempo"
-        if oid == "max_stability":
-            return "Requiere Soportes" if warn else "Estable"
+            return "Talón en cama · Menos voladizo"
         return "Requiere Soportes"
 
     is_vertical_figure = (
         orig_eval["dz"] > max(orig_eval["dx"], orig_eval["dy"]) * 1.25
         and orig_eval["dz"] > 80.0
     )
+
+    mp_zones = int(multi_eval.get("contact_zones_count", 1))
+    mp_span = float(multi_eval.get("contact_span_mm", 0.0))
+    mp_title = (
+        "Apoyo Doble en Cama (Cabeza + Base)"
+        if mp_zones >= 2 and mp_span >= 40.0
+        else "Apoyo Multi-Punto Optimizado"
+    )
+    mp_oh_delta = round(float(multi_eval["overhang_ratio_pct"]) - float(orig_eval["overhang_ratio_pct"]), 1)
 
     raw_options = [
         {
@@ -2773,58 +2867,48 @@ def evaluate_orientation_candidates(
             "ev": orig_eval,
             "is_orig": True,
             "explanation": (
-                f"Orientación de archivo ({orig_eval['dz']} mm en Z, {orig_eval['overhang_ratio_pct']}% voladizos)."
+                f"Orientación de archivo asentada en Z=0 ({orig_eval['dz']} mm en Z, {orig_eval['overhang_ratio_pct']}% voladizos)."
+            ),
+        },
+        {
+            "id": "double_support",
+            "title": mp_title,
+            "badge": _dynamic_badge("double_support", multi_eval),
+            "ev": multi_eval,
+            "is_orig": False,
+            "explanation": (
+                f"{mp_zones} zonas de apoyo simultáneo en Z=0 (separación {mp_span:.0f} mm); "
+                f"voladizos {multi_eval['overhang_ratio_pct']}% ({mp_oh_delta:+.1f}%), {_time_delta_label(multi_eval)}."
+            ),
+        },
+        {
+            "id": "side_profile",
+            "title": "De Lado / Perfil (Cara Limpia)",
+            "badge": _dynamic_badge("side_profile", side_eval),
+            "ev": side_eval,
+            "is_orig": False,
+            "explanation": (
+                f"Acuesta sobre costado (Ry={side_eval['ry']}°) a Z=0: reduce Z a {side_eval['dz']} mm evitando escalones en el rostro."
             ),
         },
         {
             "id": "back_down",
-            "title": "Espalda en Cama / Cara Libre",
+            "title": "Espalda Plana en Cama / Frente Libre",
             "badge": _dynamic_badge("back_down", back_eval),
             "ev": back_eval,
             "is_orig": False,
             "explanation": (
-                f"Acuesta el modelo sobre la espalda: pasa de {orig_eval['dz']} mm a {back_eval['dz']} mm en Z, "
-                f"soportes ocultos atrás y rostro libre."
+                f"Apoya la espalda en Z=0 ({orig_eval['dz']}→{back_eval['dz']} mm en Z), dejando rostro y pecho libres de soportes."
             ),
         },
         {
             "id": "tilted_45",
-            "title": (
-                "Inclinado 45° Sin Soportes"
-                if tilt_eval["overhang_ratio_pct"] <= 2.0 and not tilt_eval.get("stability_warning")
-                else "Inclinado 45°"
-            ),
+            "title": "Inclinado 45° Atrás (Talón en Cama)",
             "badge": _dynamic_badge("tilted_45", tilt_eval),
             "ev": tilt_eval,
             "is_orig": False,
             "explanation": (
-                f"Inclinación a -45° con {tilt_eval['overhang_ratio_pct']}% de voladizos; "
-                + (
-                    "apoyo mínimo en talones, requiere Brim y soportes."
-                    if tilt_eval.get("stability_warning")
-                    else "los soportes caen en la cara posterior."
-                )
-            ),
-        },
-        {
-            "id": "min_z",
-            "title": "Mínimo Tiempo / Menor Altura Z",
-            "badge": _dynamic_badge("min_z", min_z_eval),
-            "ev": min_z_eval,
-            "is_orig": False,
-            "explanation": (
-                f"Minimiza la altura Z a {min_z_eval['dz']} mm para reducir capas"
-                + (" y cambios de color T0–T3." if is_multicolor else " y tiempo total.")
-            ),
-        },
-        {
-            "id": "max_stability",
-            "title": "Máxima Estabilidad / Base Amplia",
-            "badge": _dynamic_badge("max_stability", stab_eval),
-            "ev": stab_eval,
-            "is_orig": False,
-            "explanation": (
-                f"Maximiza el área de apoyo en cama ({stab_eval['contact_area_mm2']} mm²) ideal para alta velocidad."
+                f"Inclina 45° hacia atrás apoyando talón en Z=0 ({tilt_eval['overhang_ratio_pct']}% voladizos); los soportes caen en la espalda."
             ),
         },
     ]
@@ -2863,6 +2947,7 @@ def evaluate_orientation_candidates(
                 "title": item["title"],
                 "badge": item["badge"],
                 "rotation": {"rx": ev["rx"], "ry": ev["ry"], "rz": ev["rz"]},
+                "quaternion": ev.get("quaternion"),
                 "z_height_mm": ev["dz"],
                 "overhang_ratio_pct": ev["overhang_ratio_pct"],
                 "contact_area_mm2": ev["contact_area_mm2"],

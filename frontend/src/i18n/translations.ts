@@ -93,6 +93,16 @@ export interface TranslationSchema {
     uploadOnly: string;
     uploadAndPrint: string;
   };
+  simulator: {
+    simulateLayer: string;
+    play: string;
+    pause: string;
+    speed: string;
+    realTimeTooltip: string;
+    nextStep: string;
+    autoAdvance: string;
+    stepLabel: string;
+  };
   overlay: {
     loadingModel: string;
     slicing: string;
@@ -199,6 +209,16 @@ export const translations: Record<Language, TranslationSchema> = {
       uploadOnly: 'Subir sin Imprimir',
       uploadAndPrint: 'Subir e Imprimir Ahora',
     },
+    simulator: {
+      simulateLayer: 'Simular capa',
+      play: 'Reproducir simulación (Espacio)',
+      pause: 'Pausar simulación (Espacio)',
+      speed: 'Velocidad',
+      realTimeTooltip: 'Velocidad real 1:1 de la impresora',
+      nextStep: 'Paso siguiente',
+      autoAdvance: 'Auto-avanzar capa',
+      stepLabel: 'Paso',
+    },
     overlay: {
       loadingModel: 'Cargando modelo 3D...',
       slicing: 'Laminando modelo...',
@@ -302,6 +322,16 @@ export const translations: Record<Language, TranslationSchema> = {
       saleCalculator: 'Quote Calculator',
       uploadOnly: 'Upload without Printing',
       uploadAndPrint: 'Upload & Print Now',
+    },
+    simulator: {
+      simulateLayer: 'Simulate layer',
+      play: 'Play simulation (Space)',
+      pause: 'Pause simulation (Space)',
+      speed: 'Speed',
+      realTimeTooltip: 'Real 1:1 printer speed',
+      nextStep: 'Next step',
+      autoAdvance: 'Auto-advance layer',
+      stepLabel: 'Step',
     },
     overlay: {
       loadingModel: 'Loading 3D model...',

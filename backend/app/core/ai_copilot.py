@@ -1144,9 +1144,16 @@ def _call_ai_json(prompt: str) -> tuple[dict[str, Any] | None, str]:
     from app.core.platform_detector import get_active_ai_config
 
     cfg = get_active_ai_config()
-    preferred = cfg.get("provider", "deepseek")
-    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    preferred = str(cfg.get("provider") or "deepseek").strip().lower()
+    cfg_key = str(cfg.get("api_key") or "").strip()
+    deepseek_key = (
+        (cfg_key if preferred == "deepseek" and cfg_key else "")
+        or os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    )
+    gemini_key = (
+        (cfg_key if preferred == "gemini" and cfg_key else "")
+        or os.environ.get("GEMINI_API_KEY", "").strip()
+    )
 
     order = (
         [("gemini", gemini_key), ("deepseek", deepseek_key)]
@@ -2115,12 +2122,12 @@ def evaluate_orientations_with_ai(
     }
     prompt = (
         "Eres un experto en impresión 3D FDM y laminado multicolor (OrcaSlicer). "
-        "Analiza estas 5 orientaciones candidatas medidas con trimesh y devuelve JSON estricto con:\n"
-        "- recommended_id: el id de la mejor orientación ('original', 'back_down', 'tilted_45', 'min_z' o 'max_stability'). "
-        "NUNCA recomiendes una opción que tenga stability_warning o fits_bed=false si existe una estable. "
-        "Si hero_face_detected=true (personaje/figura con rostro): penaliza orientaciones con hero_face_elevation_deg < -8° (soportes en el rostro) "
+        "Analiza estas 5 orientaciones candidatas medidas con trimesh y ya asentadas en Z=0, y devuelve JSON estricto con:\n"
+        "- recommended_id: el id de la mejor orientación ('original', 'max_stability', 'side_profile', 'back_down' o 'tilted_45'). "
+        "NUNCA recomiendes una opción que tenga stability_warning, fits_bed=false o hero_face_elevation_deg < -8° (boca abajo) si existe una estable. "
+        "Si hero_face_detected=true (personaje/figura con rostro): penaliza orientaciones boca abajo (hero_face_elevation_deg < -8°, ej. Rx=+90°) "
         "y también > 65° (cara casi paralela a la cama <25°, efecto escalera en frente/ojos); "
-        "prioriza ángulos inclinados 15°–60° (reclinado 20°–45° / elevación frontal 45°–75°) donde los soportes quedan ocultos atrás.\n"
+        "prioriza ángulos inclinados 15°–60° o perfil lateral ('side_profile' / 'back_down' / 'tilted_45') donde los soportes quedan ocultos atrás.\n"
         "- explanations: objeto {id: frase_corta_max_150_chars} explicando en español qué mejora y dónde caerán los soportes.\n"
         f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
     )
@@ -2133,11 +2140,23 @@ def evaluate_orientations_with_ai(
         cand_rec = str(raw_json.get("recommended_id") or "")
         if cand_rec in valid_ids:
             cand_obj = opt_by_id[cand_rec]
+            cand_elev = cand_obj.get("hero_face_elevation_deg")
+            is_face_down = hero_face_detected and cand_elev is not None and float(cand_elev) < -8.0
             has_stable_alt = any(
-                bool(o["fits_bed"]) and not o.get("stability_warning")
+                bool(o["fits_bed"])
+                and not o.get("stability_warning")
+                and not (
+                    hero_face_detected
+                    and o.get("hero_face_elevation_deg") is not None
+                    and float(o["hero_face_elevation_deg"]) < -8.0
+                )
                 for o in raw_options
             )
-            if (bool(cand_obj["fits_bed"]) and not cand_obj.get("stability_warning")) or not has_stable_alt:
+            if (
+                not is_face_down
+                and bool(cand_obj["fits_bed"])
+                and not cand_obj.get("stability_warning")
+            ) or not has_stable_alt:
                 recommended_id = cand_rec
         raw_exp = raw_json.get("explanations")
         if isinstance(raw_exp, dict):
@@ -2167,6 +2186,7 @@ def evaluate_orientations_with_ai(
                 stability_warning=o.get("stability_warning"),
                 fits_bed=bool(o["fits_bed"]),
                 is_recommended=(oid == recommended_id),
+                quaternion=o.get("quaternion"),
             )
         )
 

@@ -596,6 +596,7 @@ class OrientationOption(BaseModel):
     stability_warning: str | None = None
     fits_bed: bool = True
     is_recommended: bool = False
+    quaternion: list[float] | None = None
 
 
 class AIOrientationsResponse(BaseModel):

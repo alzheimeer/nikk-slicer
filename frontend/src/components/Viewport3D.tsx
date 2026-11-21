@@ -21,6 +21,7 @@ import {
   MousePointerClick,
   Move,
   Pause,
+  Play,
   Plus,
   RotateCcw,
   RotateCw,
@@ -28,6 +29,7 @@ import {
   Scaling,
   Scissors,
   Sparkles,
+  StepForward,
   Trash2,
   X,
 } from 'lucide-react';
@@ -248,6 +250,24 @@ interface LoadedRawModel {
   baseExtents: [number, number, number];
 }
 
+function computeRealWorldBounds(root: THREE.Object3D): THREE.Box3 {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  root.traverse((child) => {
+    const m = child as THREE.Mesh;
+    if (!m.isMesh || !m.geometry) return;
+    const posAttr = m.geometry.getAttribute('position');
+    if (!posAttr) return;
+    const matWorld = m.matrixWorld;
+    for (let i = 0; i < posAttr.count; i++) {
+      v.fromBufferAttribute(posAttr, i).applyMatrix4(matWorld);
+      box.expandByPoint(v);
+    }
+  });
+  return box;
+}
+
 function buildTransformedInstanceGeometry(
   rawGeo: THREE.BufferGeometry,
   inst: ModelInstanceTransform,
@@ -416,6 +436,21 @@ function SceneObjectItemPreview({
       ctrl.removeEventListener('dragging-changed', cb);
     };
   }, [groupNode, activeCadTool, onDraggingChange, onCommitOffset, obj.drop_to_bed]);
+
+  useEffect(() => {
+    if (!groupNode || !obj.drop_to_bed || !transformed) return;
+    const snapObj = () => {
+      groupNode.position.set(obj.offset_x, 0, -obj.offset_y);
+      const realBox = computeRealWorldBounds(groupNode);
+      if (!realBox.isEmpty() && Math.abs(realBox.min.y) > 0.01) {
+        groupNode.position.y -= realBox.min.y;
+        groupNode.updateMatrixWorld(true);
+      }
+    };
+    snapObj();
+    const raf = window.requestAnimationFrame(snapObj);
+    return () => window.cancelAnimationFrame(raf);
+  }, [groupNode, obj.drop_to_bed, obj.offset_x, obj.offset_y, transformed]);
 
   if (!transformed) return null;
 
@@ -790,8 +825,10 @@ function SingleInstancePreview({
     if (!box.isEmpty()) {
       const cx = (box.min.x + box.max.x) / 2;
       const cz = (box.min.z + box.max.z) / 2;
-      const minY = box.min.y;
-      inner.position.set(-cx, -minY, -cz);
+      inner.position.x -= cx;
+      inner.position.y -= box.min.y;
+      inner.position.z -= cz;
+      inner.updateMatrixWorld(true);
     }
 
     root.add(inner);
@@ -834,6 +871,35 @@ function SingleInstancePreview({
     inst.drop_to_bed ? 0 : Math.max(0, inst.offset_z),
     -inst.offset_y,
   ];
+
+  // Garantía física post-render: calcular vértices reales en mundo y asentar minY == 0.00 mm
+  useEffect(() => {
+    const grp = groupRef.current;
+    if (!grp || !inst.drop_to_bed) return;
+    const snapToBed = () => {
+      grp.position.set(inst.offset_x, 0, -inst.offset_y);
+      const realBox = computeRealWorldBounds(grp);
+      if (!realBox.isEmpty() && Math.abs(realBox.min.y) > 0.01) {
+        grp.position.y -= realBox.min.y;
+        grp.updateMatrixWorld(true);
+      }
+    };
+    snapToBed();
+    const raf = window.requestAnimationFrame(snapToBed);
+    return () => window.cancelAnimationFrame(raf);
+  }, [
+    inst.drop_to_bed,
+    inst.offset_x,
+    inst.offset_y,
+    inst.rot_x,
+    inst.rot_y,
+    inst.rot_z,
+    sx,
+    sy,
+    sz,
+    stlBaseResult,
+    threeMfBaseResult,
+  ]);
 
   const showMoveGizmo = !ghostMode && isSelected && activeCadTool === 'move';
   const showRotateGizmo = !ghostMode && isSelected && activeCadTool === 'rotate';
@@ -1078,15 +1144,75 @@ function MeasureOverlay({ points }: { points: THREE.Vector3[] }) {
   );
 }
 
+function NozzleHead3D({
+  position,
+  colorHex,
+}: {
+  position: [number, number, number];
+  colorHex: string;
+}) {
+  return (
+    <group position={position}>
+      {/* Punta fina metálica del nozzle tocando exactamente (0,0,0) local */}
+      <mesh position={[0, 3.2, 0]} rotation={[Math.PI, 0, 0]}>
+        <coneGeometry args={[2.1, 6.4, 20]} />
+        <meshStandardMaterial
+          color="#fbbf24"
+          metalness={0.85}
+          roughness={0.25}
+          transparent
+          opacity={0.88}
+        />
+      </mesh>
+      {/* Anillo indicador de extrusor activo (T0-T3) */}
+      <mesh position={[0, 1.4, 0]}>
+        <cylinderGeometry args={[1.45, 1.05, 1.1, 20]} />
+        <meshStandardMaterial
+          color={colorHex}
+          emissive={colorHex}
+          emissiveIntensity={0.85}
+          roughness={0.2}
+        />
+      </mesh>
+      {/* Bloque calefactor */}
+      <mesh position={[0, 9.2, 0]}>
+        <boxGeometry args={[11, 5.6, 11]} />
+        <meshStandardMaterial
+          color="#94a3b8"
+          metalness={0.75}
+          roughness={0.3}
+          transparent
+          opacity={0.75}
+        />
+      </mesh>
+      {/* Disipador superior */}
+      <mesh position={[0, 15.5, 0]}>
+        <cylinderGeometry args={[4.4, 4.4, 7.0, 20]} />
+        <meshStandardMaterial
+          color="#334155"
+          metalness={0.65}
+          roughness={0.35}
+          transparent
+          opacity={0.65}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 function GcodePreview({
   parsed,
   maxVisibleLayer,
+  stepIndex,
+  stepFraction = 0,
   showTravel,
   colorScheme,
   visibleRoles,
 }: {
   parsed: ParsedGcode;
   maxVisibleLayer: number;
+  stepIndex: number | null;
+  stepFraction?: number;
   showTravel: boolean;
   colorScheme: GcodeColorScheme;
   visibleRoles: Record<ExtrusionRoleId, boolean>;
@@ -1096,10 +1222,56 @@ function GcodePreview({
       ? parsed.layers[Math.min(parsed.layers.length - 1, Math.max(0, maxVisibleLayer - 1))]
       : null;
 
+  const layerStartSeg = activeLayer ? Math.floor(activeLayer.startIndex / 12) : 0;
+  const layerEndSeg = activeLayer ? Math.floor(activeLayer.endIndex / 12) : 0;
+  const layerSegCount = Math.max(0, layerEndSeg - layerStartSeg);
+  const clampedStep =
+    stepIndex === null ? layerSegCount : Math.max(0, Math.min(layerSegCount, stepIndex));
+  const clampedFrac =
+    stepIndex === null || clampedStep >= layerSegCount
+      ? 0
+      : Math.max(0, Math.min(0.9999, stepFraction));
+
+  const partialSegRef = useRef<{ segIdx: number; origEnd: Float32Array } | null>(null);
+
   useEffect(() => {
-    const endIdx = activeLayer ? activeLayer.endIndex : 0;
-    parsed.geometry.setDrawRange(0, endIdx);
-  }, [parsed, activeLayer]);
+    const posAttr = parsed.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+    const posArr = posAttr ? (posAttr.array as Float32Array) : null;
+    let posDirty = false;
+
+    if (partialSegRef.current && posArr) {
+      const prev = partialSegRef.current;
+      const prevBase = prev.segIdx * 6 * 3 + 9;
+      if (prevBase + 8 < posArr.length) {
+        posArr.set(prev.origEnd, prevBase);
+        posDirty = true;
+      }
+      partialSegRef.current = null;
+    }
+
+    if (activeLayer && posArr && clampedStep < layerSegCount && clampedFrac > 0.001) {
+      const activeSegIdx = layerStartSeg + clampedStep;
+      const pBase = activeSegIdx * 6 * 3;
+      if (pBase + 17 < posArr.length) {
+        const origEnd = posArr.slice(pBase + 9, pBase + 18);
+        partialSegRef.current = { segIdx: activeSegIdx, origEnd };
+        for (let k = 0; k < 9; k++) {
+          posArr[pBase + 9 + k] = posArr[pBase + k] + (origEnd[k] - posArr[pBase + k]) * clampedFrac;
+        }
+        posDirty = true;
+        parsed.geometry.setDrawRange(0, (layerStartSeg + clampedStep + 1) * 12);
+      } else {
+        parsed.geometry.setDrawRange(0, (layerStartSeg + clampedStep) * 12);
+      }
+    } else {
+      const endIdx = activeLayer ? (layerStartSeg + clampedStep) * 12 : 0;
+      parsed.geometry.setDrawRange(0, endIdx);
+    }
+
+    if (posDirty && posAttr) {
+      posAttr.needsUpdate = true;
+    }
+  }, [parsed, activeLayer, layerStartSeg, layerSegCount, clampedStep, clampedFrac]);
 
   useEffect(() => {
     const attr = parsed.geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
@@ -1125,15 +1297,67 @@ function GcodePreview({
 
   const travelGeo = useMemo(() => {
     const g = new THREE.BufferGeometry();
-    g.setAttribute(
-      'position',
-      new THREE.BufferAttribute(
-        showTravel && activeLayer ? activeLayer.travelPositions : new Float32Array(0),
-        3,
-      ),
-    );
+    let arr = new Float32Array(0);
+    if (showTravel && activeLayer) {
+      const full = activeLayer.travelPositions;
+      if (stepIndex === null || layerSegCount === 0 || clampedStep >= layerSegCount) {
+        arr = full;
+      } else {
+        const lineCount = Math.floor(full.length / 6);
+        const visibleLines = Math.round((clampedStep / layerSegCount) * lineCount);
+        arr = full.subarray(0, visibleLines * 6);
+      }
+    }
+    g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
     return g;
-  }, [activeLayer, showTravel]);
+  }, [activeLayer, showTravel, stepIndex, layerSegCount, clampedStep]);
+
+  const nozzleState = useMemo<{
+    pos: [number, number, number];
+    color: string;
+  } | null>(() => {
+    if (!activeLayer || layerSegCount === 0) return null;
+    const posAttr = parsed.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (!posAttr) return null;
+    const posArr = posAttr.array as Float32Array;
+    if (clampedStep < layerSegCount && clampedFrac > 0.001) {
+      const segIdx = layerStartSeg + clampedStep;
+      const pBase = segIdx * 6 * 3;
+      if (pBase + 14 >= posArr.length) return null;
+      const v1x = posArr[pBase + 3];
+      const v1y = posArr[pBase + 4];
+      const v1z = posArr[pBase + 5];
+      const partial = partialSegRef.current;
+      const v4x = partial && partial.segIdx === segIdx ? partial.origEnd[3] : posArr[pBase + 12];
+      const v4y = partial && partial.segIdx === segIdx ? partial.origEnd[4] : posArr[pBase + 13];
+      const v4z = partial && partial.segIdx === segIdx ? partial.origEnd[5] : posArr[pBase + 14];
+      const r = Math.round((parsed.toolColors[pBase + 3] ?? 0.13) * 255);
+      const g = Math.round((parsed.toolColors[pBase + 4] ?? 0.83) * 255);
+      const b = Math.round((parsed.toolColors[pBase + 5] ?? 0.93) * 255);
+      return {
+        pos: [
+          v1x + (v4x - v1x) * clampedFrac,
+          v1y + (v4y - v1y) * clampedFrac,
+          v1z + (v4z - v1z) * clampedFrac,
+        ],
+        color: `rgb(${r}, ${g}, ${b})`,
+      };
+    }
+
+    const isStart = clampedStep === 0;
+    const segIdx = isStart ? layerStartSeg : layerStartSeg + clampedStep - 1;
+    const pBase = segIdx * 6 * 3;
+    // Vértice 1 (inicio) o vértice 4 (fin) guardan la coordenada superior del cordón
+    const vOff = isStart ? pBase + 3 : pBase + 12;
+    if (vOff + 2 >= posArr.length) return null;
+    const r = Math.round((parsed.toolColors[vOff] ?? 0.13) * 255);
+    const g = Math.round((parsed.toolColors[vOff + 1] ?? 0.83) * 255);
+    const b = Math.round((parsed.toolColors[vOff + 2] ?? 0.93) * 255);
+    return {
+      pos: [posArr[vOff], posArr[vOff + 1], posArr[vOff + 2]],
+      color: `rgb(${r}, ${g}, ${b})`,
+    };
+  }, [parsed, activeLayer, layerStartSeg, layerSegCount, clampedStep, clampedFrac]);
 
   useEffect(() => {
     return () => {
@@ -1151,6 +1375,7 @@ function GcodePreview({
           side={THREE.DoubleSide}
         />
       </mesh>
+      {nozzleState && <NozzleHead3D position={nozzleState.pos} colorHex={nozzleState.color} />}
       {showTravel && (
         <lineSegments geometry={travelGeo}>
           <lineBasicMaterial color="#94a3b8" transparent opacity={0.45} />
@@ -1509,9 +1734,22 @@ export function Viewport3D({
     if (!gcodeText || !printer) return null;
     const offX = bedOrigin === 'center' ? 0 : bedWidth / 2;
     const offY = bedOrigin === 'center' ? 0 : bedDepth / 2;
-    return parseGcodeLayers(gcodeText, offX, offY, bedWidth, bedDepth, extruderColors);
+    return parseGcodeLayers(gcodeText, offX, offY, bedWidth, bedDepth, extruderColors, {
+      kinematics: printer.kinematics,
+      profileId: printer.profile_id,
+      printerId: printer.printer_id,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gcodeText, bedOrigin, bedWidth, bedDepth, extruderColorsKey]);
+  }, [
+    gcodeText,
+    bedOrigin,
+    bedWidth,
+    bedDepth,
+    extruderColorsKey,
+    printer?.kinematics,
+    printer?.profile_id,
+    printer?.printer_id,
+  ]);
 
   const isCreatorPrinter =
     printer?.profile_id === 'creator5_pro' || printer?.printer_id === 'creator5_pro';
@@ -1522,10 +1760,163 @@ export function Viewport3D({
       setViewMode('gcode');
       setColorScheme(isCreatorPrinter ? 'tool' : 'type');
       setVisibleRoles({ 0: true, 1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true });
+      setIsSimulatingLayer(false);
     } else {
       setViewMode('stl');
+      setIsSimulatingLayer(false);
     }
   }, [parsedGcode, isCreatorPrinter]);
+
+  const activeSimLayer =
+    parsedGcode && parsedGcode.layers.length > 0
+      ? parsedGcode.layers[Math.min(parsedGcode.layers.length - 1, Math.max(0, currentLayer - 1))]
+      : null;
+  const activeLayerSegCount = activeSimLayer
+    ? Math.max(0, Math.floor((activeSimLayer.endIndex - activeSimLayer.startIndex) / 12))
+    : 0;
+
+  const [layerStepIndex, setLayerStepIndex] = useState<number>(0);
+  const [layerSegFrac, setLayerSegFrac] = useState<number>(0);
+  const [isSimulatingLayer, setIsSimulatingLayer] = useState<boolean>(false);
+  const [simSpeed, setSimSpeed] = useState<1 | 5 | 15 | 50>(1);
+  const [autoAdvanceLayer, setAutoAdvanceLayer] = useState<boolean>(true);
+  const skipStepResetOnAutoAdvanceRef = useRef<boolean>(false);
+  const layerStepRef = useRef<{ step: number; frac: number }>({ step: 0, frac: 0 });
+  layerStepRef.current = { step: layerStepIndex, frac: layerSegFrac };
+
+  // Al cambiar manualmente de capa o cargar G-code, mostrar la capa al 100%
+  useEffect(() => {
+    if (skipStepResetOnAutoAdvanceRef.current) {
+      skipStepResetOnAutoAdvanceRef.current = false;
+      return;
+    }
+    setLayerStepIndex(activeLayerSegCount);
+    setLayerSegFrac(0);
+  }, [currentLayer, activeLayerSegCount]);
+
+  // Bucle de animación intra-capa basado en reloj real (deltaTime) y duración física por segmento
+  useEffect(() => {
+    if (
+      !isSimulatingLayer ||
+      viewMode !== 'gcode' ||
+      !parsedGcode ||
+      !activeSimLayer ||
+      activeLayerSegCount === 0
+    ) {
+      return;
+    }
+    let rafId = 0;
+    let lastTs = performance.now();
+    const totalL = parsedGcode.layers.length;
+    const layerStartSeg = Math.floor(activeSimLayer.startIndex / 12);
+    const durations = parsedGcode.segmentDurationsSec;
+
+    let curStep = Math.max(0, Math.min(activeLayerSegCount - 1, layerStepRef.current.step));
+    const initDur = Math.max(1e-4, durations[layerStartSeg + curStep] ?? 0.05);
+    let elapsedInSeg = Math.max(0, Math.min(initDur, layerStepRef.current.frac * initDur));
+
+    const tick = (now: number) => {
+      const dtReal = Math.min(0.1, Math.max(0, (now - lastTs) / 1000));
+      lastTs = now;
+      let simDeltaSeconds = dtReal * simSpeed;
+
+      while (simDeltaSeconds > 0 && curStep < activeLayerSegCount) {
+        const segDur = Math.max(1e-4, durations[layerStartSeg + curStep] ?? 0.05);
+        const rem = segDur - elapsedInSeg;
+        if (simDeltaSeconds >= rem) {
+          simDeltaSeconds -= rem;
+          curStep += 1;
+          elapsedInSeg = 0;
+        } else {
+          elapsedInSeg += simDeltaSeconds;
+          simDeltaSeconds = 0;
+        }
+      }
+
+      if (curStep >= activeLayerSegCount) {
+        if (autoAdvanceLayer && currentLayer < totalL) {
+          skipStepResetOnAutoAdvanceRef.current = true;
+          setLayerStepIndex(0);
+          setLayerSegFrac(0);
+          setCurrentLayer((c) => Math.min(totalL, c + 1));
+          return;
+        }
+        setLayerStepIndex(activeLayerSegCount);
+        setLayerSegFrac(0);
+        setIsSimulatingLayer(false);
+        return;
+      }
+
+      const activeDur = Math.max(1e-4, durations[layerStartSeg + curStep] ?? 0.05);
+      setLayerStepIndex(curStep);
+      setLayerSegFrac(Math.min(0.9999, Math.max(0, elapsedInSeg / activeDur)));
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [
+    isSimulatingLayer,
+    viewMode,
+    parsedGcode,
+    activeSimLayer,
+    activeLayerSegCount,
+    simSpeed,
+    autoAdvanceLayer,
+    currentLayer,
+  ]);
+
+  const activeSegSpeedMmS = useMemo(() => {
+    if (!parsedGcode || !activeSimLayer || activeLayerSegCount === 0) return 0;
+    const layerStartSeg = Math.floor(activeSimLayer.startIndex / 12);
+    const localIdx = Math.min(
+      activeLayerSegCount - 1,
+      Math.max(0, layerStepIndex >= activeLayerSegCount ? activeLayerSegCount - 1 : layerStepIndex),
+    );
+    return Math.round(parsedGcode.segmentSpeedsMmS[layerStartSeg + localIdx] ?? 0);
+  }, [parsedGcode, activeSimLayer, activeLayerSegCount, layerStepIndex]);
+
+  const handleTogglePlaySimulation = useCallback(() => {
+    if (viewMode !== 'gcode' || activeLayerSegCount === 0) return;
+    if (isSimulatingLayer) {
+      setIsSimulatingLayer(false);
+      return;
+    }
+    if (layerStepRef.current.step >= activeLayerSegCount) {
+      setLayerStepIndex(0);
+      setLayerSegFrac(0);
+    }
+    setIsSimulatingLayer(true);
+  }, [viewMode, activeLayerSegCount, isSimulatingLayer]);
+
+  const handleStepForwardSimulation = useCallback(() => {
+    if (viewMode !== 'gcode' || !parsedGcode || activeLayerSegCount === 0) return;
+    setIsSimulatingLayer(false);
+    setLayerSegFrac(0);
+    setLayerStepIndex((prev) => {
+      if (prev < activeLayerSegCount) return prev + 1;
+      if (currentLayer < parsedGcode.layers.length) {
+        skipStepResetOnAutoAdvanceRef.current = true;
+        setCurrentLayer((c) => c + 1);
+        return 0;
+      }
+      return prev;
+    });
+  }, [viewMode, parsedGcode, activeLayerSegCount, currentLayer]);
+
+  // Atajo Barra Espaciadora en Vista de laminado para Play/Pausa
+  useEffect(() => {
+    if (viewMode !== 'gcode') return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.code !== 'Space') return;
+      const tag = (ev.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button') return;
+      ev.preventDefault();
+      handleTogglePlaySimulation();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [viewMode, handleTogglePlaySimulation]);
 
   const applyGroupMoveDelta = useCallback(
     (dx: number, dy: number, dz = 0) => {
@@ -3317,6 +3708,8 @@ export function Viewport3D({
           <GcodePreview
             parsed={parsedGcode}
             maxVisibleLayer={currentLayer}
+            stepIndex={layerStepIndex}
+            stepFraction={layerSegFrac}
             showTravel={showTravel}
             colorScheme={colorScheme}
             visibleRoles={visibleRoles}
@@ -3332,6 +3725,82 @@ export function Viewport3D({
           maxDistance={1400}
         />
       </Canvas>
+
+      {/* Simulador Horizontal Intra-Capa en Vista de Laminado */}
+      {viewMode === 'gcode' && parsedGcode && totalLayers > 0 && (
+        <div className="pointer-events-auto absolute inset-x-4 bottom-3 z-20 mx-auto flex max-w-2xl flex-wrap items-center gap-2.5 rounded-2xl border border-slate-700/80 bg-slate-900/92 px-3.5 py-2 text-xs shadow-2xl backdrop-blur">
+          <button
+            type="button"
+            onClick={handleTogglePlaySimulation}
+            title={isSimulatingLayer ? t.simulator.pause : t.simulator.play}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-cyan-500 text-slate-950 shadow-sm transition hover:bg-cyan-400"
+          >
+            {isSimulatingLayer ? (
+              <Pause className="h-3.5 w-3.5 fill-current" />
+            ) : (
+              <Play className="h-3.5 w-3.5 translate-x-0.5 fill-current" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleStepForwardSimulation}
+            title={t.simulator.nextStep}
+            className="flex h-7 items-center gap-1 rounded-lg border border-slate-700 bg-slate-950 px-2 text-[10px] font-semibold text-slate-200 transition hover:border-cyan-500/60 hover:text-cyan-200"
+          >
+            <StepForward className="h-3 w-3" />
+            <span className="hidden sm:inline">{t.simulator.stepLabel}</span>
+          </button>
+
+          <div className="flex min-w-[140px] flex-1 items-center gap-2">
+            <input
+              type="range"
+              min={0}
+              max={Math.max(1, activeLayerSegCount)}
+              value={Math.min(layerStepIndex, activeLayerSegCount)}
+              onChange={(e) => {
+                setIsSimulatingLayer(false);
+                setLayerSegFrac(0);
+                setLayerStepIndex(Number(e.target.value));
+              }}
+              aria-label={t.simulator.simulateLayer}
+              className="h-1.5 flex-1 cursor-pointer accent-cyan-400"
+            />
+            <span className="shrink-0 text-right font-mono text-[10px] text-slate-300">
+              {Math.min(layerStepIndex, activeLayerSegCount)}/{activeLayerSegCount}
+              <span className="ml-1.5 text-cyan-300">{activeSegSpeedMmS} mm/s</span>
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950 p-0.5">
+            {([1, 5, 15, 50] as const).map((spd) => (
+              <button
+                key={spd}
+                type="button"
+                onClick={() => setSimSpeed(spd)}
+                title={spd === 1 ? t.simulator.realTimeTooltip : `${t.simulator.speed}: ${spd}x`}
+                className={`rounded-md px-1.5 py-0.5 font-mono text-[10px] font-semibold transition ${
+                  simSpeed === spd
+                    ? 'bg-cyan-500/25 text-cyan-200'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {spd}x
+              </button>
+            ))}
+          </div>
+
+          <label className="flex cursor-pointer items-center gap-1.5 text-[10px] font-medium text-slate-300 select-none">
+            <input
+              type="checkbox"
+              checked={autoAdvanceLayer}
+              onChange={(e) => setAutoAdvanceLayer(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-950 accent-cyan-400"
+            />
+            <span>{t.simulator.autoAdvance}</span>
+          </label>
+        </div>
+      )}
 
       {/* Overlay de carga UX solo en la carga inicial de un archivo nuevo (nunca al re-escalar o rotar) */}
       {stlFile &&

@@ -52,11 +52,20 @@ export interface ParsedGcodeStats {
   roleStats: RoleBreakdownItem[];
 }
 
+export interface GcodePrinterCalibration {
+  kinematics?: string;
+  profileId?: string;
+  printerId?: string;
+  nominalSpeedMmS?: number;
+}
+
 export interface ParsedGcode {
   layers: ParsedLayer[];
   geometry: THREE.BufferGeometry;
   baseIndices: Uint32Array;
   segmentRoles: Uint8Array;
+  segmentDurationsSec: Float32Array;
+  segmentSpeedsMmS: Float32Array;
   typeColors: Float32Array;
   toolColors: Float32Array;
   speedColors: Float32Array;
@@ -196,6 +205,30 @@ export function formatDurationCompact(totalSec: number): string {
   return `${s}s`;
 }
 
+function resolvePrinterKinematicsCalibration(cal?: GcodePrinterCalibration): {
+  nominalSpeedMmS: number;
+  accelFactor: number;
+} {
+  const kin = (cal?.kinematics ?? '').toLowerCase();
+  const idStr = `${cal?.profileId ?? ''} ${cal?.printerId ?? ''}`.toLowerCase();
+  if (kin === 'delta' || idStr.includes('flsun') || idStr.includes('t1')) {
+    return {
+      nominalSpeedMmS: cal?.nominalSpeedMmS && cal.nominalSpeedMmS > 0 ? cal.nominalSpeedMmS : 600,
+      accelFactor: 1.1,
+    };
+  }
+  if (kin === 'corexy' || idStr.includes('creator')) {
+    return {
+      nominalSpeedMmS: cal?.nominalSpeedMmS && cal.nominalSpeedMmS > 0 ? cal.nominalSpeedMmS : 250,
+      accelFactor: 1.18,
+    };
+  }
+  return {
+    nominalSpeedMmS: cal?.nominalSpeedMmS && cal.nominalSpeedMmS > 0 ? cal.nominalSpeedMmS : 60,
+    accelFactor: 1.35,
+  };
+}
+
 export function parseGcodeLayers(
   gcodeText: string,
   expectedCenterX: number,
@@ -203,7 +236,9 @@ export function parseGcodeLayers(
   bedSpanX = 260,
   bedSpanY = 260,
   overrideExtruderColors?: string[],
+  printerCal?: GcodePrinterCalibration,
 ): ParsedGcode {
+  const { nominalSpeedMmS, accelFactor } = resolvePrinterKinematicsCalibration(printerCal);
   let curX = expectedCenterX;
   let curY = expectedCenterY;
   let curZ = 0;
@@ -219,8 +254,9 @@ export function parseGcodeLayers(
   let currentTool = 0;
   let currentWidth = 0.42;
   let currentHeight = 0.22;
-  let currentSpeedMmS = 60.0;
+  let currentSpeedMmS = nominalSpeedMmS;
   let currentTempC = 215.0;
+  let pendingToolChangeSec = 0;
 
   const headerColors = [...DEFAULT_EXTRUDER_COLORS];
 
@@ -229,9 +265,11 @@ export function parseGcodeLayers(
   const segMeta: number[] = [];
   const segFlowVals: number[] = [];
   const segSpeedVals: number[] = [];
+  const segDurVals: number[] = [];
   const segTempVals: number[] = [];
   const layerZs: number[] = [];
   const layerTravels: number[][] = [];
+  const layerElapsedMarks: (number | null)[] = [];
 
   const roleVolMm3 = new Float64Array(8);
   const roleTimeSec = new Float64Array(8);
@@ -270,6 +308,7 @@ export function parseGcodeLayers(
       currentLayerIdx = layerZs.length;
       layerZs.push(zVal);
       layerTravels.push([]);
+      layerElapsedMarks.push(null);
     }
     return currentLayerIdx;
   };
@@ -291,12 +330,15 @@ export function parseGcodeLayers(
     const volMm3 =
       dEVal > 0 ? FILAMENT_CROSS_SECTION_MM2 * dEVal : segLen * currentWidth * currentHeight;
     const timeSec = segLen / effSpeed;
+    const durationSec = timeSec * accelFactor + pendingToolChangeSec;
+    pendingToolChangeSec = 0;
     const flowMm3S = Math.min(80, Math.max(0.1, volMm3 / Math.max(1e-4, timeSec)));
 
     segCoords.push(x1, y1, z1, x2, y2, z2);
     segDims.push(currentWidth, currentHeight);
     segMeta.push(currentType, currentTool, lIdx);
     segSpeedVals.push(effSpeed);
+    segDurVals.push(durationSec);
     segFlowVals.push(flowMm3S);
     segTempVals.push(tempVal);
     roleSegs[currentType]++;
@@ -468,8 +510,14 @@ export function parseGcodeLayers(
           currentLayerIdx = layerZs.length;
           layerZs.push(parsedZ);
           layerTravels.push([]);
+          layerElapsedMarks.push(null);
         }
         waitingLayerZ = false;
+      } else if (raw.startsWith(';TIME_ELAPSED:')) {
+        const tElapsed = parseFloat(raw.slice(14));
+        if (Number.isFinite(tElapsed) && tElapsed >= 0 && currentLayerIdx >= 0) {
+          layerElapsedMarks[currentLayerIdx] = tElapsed;
+        }
       } else if (raw.startsWith(';WIDTH:')) {
         const w = parseFloat(raw.slice(7));
         if (Number.isFinite(w) && w >= 0.15 && w <= 1.8) currentWidth = w;
@@ -501,7 +549,11 @@ export function parseGcodeLayers(
       const mTool = /^T([0-3])(?:\s|$)/i.exec(codeOnly);
       if (mTool) {
         flushChain();
-        currentTool = parseInt(mTool[1], 10);
+        const nextTool = parseInt(mTool[1], 10);
+        if (nextTool !== currentTool) {
+          pendingToolChangeSec += 1.5;
+        }
+        currentTool = nextTool;
         continue;
       }
     }
@@ -734,6 +786,8 @@ export function parseGcodeLayers(
   const baseIndices = new Uint32Array(segCount * 12);
   const indices = new Uint32Array(segCount * 12);
   const segmentRoles = new Uint8Array(segCount);
+  const segmentDurationsSec = new Float32Array(segCount);
+  const segmentSpeedsMmS = new Float32Array(segCount);
 
   const layerCounts = new Int32Array(layerZs.length);
   for (let i = 0; i < segCount; i++) {
@@ -768,6 +822,8 @@ export function parseGcodeLayers(
     const kind = segMeta[mOff] as ExtrusionRoleId;
     const tool = segMeta[mOff + 1];
     segmentRoles[outSegIdx] = kind;
+    segmentDurationsSec[outSegIdx] = Math.max(1e-4, segDurVals[i] ?? 0.01);
+    segmentSpeedsMmS[outSegIdx] = segSpeedVals[i] ?? nominalSpeedMmS;
 
     const dx = x2 - x1;
     const dz = z2 - z1;
@@ -887,9 +943,34 @@ export function parseGcodeLayers(
 
   const layers: ParsedLayer[] = [];
   let maxZ = 0;
+  let prevElapsedMark = 0;
   for (let l = 0; l < layerZs.length; l++) {
     const cnt = layerCounts[l];
-    if (cnt === 0) continue;
+    const mark = layerElapsedMarks[l];
+    if (cnt === 0) {
+      if (mark !== null && Number.isFinite(mark) && mark > prevElapsedMark) {
+        prevElapsedMark = mark;
+      }
+      continue;
+    }
+
+    if (mark !== null && Number.isFinite(mark) && mark > prevElapsedMark) {
+      const targetLayerSec = mark - prevElapsedMark;
+      prevElapsedMark = mark;
+      const startSeg = layerSegStarts[l];
+      const endSeg = startSeg + cnt;
+      let rawLayerSec = 0;
+      for (let s = startSeg; s < endSeg; s++) {
+        rawLayerSec += segmentDurationsSec[s];
+      }
+      if (targetLayerSec > 0.05 && rawLayerSec > 0.05) {
+        const scale = targetLayerSec / rawLayerSec;
+        for (let s = startSeg; s < endSeg; s++) {
+          segmentDurationsSec[s] = Math.max(1e-4, segmentDurationsSec[s] * scale);
+        }
+      }
+    }
+
     const zVal = layerZs[l];
     if (zVal > maxZ) maxZ = zVal;
 
@@ -945,6 +1026,8 @@ export function parseGcodeLayers(
     geometry,
     baseIndices,
     segmentRoles,
+    segmentDurationsSec,
+    segmentSpeedsMmS,
     typeColors,
     toolColors,
     speedColors,

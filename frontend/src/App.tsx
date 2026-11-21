@@ -831,6 +831,8 @@ export function App() {
     rotX: rx,
     rotY: ry,
     rotZ: rz,
+    offsetX: 0,
+    offsetY: 0,
     offsetZ: 0,
     dropToBed: true,
     ...(prev.instances && prev.instances.length > 0
@@ -840,6 +842,8 @@ export function App() {
             rot_x: rx,
             rot_y: ry,
             rot_z: rz,
+            offset_x: 0,
+            offset_y: 0,
             offset_z: 0,
             drop_to_bed: true,
           })),
@@ -894,6 +898,18 @@ export function App() {
   const handleSelectOrientation = (opt: OrientationOption) => {
     setSelectedOrientationId(opt.id);
     setAutoOrientMsg(`${opt.title}: ${opt.explanation}`);
+    if (sceneObjects.length > 0) {
+      setSceneObjects((prev) =>
+        prev.map((obj) => ({
+          ...obj,
+          rot_x: opt.rotation.rx,
+          rot_y: opt.rotation.ry,
+          rot_z: opt.rotation.rz,
+          offset_z: 0,
+          drop_to_bed: true,
+        })),
+      );
+    }
     handleChangeTransform(
       applyRotationToTransform(
         transform,

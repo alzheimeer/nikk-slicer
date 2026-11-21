@@ -883,6 +883,7 @@ export interface OrientationOption {
   stability_warning?: string | null;
   fits_bed: boolean;
   is_recommended: boolean;
+  quaternion?: number[] | null;
 }
 
 export interface AIOrientationsResponse {
