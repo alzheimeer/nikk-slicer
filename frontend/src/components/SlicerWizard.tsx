@@ -546,6 +546,9 @@ interface SlicerWizardProps {
   onAnalyzeModelAI: () => void;
   isAnalyzingAI: boolean;
   aiAnalysisResult: AIAnalyzeModelResponse | null;
+  aiQualityOverrides?: string[];
+  onToggleAiQualityOverride?: (id: string) => void;
+  onClearAiQualityOverrides?: () => void;
   onOptimizeSliceWithAI: (presetId: string, userNotes?: string, targetLayerHeight?: number) => void;
   isOptimizingSliceAI: boolean;
   aiOptimizeComparison: {
@@ -694,6 +697,9 @@ export function SlicerWizard({
   onAnalyzeModelAI,
   isAnalyzingAI,
   aiAnalysisResult,
+  aiQualityOverrides = [],
+  onToggleAiQualityOverride,
+  onClearAiQualityOverrides,
   onOptimizeSliceWithAI,
   isOptimizingSliceAI,
   aiOptimizeComparison,
@@ -3068,37 +3074,93 @@ export function SlicerWizard({
                         Opciones Fijas Contextuales
                       </p>
                       <div className="grid grid-cols-1 gap-1">
-                        {aiAnalysisResult.contextual_options.map((opt) => (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            disabled={isOptimizingSliceAI || isSlicing}
-                            onClick={() => {
-                              setInstantOverlayMode('ai_optimize');
-                              onOptimizeSliceWithAI(
-                                opt.preset_id,
-                                aiUserNotes,
-                                opt.layer_height,
-                              );
-                            }}
-                            className="flex w-full flex-col items-start rounded-lg border border-slate-800 bg-slate-900/90 px-2.5 py-1.5 text-left transition hover:border-cyan-500/50 hover:bg-cyan-500/10 disabled:opacity-45"
-                          >
-                            <div className="flex w-full items-center justify-between gap-1">
-                              <span className="text-[10px] font-semibold text-slate-100">
-                                {opt.label}
+                        {aiAnalysisResult.contextual_options.map((opt) => {
+                          const overridesList = opt.quality_overrides ?? [];
+                          const isOverrideOption = overridesList.length > 0;
+                          const isSelectedOverride =
+                            isOverrideOption &&
+                            overridesList.every((ov) => aiQualityOverrides.includes(ov));
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              disabled={isOptimizingSliceAI || isSlicing}
+                              onClick={() => {
+                                if (isOverrideOption && onToggleAiQualityOverride) {
+                                  overridesList.forEach((ov) => onToggleAiQualityOverride(ov));
+                                  return;
+                                }
+                                setInstantOverlayMode('ai_optimize');
+                                onOptimizeSliceWithAI(
+                                  opt.preset_id,
+                                  aiUserNotes,
+                                  opt.layer_height,
+                                );
+                              }}
+                              className={`flex w-full flex-col items-start rounded-lg border px-2.5 py-1.5 text-left transition disabled:opacity-45 ${
+                                isSelectedOverride
+                                  ? 'border-emerald-400/70 bg-emerald-500/15 ring-1 ring-emerald-400/40'
+                                  : 'border-slate-800 bg-slate-900/90 hover:border-cyan-500/50 hover:bg-cyan-500/10'
+                              }`}
+                            >
+                              <div className="flex w-full items-center justify-between gap-1">
+                                <span className="text-[10px] font-semibold text-slate-100">
+                                  {isSelectedOverride ? '✓ ' : ''}
+                                  {opt.label}
+                                </span>
+                                <span className="shrink-0 font-mono text-[9px] font-semibold text-amber-200">
+                                  {opt.estimated_time_str}
+                                </span>
+                              </div>
+                              <span className="font-mono text-[9px] text-cyan-300">
+                                {opt.layer_height.toFixed(2)} mm · {opt.calibrated_speed_mms} mm/s ·{' '}
+                                {opt.calibrated_temp_c}°C
                               </span>
-                              <span className="shrink-0 font-mono text-[9px] font-semibold text-amber-200">
-                                {opt.estimated_time_str}
-                              </span>
-                            </div>
-                            <span className="font-mono text-[9px] text-cyan-300">
-                              {opt.layer_height.toFixed(2)} mm · {opt.calibrated_speed_mms} mm/s ·{' '}
-                              {opt.calibrated_temp_c}°C
-                            </span>
-                            <span className="text-[9px] text-slate-400">{opt.description}</span>
-                          </button>
-                        ))}
+                              <span className="text-[9px] text-slate-400">{opt.description}</span>
+                            </button>
+                          );
+                        })}
                       </div>
+                      {aiQualityOverrides.length > 0 && (
+                        <div className="mt-1.5 space-y-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/25 p-2">
+                          <div className="flex flex-wrap items-center justify-between gap-1">
+                            <div className="flex flex-wrap gap-1">
+                              {aiQualityOverrides.map((ov) => (
+                                <span
+                                  key={ov}
+                                  className="rounded-full border border-emerald-500/45 bg-emerald-500/20 px-2 py-0.5 text-[9px] font-semibold text-emerald-200"
+                                >
+                                  {ov === 'adaptive_layers'
+                                    ? 'Capa Adaptativa'
+                                    : ov === 'dense_support_interface'
+                                      ? 'Soportes Anti-Cicatriz'
+                                      : ov === 'high_contrast_purge'
+                                        ? 'Purga 1.35×'
+                                        : 'Acabado Completo'}
+                                </span>
+                              ))}
+                            </div>
+                            {onClearAiQualityOverrides && (
+                              <button
+                                type="button"
+                                onClick={onClearAiQualityOverrides}
+                                className="text-[9px] text-slate-400 hover:text-slate-200"
+                              >
+                                Limpiar
+                              </button>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isSlicing || isOptimizingSliceAI}
+                            onClick={() => onSlice()}
+                            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-2.5 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
+                          >
+                            <Sparkles className="h-3.5 w-3.5" />
+                            Re-laminar con Mejora Seleccionada
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
 

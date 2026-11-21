@@ -328,6 +328,7 @@ export interface SlicePayload {
   part_extruder_map?: Record<string, number>;
   layer_pauses?: LayerPauseItem[];
   scene_objects?: SceneObjectTransform[];
+  quality_overrides?: string[];
 }
 
 export interface SliceResponse {
@@ -889,6 +890,8 @@ export interface AIOrientationsResponse {
   model_name: string;
   is_multicolor: boolean;
   multicolor_parts_count: number;
+  hero_face_detected?: boolean;
+  hero_face_normal?: number[] | null;
   ai_provider: 'GEMINI_API' | 'DEEPSEEK_API' | 'HEURISTICA_LOCAL';
   recommended_id: string;
   options: OrientationOption[];
@@ -1021,6 +1024,7 @@ export interface AISubOption {
   calibrated_temp_c: number;
   estimated_time_str: string;
   estimated_time_seconds: number;
+  quality_overrides?: string[];
 }
 
 export interface AILayerResolutionGroup {
@@ -1375,6 +1379,9 @@ export async function sliceModel(
   if (payload.scene_objects && payload.scene_objects.length > 0) {
     form.append('scene_objects_json', JSON.stringify(payload.scene_objects));
   }
+  if (payload.quality_overrides && payload.quality_overrides.length > 0) {
+    form.append('quality_overrides_json', JSON.stringify(payload.quality_overrides));
+  }
 
   const res = await fetchWithTimeout(
     `${API_BASE_URL}/slice`,
@@ -1383,7 +1390,7 @@ export async function sliceModel(
       body: form,
       signal,
     },
-    180000,
+    360000,
   );
   if (!res.ok) {
     throw new Error(await parseError(res));

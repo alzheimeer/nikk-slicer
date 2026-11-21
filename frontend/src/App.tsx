@@ -292,6 +292,7 @@ export function App() {
   const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
   const [aiAnalysisResult, setAiAnalysisResult] =
     useState<AIAnalyzeModelResponse | null>(null);
+  const [aiQualityOverrides, setAiQualityOverrides] = useState<string[]>([]);
   const [isOptimizingSliceAI, setIsOptimizingSliceAI] = useState(false);
   const [aiOptimizeComparison, setAiOptimizeComparison] = useState<{
     strategyLabel: string;
@@ -1183,6 +1184,7 @@ export function App() {
       file: effMeshId ? null : stlFile,
       transform: overrides?.transformOverride ?? transform,
       layer_pauses: layerPauses,
+      ...(aiQualityOverrides.length > 0 ? { quality_overrides: aiQualityOverrides } : {}),
       ...(sceneObjects.length > 0 ? { scene_objects: sceneObjects } : {}),
       ...(activeProfileId === 'creator5_pro'
         ? {
@@ -1732,6 +1734,14 @@ export function App() {
         parts_count: analysis.multimaterial_parts?.length ?? 1,
         is_multicolor: Boolean(analysis.is_multicolor),
         detected_extruder_count: analysis.detected_extruder_count ?? 1,
+        has_supports: Boolean(supports),
+        layer_height: layerHeightOverride ?? undefined,
+        color_list: extrudersConfig.map((e) => e.color_hex),
+        hero_face_detected:
+          Boolean(analysis.is_multicolor) ||
+          /robot|char|fig|head|bust|mini|toy|personaje|figura|sheep|oveja/i.test(
+            stlFile?.name || '',
+          ),
         current_slice_metrics: {
           estimated_time: effSlice.estimated_time,
           estimated_time_seconds: effSlice.estimated_time_seconds,
@@ -2882,6 +2892,13 @@ export function App() {
             }}
             isAnalyzingAI={isAnalyzingAI}
             aiAnalysisResult={aiAnalysisResult}
+            aiQualityOverrides={aiQualityOverrides}
+            onToggleAiQualityOverride={(ovId: string) => {
+              setAiQualityOverrides((prev) =>
+                prev.includes(ovId) ? prev.filter((x) => x !== ovId) : [...prev, ovId],
+              );
+            }}
+            onClearAiQualityOverrides={() => setAiQualityOverrides([])}
             onOptimizeSliceWithAI={handleOptimizeSliceWithAI}
             isOptimizingSliceAI={isOptimizingSliceAI}
             aiOptimizeComparison={aiOptimizeComparison}

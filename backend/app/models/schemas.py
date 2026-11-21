@@ -261,6 +261,7 @@ class SliceRequest(BaseModel):
     part_extruder_map: dict[str, int] = Field(default_factory=dict)
     layer_pauses: list["LayerPauseItem"] = Field(default_factory=list)
     scene_objects: list["SceneObjectTransform"] = Field(default_factory=list)
+    quality_overrides: list[str] = Field(default_factory=list)
 
 
 class SceneObjectTransform(BaseModel):
@@ -439,6 +440,10 @@ class AIAnalyzeModelRequest(BaseModel):
     parts_count: int = 1
     is_multicolor: bool = False
     detected_extruder_count: int = 1
+    has_supports: bool = False
+    layer_height: float | None = None
+    color_list: list[str] = Field(default_factory=list)
+    hero_face_detected: bool = False
     current_slice_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -463,6 +468,7 @@ class AISubOption(BaseModel):
     calibrated_temp_c: int = 215
     estimated_time_str: str
     estimated_time_seconds: int
+    quality_overrides: list[str] = Field(default_factory=list)
 
 
 class AILayerResolutionGroup(BaseModel):
@@ -475,6 +481,7 @@ class AILayerResolutionGroup(BaseModel):
     calibrated_temp_c: int = 215
     estimated_time_str: str
     estimated_time_seconds: int
+    quality_overrides: list[str] = Field(default_factory=list)
     is_recommended: bool = False
     options: list[AISubOption] = Field(default_factory=list)
 
@@ -599,6 +606,8 @@ class AIOrientationsResponse(BaseModel):
     is_multicolor: bool = False
     multicolor_parts_count: int = 1
     ai_provider: Literal["GEMINI_API", "DEEPSEEK_API", "HEURISTICA_LOCAL"] = "HEURISTICA_LOCAL"
+    hero_face_detected: bool = False
+    hero_face_normal: list[float] | None = None
     recommended_id: str = "original"
     options: list[OrientationOption] = Field(default_factory=list)
 

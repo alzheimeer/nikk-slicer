@@ -1316,6 +1316,11 @@ def _build_contextual_fixed_options(
     material: str,
     nozzle_diameter: float,
     high_speed: bool,
+    has_supports: bool = False,
+    is_multicolor: bool = False,
+    hero_face_detected: bool = False,
+    current_layer_height: float | None = None,
+    color_list: list[str] | None = None,
 ) -> list[AISubOption]:
     mat = material if material in ("pla", "petg", "abs", "tpu") else "pla"
     limits = get_machine_thermal_kinematic_limits(printer_id)
@@ -1349,6 +1354,72 @@ def _build_contextual_fixed_options(
         ]
 
     out: list[AISubOption] = []
+    # Opciones de mejora real vinculadas a quality_overrides en json_patcher.py
+    eff_lh = round(float(current_layer_height or (0.12 if category == "character_organic" else 0.20)), 2)
+    base_spd, base_temp = _calibrated_speed_and_temp_for_layer(
+        printer_id, mat, nozzle_diameter, eff_lh, high_speed=high_speed, speed_factor=0.80
+    )
+    if hero_face_detected or category == "character_organic":
+        out.append(
+            AISubOption(
+                id="qo_adaptive_layers",
+                label="Capa Adaptativa Rostro/Curvas (0.10–0.24 mm)",
+                description="Suaviza rostro y cúpulas a 0.10–0.12 mm manteniendo velocidad en el cuerpo.",
+                preset_id="estandar",
+                layer_height=eff_lh,
+                calibrated_speed_mms=base_spd,
+                calibrated_temp_c=base_temp,
+                estimated_time_str=_format_hms(max(120, int(round(base_seconds * 1.15)))),
+                estimated_time_seconds=max(120, int(round(base_seconds * 1.15))),
+                quality_overrides=["adaptive_layers"],
+            )
+        )
+    if has_supports or mat == "petg":
+        out.append(
+            AISubOption(
+                id="qo_dense_support_interface",
+                label="Soportes Limpios PETG / Anti-Cicatriz",
+                description="Interfaz densa rectilínea 3 capas (0.2 mm), Z 0.16 mm, puente 25 mm/s y 85% fan.",
+                preset_id="estandar",
+                layer_height=eff_lh,
+                calibrated_speed_mms=base_spd,
+                calibrated_temp_c=base_temp,
+                estimated_time_str=_format_hms(max(120, int(round(base_seconds * 1.05)))),
+                estimated_time_seconds=max(120, int(round(base_seconds * 1.05))),
+                quality_overrides=["dense_support_interface"],
+            )
+        )
+    if is_multicolor or (color_list and len(color_list) > 1):
+        out.append(
+            AISubOption(
+                id="qo_high_contrast_purge",
+                label="Purga Reforzada Oscuro → Claro (1.35×)",
+                description="Multiplica flush_multiplier a 1.35× en cambios oscuro→claro y evita cruzar perímetros.",
+                preset_id="estandar",
+                layer_height=eff_lh,
+                calibrated_speed_mms=base_spd,
+                calibrated_temp_c=base_temp,
+                estimated_time_str=_format_hms(max(120, int(round(base_seconds * 1.08)))),
+                estimated_time_seconds=max(120, int(round(base_seconds * 1.08))),
+                quality_overrides=["high_contrast_purge"],
+            )
+        )
+    if category != "lithophane_flat" and (hero_face_detected or has_supports or is_multicolor):
+        out.append(
+            AISubOption(
+                id="qo_full_character_polish",
+                label="Acabado Profesional Completo (Todo en 1)",
+                description="Combina Capa Adaptativa + Soportes Anti-Cicatriz + Purga Reforzada 1.35×.",
+                preset_id="estandar",
+                layer_height=eff_lh,
+                calibrated_speed_mms=base_spd,
+                calibrated_temp_c=base_temp,
+                estimated_time_str=_format_hms(max(120, int(round(base_seconds * 1.22)))),
+                estimated_time_seconds=max(120, int(round(base_seconds * 1.22))),
+                quality_overrides=["full_character_polish"],
+            )
+        )
+
     for pid, lbl, desc, lh, mult, spd_fac in specs:
         sec = max(120, int(round(base_seconds * mult)))
         spd, temp = _calibrated_speed_and_temp_for_layer(
@@ -1440,6 +1511,10 @@ def analyze_model_for_ai(req: AIAnalyzeModelRequest) -> AIAnalyzeModelResponse:
         "volume_cm3": round(req.volume_cm3, 2),
         "overhang_ratio": round(req.overhang_ratio, 3),
         "is_multicolor": req.is_multicolor,
+        "has_supports": req.has_supports,
+        "layer_height": req.layer_height,
+        "color_list": req.color_list,
+        "hero_face_detected": req.hero_face_detected,
     }
     prompt = (
         "Eres un ingeniero experto en impresión 3D FDM.\n"
@@ -1510,6 +1585,11 @@ def analyze_model_for_ai(req: AIAnalyzeModelRequest) -> AIAnalyzeModelResponse:
         material=eff_mat,
         nozzle_diameter=req.nozzle_diameter,
         high_speed=req.high_speed_filament,
+        has_supports=req.has_supports,
+        is_multicolor=req.is_multicolor,
+        hero_face_detected=req.hero_face_detected or (category == "character_organic"),
+        current_layer_height=req.layer_height,
+        color_list=req.color_list,
     )
 
     min_h = min(allowed_by_cat[category])
@@ -2006,6 +2086,8 @@ def evaluate_orientations_with_ai(
     is_multicolor = bool(geom_result.get("is_multicolor"))
     multicolor_parts = int(geom_result.get("multicolor_parts_count") or 1)
     model_name = str(geom_result.get("model_name") or "modelo")
+    hero_face_detected = bool(geom_result.get("hero_face_detected"))
+    hero_face_normal = geom_result.get("hero_face_normal")
 
     prompt_ctx = {
         "model_name": model_name,
@@ -2013,6 +2095,8 @@ def evaluate_orientations_with_ai(
         "material": material.upper(),
         "is_multicolor": is_multicolor,
         "multicolor_parts_count": multicolor_parts,
+        "hero_face_detected": hero_face_detected,
+        "hero_face_normal": hero_face_normal,
         "options": [
             {
                 "id": o["id"],
@@ -2024,6 +2108,7 @@ def evaluate_orientations_with_ai(
                 "stability_warning": o.get("stability_warning"),
                 "estimated_time_delta_pct": o["estimated_time_delta_pct"],
                 "fits_bed": o["fits_bed"],
+                "hero_face_elevation_deg": o.get("hero_face_elevation_deg"),
             }
             for o in raw_options
         ],
@@ -2033,7 +2118,9 @@ def evaluate_orientations_with_ai(
         "Analiza estas 5 orientaciones candidatas medidas con trimesh y devuelve JSON estricto con:\n"
         "- recommended_id: el id de la mejor orientación ('original', 'back_down', 'tilted_45', 'min_z' o 'max_stability'). "
         "NUNCA recomiendes una opción que tenga stability_warning o fits_bed=false si existe una estable. "
-        "Si es una figura/personaje vertical o modelo multicolor T0-T3 donde acostarlo sobre la espalda reduce Z y purgas dejando la cara libre, prioriza 'back_down'.\n"
+        "Si hero_face_detected=true (personaje/figura con rostro): penaliza orientaciones con hero_face_elevation_deg < -8° (soportes en el rostro) "
+        "y también > 65° (cara casi paralela a la cama <25°, efecto escalera en frente/ojos); "
+        "prioriza ángulos inclinados 15°–60° (reclinado 20°–45° / elevación frontal 45°–75°) donde los soportes quedan ocultos atrás.\n"
         "- explanations: objeto {id: frase_corta_max_150_chars} explicando en español qué mejora y dónde caerán los soportes.\n"
         f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
     )
@@ -2097,6 +2184,8 @@ def evaluate_orientations_with_ai(
         is_multicolor=is_multicolor,
         multicolor_parts_count=multicolor_parts,
         ai_provider=provider,  # type: ignore[arg-type]
+        hero_face_detected=hero_face_detected,
+        hero_face_normal=hero_face_normal,
         recommended_id=recommended_id,
         options=options_models,
     )

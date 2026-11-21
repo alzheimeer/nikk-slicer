@@ -132,6 +132,47 @@ def _safe_float_str(
     return f"{val:.{decimals}f}"
 
 
+def _apply_ai_quality_overrides(
+    process_data: dict[str, Any],
+    machine_data: dict[str, Any],
+    filament_jsons: list[Path],
+    request: SliceRequest,
+) -> None:
+    """Inyecta parámetros reales seleccionados en el árbol de Análisis IA (quality_overrides)."""
+    raw = {str(x).strip() for x in (getattr(request, "quality_overrides", None) or []) if str(x).strip()}
+    if not raw:
+        return
+    if "full_character_polish" in raw:
+        raw |= {"adaptive_layers", "dense_support_interface", "high_contrast_purge"}
+
+    if "adaptive_layers" in raw:
+        process_data["adaptive_layer_height"] = "1"
+        machine_data["adaptive_layer_height"] = "1"
+        if isinstance(machine_data.get("min_layer_height"), list) and machine_data["min_layer_height"]:
+            machine_data["min_layer_height"] = ["0.10" for _ in machine_data["min_layer_height"]]
+        if isinstance(machine_data.get("max_layer_height"), list) and machine_data["max_layer_height"]:
+            machine_data["max_layer_height"] = ["0.24" for _ in machine_data["max_layer_height"]]
+
+    if "dense_support_interface" in raw:
+        process_data["support_interface_top_layers"] = "3"
+        process_data["support_interface_pattern"] = "rectilinear"
+        process_data["support_interface_spacing"] = "0.2"
+        process_data["support_top_z_distance"] = "0.16"
+        process_data["bridge_speed"] = "25"
+        for f_path in filament_jsons:
+            try:
+                f_data = _load_json(f_path)
+                f_data["overhang_fan_speed"] = ["85"]
+                f_data["bridge_fan_speed"] = ["85"]
+                _save_json(f_path, f_data)
+            except Exception:
+                pass
+
+    if "high_contrast_purge" in raw:
+        process_data["avoid_crossing_perimeters"] = "1"
+        process_data["flush_multiplier"] = "1.35"
+
+
 def _validate_and_normalize_process_data(process_data: dict[str, Any]) -> None:
     """Verifica tipos y rangos válidos del esquema Flash Studio / OrcaSlicer."""
     # Traducir/limpiar clave ajena `support_placement` si existiera en algún JSON legado
@@ -290,7 +331,8 @@ def _apply_anti_stringing_and_tower_positioning(
         process_data["travel_speed"] = "280"
 
     if is_multicolor:
-        process_data["ooze_prevention"] = "1"
+        if str(process_data.get("enable_prime_tower", "0")) == "1":
+            process_data["ooze_prevention"] = "1"
         process_data["flush_into_infill"] = "1"
         for f_idx, f_path in enumerate(filament_jsons):
             try:
@@ -385,8 +427,10 @@ def patch_profiles_for_job(
         elif printer.bed_mm:
             bx, by, _ = printer.bed_mm
             machine_data["printable_area"] = ["0x0", f"{bx:.1f}x0", f"{bx:.1f}x{by:.1f}", f"0x{by:.1f}"]
-        if printer.is_multicolor and slots > 1:
-            machine_data["single_extruder_multi_material"] = "1"
+        if printer.is_multicolor and slots > 1 and profile_id != "creator5_pro":
+            # Solo activar single_extruder_multi_material si la máquina base no es multi-cabezal independiente
+            if str(machine_data.get("single_extruder_multi_material", "0")) == "1":
+                machine_data["single_extruder_multi_material"] = "1"
 
     flow_table_key = (
         "high_speed_volumetric_limits_mm3_s"
@@ -768,7 +812,15 @@ def patch_profiles_for_job(
         is_multicolor=bool(is_multicolor or multimaterial_3mf),
         model_dimensions_mm=model_dimensions_mm,
     )
+    _apply_ai_quality_overrides(process_data, machine_data, filament_jsons, request)
+    # Flash Studio / OrcaSlicer solo permite ooze_prevention=1 cuando single_extruder_multi_material=0 Y enable_prime_tower=1
+    if not (
+        str(machine_data.get("single_extruder_multi_material", "0")) == "0"
+        and str(process_data.get("enable_prime_tower", "0")) == "1"
+    ):
+        process_data["ooze_prevention"] = "0"
     _validate_and_normalize_process_data(process_data)
+    _save_json(dst_machine, machine_data)
     _save_json(dst_process, process_data)
 
     return PatchedProfileSet(

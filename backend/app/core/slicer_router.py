@@ -517,43 +517,64 @@ def run_slicer_cli(
     model_paths = stl_path if isinstance(stl_path, list) else [stl_path]
     cmd, has_3mf = _build_slicer_cli_cmd(printer, model_paths, patched, out_dir, filament_ids)
 
-    def _run_once(run_cmd: list[str]) -> tuple[int, str, list[Path]]:
-        run_kwargs: dict[str, Any] = {
-            "capture_output": True,
-            "text": True,
-            "timeout": timeout_sec,
-        }
-        if sys.platform.startswith("win") and hasattr(subprocess, "CREATE_NO_WINDOW"):
-            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        try:
-            proc = subprocess.run(run_cmd, **run_kwargs)
-        except subprocess.TimeoutExpired:
-            msg = f"Tiempo agotado ({timeout_sec}s) ejecutando {printer.cli_binary.name}."
-            record_error(
-                "slicer_cli_timeout",
-                msg,
-                printer_id=printer.printer_id,
-                detail=f"job_dir={patched.job_dir.name} | cmd={' '.join(run_cmd)}",
-            )
-            raise RuntimeError(msg)
-        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        err_lines = [ln for ln in combined.splitlines() if "[error]" in ln]
-        detail_msg = "; ".join(err_lines[-5:]) if err_lines else combined[-500:]
-        found = sorted(out_dir.glob("*.gcode"))
-        return proc.returncode, detail_msg, found
-
-    returncode, detail, gcodes = _run_once(cmd)
-
-    # Ante señal fatal negativa (<0, p.ej. SIGBUS -10 o SIGSEGV -11), registrar JSON y reintentar 1 vez tras 300ms
-    if returncode < 0:
-        _record_failed_cli_payload(patched, cmd, returncode, detail)
-        time.sleep(0.3)
+    def _clean_out_dir() -> None:
         for stale in out_dir.glob("*"):
             try:
                 if stale.is_file():
                     stale.unlink()
             except OSError:
                 pass
+
+    def _run_once(run_cmd: list[str], run_timeout: int) -> tuple[int, str, list[Path]]:
+        run_kwargs: dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "timeout": run_timeout,
+        }
+        if sys.platform.startswith("win") and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        proc = subprocess.run(run_cmd, **run_kwargs)
+        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        err_lines = [ln for ln in combined.splitlines() if "[error]" in ln]
+        detail_msg = "; ".join(err_lines[-5:]) if err_lines else combined[-500:]
+        found = sorted(out_dir.glob("*.gcode"))
+        return proc.returncode, detail_msg, found
+
+    def _run_with_timeout_retry(run_cmd: list[str]) -> tuple[int, str, list[Path]]:
+        try:
+            return _run_once(run_cmd, timeout_sec)
+        except subprocess.TimeoutExpired:
+            retry_timeout = max(200, timeout_sec + 50)
+            logger.warning(
+                "Timeout (%ss) ejecutando %s; limpiando salida y reintentando con %ss...",
+                timeout_sec,
+                printer.cli_binary.name,
+                retry_timeout,
+            )
+            _clean_out_dir()
+            time.sleep(0.3)
+            try:
+                return _run_once(run_cmd, retry_timeout)
+            except subprocess.TimeoutExpired:
+                msg = (
+                    f"Tiempo agotado ({timeout_sec}s + reintento {retry_timeout}s) "
+                    f"ejecutando {printer.cli_binary.name}."
+                )
+                record_error(
+                    "slicer_cli_timeout",
+                    msg,
+                    printer_id=printer.printer_id,
+                    detail=f"job_dir={patched.job_dir.name} | cmd={' '.join(run_cmd)}",
+                )
+                raise RuntimeError(msg)
+
+    returncode, detail, gcodes = _run_with_timeout_retry(cmd)
+
+    # Ante señal fatal negativa (<0, p.ej. SIGBUS -10 o SIGSEGV -11), registrar JSON y reintentar 1 vez tras 300ms
+    if returncode < 0:
+        _record_failed_cli_payload(patched, cmd, returncode, detail)
+        time.sleep(0.3)
+        _clean_out_dir()
         retry_patched = patched
         if request is not None:
             retry_patched = patch_profiles_for_job(
@@ -565,7 +586,7 @@ def run_slicer_cli(
         retry_cmd, _ = _build_slicer_cli_cmd(
             printer, model_paths, retry_patched, out_dir, filament_ids
         )
-        returncode, detail, gcodes = _run_once(retry_cmd)
+        returncode, detail, gcodes = _run_with_timeout_retry(retry_cmd)
         if returncode == 0 and gcodes:
             logger.warning(
                 "Recuperado tras señal negativa con reintento limpio en job_dir=%s",

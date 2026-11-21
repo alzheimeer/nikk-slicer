@@ -1498,27 +1498,34 @@ export function Viewport3D({
     }
   }, [activeCadTool, meshId, activeInstance.rot_x, activeInstance.rot_y, activeInstance.rot_z]);
 
+  const bedOrigin = printer?.origin ?? 'corner';
+  const bedWidth =
+    bedOrigin === 'center' ? (printer?.diameter_mm ?? 260) : (printer?.bed_mm?.[0] ?? 220);
+  const bedDepth =
+    bedOrigin === 'center' ? (printer?.diameter_mm ?? 260) : (printer?.bed_mm?.[1] ?? 220);
+  const extruderColorsKey = (extruderColors ?? []).join(',');
+
   const parsedGcode = useMemo<ParsedGcode | null>(() => {
     if (!gcodeText || !printer) return null;
-    const bedX = printer.origin === 'center' ? (printer.diameter_mm ?? 260) : (printer.bed_mm?.[0] ?? 220);
-    const bedY = printer.origin === 'center' ? (printer.diameter_mm ?? 260) : (printer.bed_mm?.[1] ?? 220);
-    const offX = printer.origin === 'center' ? 0 : bedX / 2;
-    const offY = printer.origin === 'center' ? 0 : bedY / 2;
-    return parseGcodeLayers(gcodeText, offX, offY, bedX, bedY, extruderColors);
-  }, [gcodeText, printer, extruderColors]);
+    const offX = bedOrigin === 'center' ? 0 : bedWidth / 2;
+    const offY = bedOrigin === 'center' ? 0 : bedDepth / 2;
+    return parseGcodeLayers(gcodeText, offX, offY, bedWidth, bedDepth, extruderColors);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gcodeText, bedOrigin, bedWidth, bedDepth, extruderColorsKey]);
+
+  const isCreatorPrinter =
+    printer?.profile_id === 'creator5_pro' || printer?.printer_id === 'creator5_pro';
 
   useEffect(() => {
     if (parsedGcode && parsedGcode.layers.length > 0) {
       setCurrentLayer(parsedGcode.layers.length);
       setViewMode('gcode');
-      const isCreator =
-        printer?.profile_id === 'creator5_pro' || printer?.printer_id === 'creator5_pro';
-      setColorScheme(isCreator ? 'tool' : 'type');
+      setColorScheme(isCreatorPrinter ? 'tool' : 'type');
       setVisibleRoles({ 0: true, 1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true });
     } else {
       setViewMode('stl');
     }
-  }, [parsedGcode, printer?.profile_id, printer?.printer_id]);
+  }, [parsedGcode, isCreatorPrinter]);
 
   const applyGroupMoveDelta = useCallback(
     (dx: number, dy: number, dz = 0) => {

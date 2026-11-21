@@ -2155,6 +2155,17 @@ def find_optimal_anti_support_orientation(
     else:
         raw_mesh = load_raw_mesh(model_path)
 
+    raw_mesh_hero = _detect_hero_face_normal(raw_mesh, extracted, is_3mf)
+    hero_vec_np = np.array(raw_mesh_hero, dtype=np.float64) if raw_mesh_hero is not None else None
+    is_character_like = (
+        is_multicolor
+        or any(
+            tok in model_path.stem.lower()
+            for tok in ("robot", "char", "fig", "head", "bust", "mini", "toy", "personaje", "figura", "sheep", "oveja")
+        )
+    )
+    hero_face_detected = bool(hero_vec_np is not None and is_character_like)
+
     hull = raw_mesh.convex_hull
     hull_verts = hull.vertices.copy()
     to_origin, _ = trimesh.bounds.oriented_bounds(hull)
@@ -2443,6 +2454,58 @@ def _normalize_deg_signed(deg: float) -> float:
     return val
 
 
+def _detect_hero_face_normal(
+    raw_mesh: trimesh.Trimesh,
+    extracted_parts: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]],
+    is_3mf: bool,
+) -> list[float] | None:
+    """Detecta el vector normal de la zona frontal/rostro por concentración de detalle fino y cambios de color .3mf."""
+    try:
+        areas = np.asarray(raw_mesh.area_faces, dtype=np.float64)
+        centers = np.asarray(raw_mesh.triangles_center, dtype=np.float64)
+        normals = np.asarray(raw_mesh.face_normals, dtype=np.float64)
+        if len(areas) < 50:
+            return None
+
+        mesh_center = centers.mean(axis=0)
+        q25 = float(np.percentile(areas, 25))
+        fine_mask = areas <= max(q25, 1e-6)
+        if not np.any(fine_mask):
+            return None
+
+        # Ponderar triángulos pequeños y su dirección desde el centroide + normal superficial
+        fine_dirs = centers[fine_mask] - mesh_center
+        fine_norms = np.linalg.norm(fine_dirs, axis=1, keepdims=True)
+        valid = (fine_norms[:, 0] > 1e-3)
+        if not np.any(valid):
+            return None
+
+        unit_dirs = fine_dirs[valid] / fine_norms[valid]
+        w = 1.0 / (areas[fine_mask][valid] + 1e-4)
+        # Refuerzo con normales orientadas hacia afuera
+        dir_vec = ((unit_dirs * 0.65 + normals[fine_mask][valid] * 0.35) * w[:, None]).sum(axis=0)
+
+        # Si es .3mf con múltiples partes (ej. ojos, boca, emblemas pequeños), reforzar hacia esas partes
+        if is_3mf and len(extracted_parts) > 1:
+            total_area = float(areas.sum()) or 1.0
+            for _, p_mesh in extracted_parts:
+                p_area = float(np.asarray(p_mesh.area_faces).sum())
+                if 0.0005 * total_area <= p_area <= 0.22 * total_area:
+                    p_center = np.asarray(p_mesh.triangles_center).mean(axis=0)
+                    p_dir = p_center - mesh_center
+                    p_norm = float(np.linalg.norm(p_dir))
+                    if p_norm > 1e-3:
+                        dir_vec += (p_dir / p_norm) * (float(w.sum()) * 0.35)
+
+        vec_norm = float(np.linalg.norm(dir_vec))
+        if vec_norm < 1e-6:
+            return None
+        hero = dir_vec / vec_norm
+        return [round(float(hero[0]), 4), round(float(hero[1]), 4), round(float(hero[2]), 4)]
+    except Exception:
+        return None
+
+
 def evaluate_orientation_candidates(
     model_path: Path,
     printer: PrinterConfig,
@@ -2452,6 +2515,7 @@ def evaluate_orientation_candidates(
     """Evalúa 5 orientaciones clave sobre la malla STL/3MF para previsualización en vivo."""
     is_3mf = model_path.suffix.lower() == ".3mf"
     parts_info: list[MultimaterialPartInfo] = []
+    extracted: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
     is_multicolor = False
     multicolor_parts_count = 1
     if is_3mf:
@@ -2471,6 +2535,17 @@ def evaluate_orientation_candidates(
         )
     else:
         raw_mesh = load_raw_mesh(model_path)
+
+    raw_mesh_hero = _detect_hero_face_normal(raw_mesh, extracted, is_3mf)
+    hero_vec_np = np.array(raw_mesh_hero, dtype=np.float64) if raw_mesh_hero is not None else None
+    is_character_like = (
+        is_multicolor
+        or any(
+            tok in model_path.stem.lower()
+            for tok in ("robot", "char", "fig", "head", "bust", "mini", "toy", "personaje", "figura", "sheep", "oveja")
+        )
+    )
+    hero_face_detected = bool(hero_vec_np is not None and is_character_like)
 
     hull = raw_mesh.convex_hull
     hull_verts = hull.vertices.copy()
@@ -2548,6 +2623,24 @@ def evaluate_orientation_candidates(
             stability_warning = "Base muy pequeña · Requiere Brim/Balsa y Soportes"
 
         purge_weight = 0.55 if is_multicolor else 0.0
+        hero_elev_deg: float | None = None
+        hero_penalty = 1.0
+        if hero_face_detected and hero_vec_np is not None:
+            rot_hero = r_mat @ hero_vec_np
+            hero_elev_deg = round(
+                math.degrees(math.asin(max(-1.0, min(1.0, float(rot_hero[2]))))),
+                1,
+            )
+            if hero_elev_deg < -8.0:
+                # Cara mirando hacia abajo -> soportes sobre el rostro
+                hero_penalty = 1.85
+            elif hero_elev_deg > 65.0:
+                # Cara casi paralela a la cama (<25° respecto a XY) -> efecto escalera en frente/ojos
+                hero_penalty = 1.45
+            elif 15.0 <= hero_elev_deg <= 60.0:
+                # Ángulo óptimo de personaje (reclinado 20-45° / elevación frontal 45-75°)
+                hero_penalty = 0.78
+
         est_time_proxy = (
             dz * (1.0 + oh_ratio * 0.45 + purge_weight)
             + raw_vol_cm3 * 0.55
@@ -2564,6 +2657,8 @@ def evaluate_orientation_candidates(
             "contact_area_mm2": round(base_contact_area_mm2, 1),
             "stability_warning": stability_warning,
             "est_time_proxy": est_time_proxy,
+            "hero_face_elevation_deg": hero_elev_deg,
+            "hero_face_penalty": hero_penalty,
         }
 
     orig_eval = _eval_r_mat(np.eye(3), (0.0, 0.0, 0.0))
@@ -2738,7 +2833,11 @@ def evaluate_orientation_candidates(
         ev = o["ev"]
         fits_pen = 0 if ev["fits_bed"] else 1
         stab_pen = 1 if ev.get("stability_warning") else 0
-        base_score = ev["est_time_proxy"] * (1.0 + ev["overhang_ratio_pct"] / 120.0)
+        base_score = (
+            ev["est_time_proxy"]
+            * (1.0 + ev["overhang_ratio_pct"] / 120.0)
+            * float(ev.get("hero_face_penalty", 1.0))
+        )
         if is_vertical_figure and o["id"] == "back_down" and fits_pen == 0 and stab_pen == 0:
             base_score *= 0.85
         return (fits_pen, stab_pen, base_score)
@@ -2771,6 +2870,7 @@ def evaluate_orientation_candidates(
                 "explanation": item["explanation"],
                 "stability_warning": ev.get("stability_warning"),
                 "fits_bed": ev["fits_bed"],
+                "hero_face_elevation_deg": ev.get("hero_face_elevation_deg"),
                 "is_recommended": item["id"] == recommended_id,
             }
         )
@@ -2780,6 +2880,8 @@ def evaluate_orientation_candidates(
         "model_name": model_path.stem,
         "is_multicolor": is_multicolor,
         "multicolor_parts_count": multicolor_parts_count,
+        "hero_face_detected": hero_face_detected,
+        "hero_face_normal": raw_mesh_hero if hero_face_detected else None,
         "recommended_id": recommended_id,
         "options": options_out,
     }

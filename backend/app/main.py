@@ -1275,6 +1275,7 @@ async def slice_endpoint(
     part_extruder_map_json: str | None = Form(None),
     layer_pauses_json: str | None = Form(None),
     scene_objects_json: str | None = Form(None),
+    quality_overrides_json: str | None = Form(None),
     file: UploadFile | None = File(None),
 ) -> SliceResponse:
     """Lamina `.stl` o `.3mf` multicolor usando caché `mesh_id`, bloqueo por malla y escritura atómica."""
@@ -1329,6 +1330,17 @@ async def slice_endpoint(
         except Exception as exc:
             raise HTTPException(
                 status_code=400, detail=f"scene_objects_json inválido: {exc}"
+            ) from exc
+
+    parsed_quality_overrides: list[str] = []
+    if quality_overrides_json:
+        try:
+            raw_qo = json.loads(quality_overrides_json)
+            if isinstance(raw_qo, list):
+                parsed_quality_overrides = [str(x).strip() for x in raw_qo if str(x).strip()]
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"quality_overrides_json inválido: {exc}"
             ) from exc
 
     parsed_instances = _parse_instances_json(instances_json)
@@ -1390,6 +1402,7 @@ async def slice_endpoint(
             support_extruder=support_extruder,
             z_color_ranges=parsed_z_ranges,
             part_extruder_map=parsed_part_map,
+            quality_overrides=parsed_quality_overrides,
         )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=f"Parámetros de laminado inválidos: {exc}") from exc
