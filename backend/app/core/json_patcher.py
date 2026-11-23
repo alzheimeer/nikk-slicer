@@ -6,6 +6,7 @@ import json
 import math
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -664,6 +665,8 @@ def patch_profiles_for_job(
         )
         process_data["enable_support"] = "1"
         process_data["support_type"] = request.support_type
+        if getattr(request, "support_style", None):
+            process_data["support_style"] = str(request.support_style).strip() or "default"
         process_data["support_on_build_plate_only"] = (
             "1" if request.support_on_build_plate_only else "0"
         )
@@ -813,6 +816,7 @@ def patch_profiles_for_job(
         model_dimensions_mm=model_dimensions_mm,
     )
     _apply_ai_quality_overrides(process_data, machine_data, filament_jsons, request)
+    _apply_profile_overrides(process_data, machine_data, filament_jsons, request)
     # Flash Studio / OrcaSlicer solo permite ooze_prevention=1 cuando single_extruder_multi_material=0 Y enable_prime_tower=1
     if not (
         str(machine_data.get("single_extruder_multi_material", "0")) == "0"
@@ -832,3 +836,291 @@ def patch_profiles_for_job(
         filament_slots=slots,
         volumetric_guard=flow_guard,
     )
+
+
+def _apply_profile_overrides(
+    process_data: dict[str, Any],
+    machine_data: dict[str, Any],
+    filament_jsons: list[Path],
+    request: SliceRequest,
+) -> None:
+    """Aplica ediciones directas del Inspector Lateral de Perfil (`profile_overrides`)."""
+    ov = getattr(request, "profile_overrides", None)
+    if not isinstance(ov, dict) or not ov:
+        return
+
+    process_key_map = {
+        "layer_height": ("layer_height", "float"),
+        "initial_layer_height": ("initial_layer_print_height", "float"),
+        "line_width": ("line_width", "float"),
+        "outer_wall_line_width": ("outer_wall_line_width", "float"),
+        "inner_wall_line_width": ("inner_wall_line_width", "float"),
+        "top_surface_line_width": ("top_surface_line_width", "float"),
+        "infill_line_width": ("internal_solid_infill_line_width", "float"),
+        "support_line_width": ("support_line_width", "float"),
+        "wall_generator": ("wall_generator", "str"),
+        "seam_position": ("seam_position", "str"),
+        "ironing_type": ("ironing_type", "str"),
+        "top_surface_pattern": ("top_surface_pattern", "str"),
+        "wall_loops": ("wall_loops", "int"),
+        "top_shell_layers": ("top_shell_layers", "int"),
+        "bottom_shell_layers": ("bottom_shell_layers", "int"),
+        "sparse_infill_density": ("sparse_infill_density", "pct"),
+        "sparse_infill_pattern": ("sparse_infill_pattern", "str"),
+        "infill_wall_overlap": ("infill_wall_overlap", "pct"),
+        "outer_wall_speed": ("outer_wall_speed", "float"),
+        "inner_wall_speed": ("inner_wall_speed", "float"),
+        "initial_layer_speed": ("initial_layer_speed", "float"),
+        "sparse_infill_speed": ("sparse_infill_speed", "float"),
+        "top_surface_speed": ("top_surface_speed", "float"),
+        "overhang_speed": ("overhang_2_4_speed", "float"),
+        "bridge_speed": ("bridge_speed", "float"),
+        "travel_speed": ("travel_speed", "float"),
+        "acceleration_print": ("default_acceleration", "float"),
+        "enable_support": ("enable_support", "bool"),
+        "support_type": ("support_type", "str"),
+        "support_style": ("support_style", "str"),
+        "support_threshold_angle": ("support_threshold_angle", "float"),
+        "support_top_z_distance": ("support_top_z_distance", "float"),
+        "support_bottom_z_distance": ("support_bottom_z_distance", "float"),
+        "support_object_xy_distance": ("support_object_xy_distance", "float"),
+        "support_interface_top_layers": ("support_interface_top_layers", "int"),
+        "support_interface_bottom_layers": ("support_interface_bottom_layers", "int"),
+        "support_interface_spacing": ("support_interface_spacing", "float"),
+        "support_interface_pattern": ("support_interface_pattern", "str"),
+        "enable_prime_tower": ("enable_prime_tower", "bool"),
+        "prime_tower_width": ("prime_tower_width", "float"),
+        "support_interface_filament": ("support_interface_filament", "int"),
+        "brim_type": ("brim_type", "str"),
+        "brim_width": ("brim_width", "float"),
+        "skirt_loops": ("skirt_loops", "int"),
+    }
+
+    for k, raw_val in ov.items():
+        if k == "filaments" or raw_val is None:
+            continue
+        spec = process_key_map.get(k)
+        if not spec:
+            continue
+        target_key, kind = spec
+        try:
+            if kind == "bool":
+                process_data[target_key] = "1" if bool(raw_val) and str(raw_val).lower() not in ("0", "false") else "0"
+            elif kind == "int":
+                process_data[target_key] = str(int(round(float(raw_val))))
+            elif kind == "float":
+                process_data[target_key] = _fmt(float(raw_val), 2)
+            elif kind == "pct":
+                s = str(raw_val).strip()
+                process_data[target_key] = s if s.endswith("%") else f"{_fmt(float(s), 0)}%"
+            else:
+                process_data[target_key] = str(raw_val)
+        except Exception:
+            continue
+
+    fil_overrides = ov.get("filaments")
+    if isinstance(fil_overrides, list):
+        for idx, item in enumerate(fil_overrides):
+            if not isinstance(item, dict) or idx >= len(filament_jsons):
+                continue
+            fpath = filament_jsons[idx]
+            try:
+                fdata = _load_json(fpath)
+            except Exception:
+                continue
+            fil_map = {
+                "nozzle_temp_initial": "nozzle_temperature_initial_layer",
+                "nozzle_temp": "nozzle_temperature",
+                "bed_temp_initial": "hot_plate_temp_initial_layer",
+                "bed_temp": "hot_plate_temp",
+                "fan_min_speed": "fan_min_speed",
+                "fan_max_speed": "fan_max_speed",
+                "overhang_fan_speed": "overhang_fan_speed",
+                "retraction_length": "retraction_length",
+                "retraction_speed": "retraction_speed",
+                "max_volumetric_flow": "filament_max_volumetric_speed",
+                "density_g_cm3": "filament_density",
+            }
+            changed = False
+            for src_k, dst_k in fil_map.items():
+                if src_k in item and item[src_k] is not None:
+                    try:
+                        val_str = _fmt(float(item[src_k]), 2)
+                        if isinstance(fdata.get(dst_k), list):
+                            fdata[dst_k] = [val_str]
+                        else:
+                            fdata[dst_k] = [val_str] if dst_k in ("nozzle_temperature", "nozzle_temperature_initial_layer", "hot_plate_temp", "hot_plate_temp_initial_layer", "fan_min_speed", "fan_max_speed", "overhang_fan_speed", "filament_max_volumetric_speed", "filament_density") else val_str
+                        changed = True
+                    except Exception:
+                        continue
+            if changed:
+                _save_json(fpath, fdata)
+
+
+def _as_float(val: Any, default: float = 0.0) -> float:
+    if isinstance(val, list) and val:
+        val = val[0]
+    try:
+        s = str(val).replace("%", "").strip()
+        return round(float(s), 3)
+    except Exception:
+        return default
+
+
+def _as_int(val: Any, default: int = 0) -> int:
+    return int(round(_as_float(val, float(default))))
+
+
+def _as_str(val: Any, default: str = "") -> str:
+    if isinstance(val, list) and val:
+        val = val[0]
+    if val is None:
+        return default
+    return str(val)
+
+
+def build_sliced_profile_snapshot(
+    *,
+    patched: PatchedProfileSet,
+    request: SliceRequest,
+    printer_name: str,
+    slicer_engine: str,
+    gcode_filename: str = "",
+    applied_pauses: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Construye la instantánea completa de 7 secciones del perfil efectivo usado en el corte."""
+    proc = _load_json(patched.process_json) if patched.process_json.is_file() else {}
+    mach = _load_json(patched.machine_json) if patched.machine_json.is_file() else {}
+
+    active_tools: list[str] = []
+    filaments_out: list[dict[str, Any]] = []
+    slots = list(request.extruders_config or [])
+
+    for idx, fpath in enumerate(patched.filament_jsons):
+        fdata = _load_json(fpath) if fpath.is_file() else {}
+        slot_cfg = slots[idx] if idx < len(slots) else None
+        slot_idx = slot_cfg.extruder_index if slot_cfg else idx
+        slot_name = f"T{slot_idx}"
+        active_tools.append(slot_name)
+        mat = (slot_cfg.material if slot_cfg else request.material).upper()
+        color_hex = slot_cfg.color_hex if slot_cfg else "#38BDF8"
+        brand_or_name = _as_str(fdata.get("name"), f"{mat} {slot_name}")
+
+        filaments_out.append(
+            {
+                "slot": slot_name,
+                "material": mat,
+                "brand_or_name": brand_or_name,
+                "color_hex": color_hex,
+                "nozzle_temp_initial": _as_float(fdata.get("nozzle_temperature_initial_layer"), 215.0),
+                "nozzle_temp": _as_float(fdata.get("nozzle_temperature"), 215.0),
+                "bed_temp_initial": _as_float(fdata.get("hot_plate_temp_initial_layer") or fdata.get("textured_plate_temp_initial_layer"), 60.0),
+                "bed_temp": _as_float(fdata.get("hot_plate_temp") or fdata.get("textured_plate_temp"), 60.0),
+                "fan_min_speed": _as_float(fdata.get("fan_min_speed"), 35.0),
+                "fan_max_speed": _as_float(fdata.get("fan_max_speed"), 100.0),
+                "overhang_fan_speed": _as_float(fdata.get("overhang_fan_speed"), 100.0),
+                "retraction_length": _as_float(fdata.get("retraction_length") or mach.get("retraction_length"), 0.8),
+                "retraction_speed": _as_float(fdata.get("retraction_speed") or mach.get("retraction_speed"), 40.0),
+                "max_volumetric_flow": _as_float(fdata.get("filament_max_volumetric_speed"), 18.0),
+                "density_g_cm3": _as_float(fdata.get("filament_density"), 1.24),
+                "cost_per_kg_cop": _as_float(fdata.get("filament_cost"), 85000.0),
+            }
+        )
+
+    qmax = _as_float(
+        (patched.volumetric_guard or {}).get("max_volumetric_speed_mm3_s")
+        or (filaments_out[0]["max_volumetric_flow"] if filaments_out else 18.0),
+        18.0,
+    )
+
+    return {
+        "quality": {
+            "layer_height": _as_float(proc.get("layer_height"), 0.2),
+            "initial_layer_height": _as_float(proc.get("initial_layer_print_height") or proc.get("initial_layer_height"), 0.2),
+            "line_width": _as_float(proc.get("line_width"), 0.42),
+            "outer_wall_line_width": _as_float(proc.get("outer_wall_line_width"), 0.42),
+            "inner_wall_line_width": _as_float(proc.get("inner_wall_line_width"), 0.45),
+            "top_surface_line_width": _as_float(proc.get("top_surface_line_width"), 0.42),
+            "infill_line_width": _as_float(proc.get("internal_solid_infill_line_width") or proc.get("sparse_infill_line_width"), 0.45),
+            "support_line_width": _as_float(proc.get("support_line_width"), 0.42),
+            "wall_generator": _as_str(proc.get("wall_generator"), "arachne"),
+            "seam_position": _as_str(proc.get("seam_position"), "aligned"),
+            "ironing_type": _as_str(proc.get("ironing_type"), "no ironing"),
+            "top_surface_pattern": _as_str(proc.get("top_surface_pattern"), "monotonicline"),
+        },
+        "strength": {
+            "wall_loops": _as_int(proc.get("wall_loops"), 2),
+            "top_shell_layers": _as_int(proc.get("top_shell_layers"), 4),
+            "bottom_shell_layers": _as_int(proc.get("bottom_shell_layers"), 3),
+            "sparse_infill_density": _as_str(proc.get("sparse_infill_density"), "15%"),
+            "sparse_infill_pattern": _as_str(proc.get("sparse_infill_pattern"), "gyroid"),
+            "infill_wall_overlap": _as_str(proc.get("infill_wall_overlap"), "25%"),
+        },
+        "speed": {
+            "outer_wall_speed": _as_float(proc.get("outer_wall_speed"), 120.0),
+            "inner_wall_speed": _as_float(proc.get("inner_wall_speed"), 180.0),
+            "initial_layer_speed": _as_float(proc.get("initial_layer_speed"), 45.0),
+            "sparse_infill_speed": _as_float(proc.get("sparse_infill_speed"), 200.0),
+            "top_surface_speed": _as_float(proc.get("top_surface_speed"), 120.0),
+            "overhang_speed": _as_float(proc.get("overhang_2_4_speed") or proc.get("overhang_speed"), 30.0),
+            "overhang_1_4_speed": _as_float(proc.get("overhang_1_4_speed"), 60.0),
+            "overhang_2_4_speed": _as_float(proc.get("overhang_2_4_speed"), 30.0),
+            "overhang_3_4_speed": _as_float(proc.get("overhang_3_4_speed"), 20.0),
+            "overhang_4_4_speed": _as_float(proc.get("overhang_4_4_speed"), 15.0),
+            "bridge_speed": _as_float(proc.get("bridge_speed"), 35.0),
+            "travel_speed": _as_float(proc.get("travel_speed"), 300.0),
+            "max_volumetric_speed_qmax": qmax,
+            "acceleration_print": _as_float(proc.get("default_acceleration"), 5000.0),
+        },
+        "support": {
+            "enable_support": _as_str(proc.get("enable_support"), "0") == "1",
+            "support_type": _as_str(proc.get("support_type"), "tree(auto)"),
+            "support_style": _as_str(proc.get("support_style"), "default"),
+            "support_threshold_angle": _as_float(proc.get("support_threshold_angle"), 30.0),
+            "support_top_z_distance": _as_float(proc.get("support_top_z_distance"), 0.2),
+            "support_bottom_z_distance": _as_float(proc.get("support_bottom_z_distance"), 0.2),
+            "support_object_xy_distance": _as_float(proc.get("support_object_xy_distance"), 0.5),
+            "support_interface_top_layers": _as_int(proc.get("support_interface_top_layers"), 2),
+            "support_interface_bottom_layers": _as_int(proc.get("support_interface_bottom_layers"), 2),
+            "support_interface_spacing": _as_float(proc.get("support_interface_spacing"), 0.5),
+            "support_interface_pattern": _as_str(proc.get("support_interface_pattern"), "rectilinear"),
+        },
+        "multimaterial": {
+            "active_tools": active_tools,
+            "tool_mapping": dict(request.part_extruder_map or {}),
+            "enable_prime_tower": _as_str(proc.get("enable_prime_tower"), "0") == "1",
+            "prime_tower_width": _as_float(proc.get("prime_tower_width"), 35.0),
+            "prime_tower_brim_width": _as_float(proc.get("prime_tower_brim_width"), 3.0),
+            "flush_volumes": proc.get("flush_volumes_matrix") or proc.get("flush_multiplier") or "1.0",
+            "support_interface_filament": _as_int(proc.get("support_interface_filament"), 0),
+            "z_color_changes": [z.model_dump() for z in (request.z_color_ranges or [])],
+        },
+        "others": {
+            "brim_type": _as_str(proc.get("brim_type"), "no_brim"),
+            "brim_width": _as_float(proc.get("brim_width"), 5.0),
+            "skirt_loops": _as_int(proc.get("skirt_loops"), 1),
+            "layer_pauses": list(applied_pauses or []),
+            "anti_stringing_active": any(f["retraction_length"] > 0 for f in filaments_out),
+            "chamber_temp": _as_float(request.chamber_temp_target or mach.get("chamber_temperature"), 0.0),
+            "bed_temp": filaments_out[0]["bed_temp"] if filaments_out else float(request.bed_temp),
+            "gcode_filename": gcode_filename,
+            "printer_name": printer_name,
+            "slicer_engine": slicer_engine,
+            "sliced_at_timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+        "filaments": filaments_out,
+    }
+
+
+def inject_profile_snapshot_into_gcode(gcode_path: Path, snapshot: dict[str, Any]) -> None:
+    """Inyecta `; NIKK_SLICER_PROFILE_JSON: {...}` al final del .gcode para trazabilidad portátil."""
+    if not gcode_path.is_file():
+        return
+    compact = json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False)
+    marker_line = f"; NIKK_SLICER_PROFILE_JSON: {compact}"
+    raw_lines = gcode_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    filtered = [ln for ln in raw_lines if not ln.lstrip().startswith("; NIKK_SLICER_PROFILE_JSON:")]
+    filtered.append(marker_line)
+    tmp_path = gcode_path.with_suffix(".gcode.tmp")
+    tmp_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+    os.replace(tmp_path, gcode_path)

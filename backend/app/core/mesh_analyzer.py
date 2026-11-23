@@ -6,6 +6,7 @@ import itertools
 import json
 import math
 import os
+import re
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
@@ -2067,26 +2068,38 @@ def cut_mesh_by_plane(
                 f"La altura de corte Z={cut_z_mm:.1f} mm debe quedar entre {b_min[2]:.1f} y {b_max[2]:.1f} mm."
             )
 
-    n_vec = (_rot_y_mat(tilt_y_deg) @ _rot_x_mat(tilt_x_deg)) @ np.array([0.0, 0.0, 1.0])
+    n_vec = (_rot_x_mat(tilt_x_deg) @ _rot_y_mat(tilt_y_deg)) @ np.array([0.0, 0.0, 1.0])
     n_vec = n_vec / float(np.linalg.norm(n_vec))
     origin = np.array([0.0, 0.0, float(cut_z_mm)])
+
+    def _safe_slice_plane(mesh_in: trimesh.Trimesh, normal: np.ndarray, orig: np.ndarray) -> trimesh.Trimesh | None:
+        try:
+            sliced = trimesh.intersections.slice_mesh_plane(
+                mesh_in, plane_normal=normal, plane_origin=orig, cap=True
+            )
+            if sliced is not None and len(sliced.faces) > 0:
+                return sliced
+        except Exception:
+            pass
+        sliced_open = trimesh.intersections.slice_mesh_plane(
+            mesh_in, plane_normal=normal, plane_origin=orig, cap=False
+        )
+        if sliced_open is not None and len(sliced_open.faces) > 0:
+            try:
+                trimesh.repair.fill_holes(sliced_open)
+            except Exception:
+                pass
+            return sliced_open
+        return None
 
     upper_mesh: trimesh.Trimesh | None = None
     lower_mesh: trimesh.Trimesh | None = None
 
     if keep_mode in ("upper", "both"):
-        u = trimesh.intersections.slice_mesh_plane(
-            base_mesh, plane_normal=n_vec, plane_origin=origin, cap=True
-        )
-        if u is not None and len(u.faces) > 0:
-            upper_mesh = u
+        upper_mesh = _safe_slice_plane(base_mesh, n_vec, origin)
 
     if keep_mode in ("lower", "both"):
-        l = trimesh.intersections.slice_mesh_plane(
-            base_mesh, plane_normal=-n_vec, plane_origin=origin, cap=True
-        )
-        if l is not None and len(l.faces) > 0:
-            lower_mesh = l
+        lower_mesh = _safe_slice_plane(base_mesh, -n_vec, origin)
 
     if keep_mode == "upper":
         if upper_mesh is None:
@@ -3161,4 +3174,175 @@ def assemble_scene_objects_for_slicer(
         zf.writestr("[Content_Types].xml", content_types)
         zf.writestr("_rels/.rels", rels)
         zf.writestr("3D/3dmodel.model", model_xml)
+    return out_3mf
+
+
+def inject_support_blockers_into_3mf(
+    model_path: Path,
+    out_dir: Path,
+    printer: PrinterConfig,
+    blockers: list[Any],
+) -> Path:
+    """Empaqueta el modelo (.stl o .3mf) junto con volúmenes `subtype='support_blocker'` en un .3mf."""
+    if not blockers:
+        return model_path
+
+    bed_cx, bed_cy = _bed_center_xy(printer)
+    blocker_meshes: list[tuple[str, trimesh.Trimesh]] = []
+    for idx, b in enumerate(blockers, start=1):
+        bx = float(getattr(b, "x", 0.0) if not isinstance(b, dict) else b.get("x", 0.0))
+        by = float(getattr(b, "y", 0.0) if not isinstance(b, dict) else b.get("y", 0.0))
+        bz = float(getattr(b, "z", 0.0) if not isinstance(b, dict) else b.get("z", 0.0))
+        rad = max(1.0, min(80.0, float(getattr(b, "radius", 10.0) if not isinstance(b, dict) else b.get("radius", 10.0))))
+        sph = trimesh.creation.icosphere(subdivisions=2, radius=rad)
+        sph.apply_translation([bed_cx + bx, bed_cy + by, max(0.0, bz)])
+        blocker_meshes.append((f"support_blocker_{idx}", sph))
+
+    def _mesh_obj_xml(obj_id: int, m: trimesh.Trimesh) -> str:
+        vs = "\n".join(
+            f'          <vertex x="{v[0]:.4f}" y="{v[1]:.4f}" z="{v[2]:.4f}" />'
+            for v in m.vertices
+        )
+        ts = "\n".join(
+            f'          <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}" />'
+            for f in m.faces
+        )
+        return (
+            f'    <object id="{obj_id}" type="model">\n'
+            f"      <mesh>\n"
+            f"        <vertices>\n{vs}\n        </vertices>\n"
+            f"        <triangles>\n{ts}\n        </triangles>\n"
+            f"      </mesh>\n"
+            f"    </object>"
+        )
+
+    out_3mf = out_dir / "model_with_blockers.3mf"
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>'
+        '<Default Extension="config" ContentType="text/xml"/>'
+        "</Types>"
+    )
+    rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Target="/3D/3dmodel.model" Id="rel-1" '
+        'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>'
+        "</Relationships>"
+    )
+
+    if model_path.suffix.lower() != ".3mf":
+        base_mesh = load_raw_mesh(model_path)
+        obj_blocks = [_mesh_obj_xml(2, base_mesh)]
+        comp_blocks = ['        <component objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 0" />']
+        part_blocks = ['    <part id="2" subtype="normal_part"><metadata key="name" value="model"/></part>']
+        for i, (bname, bm) in enumerate(blocker_meshes, start=3):
+            obj_blocks.append(_mesh_obj_xml(i, bm))
+            comp_blocks.append(f'        <component objectid="{i}" transform="1 0 0 0 1 0 0 0 1 0 0 0" />')
+            part_blocks.append(
+                f'    <part id="{i}" subtype="support_blocker"><metadata key="name" value="{bname}"/></part>'
+            )
+        model_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<model unit="millimeter" xml:lang="en-US" '
+            'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
+            'xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">\n'
+            "  <resources>\n"
+            + "\n".join(obj_blocks)
+            + '\n    <object id="1" type="model">\n      <components>\n'
+            + "\n".join(comp_blocks)
+            + "\n      </components>\n    </object>\n  </resources>\n  <build>\n"
+            '    <item objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0" printable="1" />\n'
+            "  </build>\n</model>\n"
+        )
+        settings_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n<config>\n  <object id="1">\n'
+            '    <metadata key="name" value="model"/>\n'
+            + "\n".join(part_blocks)
+            + "\n  </object>\n</config>\n"
+        )
+        with zipfile.ZipFile(out_3mf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("[Content_Types].xml", content_types)
+            zf.writestr("_rels/.rels", rels_xml)
+            zf.writestr("3D/3dmodel.model", model_xml)
+            zf.writestr("Metadata/model_settings.config", settings_xml)
+        return out_3mf
+
+    with zipfile.ZipFile(model_path, "r") as zin:
+        entries = {name: zin.read(name) for name in zin.namelist()}
+
+    model_key = next((k for k in entries if k.lower() == "3d/3dmodel.model"), None)
+    if not model_key:
+        return model_path
+
+    model_text = entries[model_key].decode("utf-8", errors="ignore")
+    used_ids = [int(x) for x in re.findall(r'<object\b[^>]*\bid="(\d+)"', model_text)]
+    next_id = (max(used_ids) if used_ids else 10) + 1
+    has_components = "</components>" in model_text
+
+    extra_objs: list[str] = []
+    extra_comps: list[str] = []
+    extra_parts: list[str] = []
+    for bname, bm in blocker_meshes:
+        oid = next_id
+        next_id += 1
+        extra_objs.append(_mesh_obj_xml(oid, bm))
+        extra_comps.append(f'        <component objectid="{oid}" transform="1 0 0 0 1 0 0 0 1 0 0 0" />')
+        extra_parts.append(
+            f'    <part id="{oid}" subtype="support_blocker"><metadata key="name" value="{bname}"/></part>'
+        )
+
+    asm_id: int | None = None
+    orig_item_id: int | None = None
+    if has_components:
+        model_text = model_text.replace("</components>", "\n".join(extra_comps) + "\n      </components>", 1)
+    else:
+        m_item = re.search(r'<item\b[^>]*\bobjectid="(\d+)"', model_text)
+        orig_item_id = int(m_item.group(1)) if m_item else (used_ids[0] if used_ids else 1)
+        asm_id = next_id
+        next_id += 1
+        asm_obj = (
+            f'    <object id="{asm_id}" type="model">\n'
+            f"      <components>\n"
+            f'        <component objectid="{orig_item_id}" transform="1 0 0 0 1 0 0 0 1 0 0 0" />\n'
+            + "\n".join(extra_comps)
+            + "\n      </components>\n    </object>"
+        )
+        extra_objs.append(asm_obj)
+        model_text = re.sub(
+            r'(<item\b[^>]*\bobjectid=")\d+(")',
+            rf'\g<1>{asm_id}\g<2>',
+            model_text,
+            count=1,
+        )
+
+    model_text = model_text.replace("</resources>", "\n".join(extra_objs) + "\n  </resources>", 1)
+    entries[model_key] = model_text.encode("utf-8")
+
+    cfg_key = next((k for k in entries if k.lower() == "metadata/model_settings.config"), None)
+    if cfg_key:
+        cfg_text = entries[cfg_key].decode("utf-8", errors="ignore")
+        if asm_id is not None and orig_item_id is not None:
+            cfg_text = re.sub(
+                rf'(<object\b[^>]*\bid="){orig_item_id}(")',
+                rf'\g<1>{asm_id}\g<2>',
+                cfg_text,
+                count=1,
+            )
+        if "</object>" in cfg_text:
+            cfg_text = cfg_text.replace("</object>", "\n".join(extra_parts) + "\n  </object>", 1)
+        entries[cfg_key] = cfg_text.encode("utf-8")
+    else:
+        root_obj_id = asm_id if asm_id is not None else 1
+        entries["Metadata/model_settings.config"] = (
+            f'<?xml version="1.0" encoding="UTF-8"?>\n<config>\n  <object id="{root_obj_id}">\n'
+            + "\n".join(extra_parts)
+            + "\n  </object>\n</config>\n"
+        ).encode("utf-8")
+
+    with zipfile.ZipFile(out_3mf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        for k, v in entries.items():
+            zout.writestr(k, v)
     return out_3mf

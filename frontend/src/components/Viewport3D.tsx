@@ -8,6 +8,7 @@ import { applyThreeMfTrianglePaintGroups } from '../utils/threeMfPaint';
 import { useI18n } from '../i18n/I18nContext';
 import {
   ArrowDownToLine,
+  Ban,
   Box,
   Compass,
   CopyPlus,
@@ -28,6 +29,7 @@ import {
   Ruler,
   Scaling,
   Scissors,
+  SlidersHorizontal,
   Sparkles,
   StepForward,
   Trash2,
@@ -43,6 +45,7 @@ import type {
   OrientationOption,
   PrinterInfo,
   SceneObjectTransform,
+  SupportBlockerItem,
 } from '../services/api';
 import {
   applyVisibleRolesToGeometry,
@@ -60,6 +63,7 @@ export type CadToolMode =
   | 'scale'
   | 'lay_on_face'
   | 'cut'
+  | 'support_blocker'
   | 'measure';
 
 interface Viewport3DProps {
@@ -101,6 +105,10 @@ interface Viewport3DProps {
   onChangeSceneObjects?: (next: SceneObjectTransform[]) => void;
   onSplitObjects?: () => Promise<void> | void;
   isSplittingObjects?: boolean;
+  hasSlicedProfile?: boolean;
+  onOpenProfileInspector?: () => void;
+  supportBlockers?: SupportBlockerItem[];
+  onChangeSupportBlockers?: (next: SupportBlockerItem[]) => void;
 }
 
 function buildInitialInstances(t: ModelTransform): ModelInstanceTransform[] {
@@ -909,6 +917,8 @@ function SingleInstancePreview({
     e.stopPropagation();
     if (activeCadTool === 'measure' && onSurfaceClick) {
       onSurfaceClick(e.point.clone());
+    } else if (activeCadTool === 'support_blocker' && onSurfaceClick) {
+      onSurfaceClick(e.point.clone());
     } else if (!isDraggingGizmo) {
       onSelectInstance();
     }
@@ -954,8 +964,21 @@ function SingleInstancePreview({
     }
   };
 
+  const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
+    if (ghostMode || e.buttons !== 1) return;
+    if (activeCadTool === 'support_blocker' && onSurfaceClick) {
+      e.stopPropagation();
+      onSurfaceClick(e.point.clone());
+    }
+  };
+
   const innerContent = threeMfBaseResult ? (
-    <primitive object={threeMfBaseResult} scale={gpuScale} onClick={handleClick} />
+    <primitive
+      object={threeMfBaseResult}
+      scale={gpuScale}
+      onClick={handleClick}
+      onPointerMove={handlePointerMove}
+    />
   ) : stlBaseResult ? (
     <mesh
       geometry={stlBaseResult.geo}
@@ -963,6 +986,7 @@ function SingleInstancePreview({
       castShadow={!ghostMode}
       receiveShadow={!ghostMode}
       onClick={handleClick}
+      onPointerMove={handlePointerMove}
     >
       {ghostMode ? (
         <meshBasicMaterial
@@ -1419,6 +1443,10 @@ export function Viewport3D({
   onChangeSceneObjects,
   onSplitObjects,
   isSplittingObjects = false,
+  hasSlicedProfile = false,
+  onOpenProfileInspector,
+  supportBlockers = [],
+  onChangeSupportBlockers,
 }: Viewport3DProps) {
   const { t } = useI18n();
   const [viewMode, setViewMode] = useState<'stl' | 'gcode'>('stl');
@@ -1452,6 +1480,8 @@ export function Viewport3D({
   const [cutTiltX, setCutTiltX] = useState<number>(0);
   const [cutTiltY, setCutTiltY] = useState<number>(0);
   const [cutKeepMode, setCutKeepMode] = useState<'upper' | 'lower' | 'both'>('both');
+  const [blockerRadius, setBlockerRadius] = useState<number>(15);
+  const [isBlockerBrushMode, setIsBlockerBrushMode] = useState<boolean>(false);
   const [measurePoints, setMeasurePoints] = useState<THREE.Vector3[]>([]);
 
   const [groupScalePct, setGroupScalePct] = useState<number>(100);
@@ -2370,6 +2400,7 @@ export function Viewport3D({
                 ['scale', t.step2.scale, Scaling],
                 ['lay_on_face', t.step2.place, FlipVertical2],
                 ['cut', t.step2.cut, Scissors],
+                ['support_blocker', 'No Soportes', Ban],
                 ['measure', t.step2.measure, Ruler],
               ] as const
             ).map(([toolId, label, Icon]) => {
@@ -2485,6 +2516,26 @@ export function Viewport3D({
             >
               <Layers className="h-3.5 w-3.5" />
               Vista de laminado ({totalLayers})
+            </button>
+            <button
+              type="button"
+              disabled={!hasSlicedProfile}
+              onClick={() => {
+                if (hasSlicedProfile) onOpenProfileInspector?.();
+              }}
+              title={
+                hasSlicedProfile
+                  ? t.profileInspector.savedBadge
+                  : t.profileInspector.disabledTooltip
+              }
+              className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                hasSlicedProfile
+                  ? 'text-cyan-200 hover:bg-cyan-500/20'
+                  : 'cursor-not-allowed text-slate-500 opacity-50'
+              }`}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              <span>{t.profileInspector.buttonLabel}</span>
             </button>
           </div>
         )}
@@ -3146,6 +3197,77 @@ export function Viewport3D({
             </>
           )}
 
+          {activeCadTool === 'support_blocker' && (
+            <>
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-rose-200">
+                  Bloqueador de Soportes ({supportBlockers.length})
+                </span>
+                {supportBlockers.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => onChangeSupportBlockers?.([])}
+                    className="rounded border border-rose-500/40 bg-rose-500/15 px-1.5 py-0.5 text-[10px] text-rose-200 hover:bg-rose-500/25"
+                  >
+                    Limpiar
+                  </button>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Haz clic sobre cualquier zona del modelo para pintar esferas donde NO se generarán soportes al laminar.
+              </p>
+              <div>
+                <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                  <span className="text-slate-300">Radio del pincel / bloqueador</span>
+                  <span className="font-mono font-semibold text-rose-300">{blockerRadius} mm</span>
+                </div>
+                <input
+                  type="range"
+                  min={4}
+                  max={40}
+                  step={1}
+                  value={blockerRadius}
+                  onChange={(e) => setBlockerRadius(Number(e.target.value))}
+                  className="h-1.5 w-full cursor-pointer accent-rose-400"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBlockerBrushMode((v) => !v)}
+                className={`flex w-full items-center justify-center gap-1.5 rounded-lg border py-1 text-[11px] font-semibold transition ${
+                  isBlockerBrushMode
+                    ? 'border-rose-400 bg-rose-500/25 text-rose-100'
+                    : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-rose-500/50'
+                }`}
+              >
+                {isBlockerBrushMode ? 'Pincel continuo ACTIVO (arrastra sobre el modelo)' : 'Activar pincel continuo (arrastrar)'}
+              </button>
+              {supportBlockers.length > 0 && (
+                <div className="max-h-36 space-y-1 overflow-y-auto pr-1">
+                  {supportBlockers.map((b, idx) => (
+                    <div
+                      key={b.id}
+                      className="flex items-center justify-between rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 font-mono text-[10px] text-rose-100"
+                    >
+                      <span>
+                        #{idx + 1} · Z={b.z.toFixed(1)}mm · R={b.radius}mm
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onChangeSupportBlockers?.(supportBlockers.filter((x) => x.id !== b.id))
+                        }
+                        className="text-rose-300 hover:text-white"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
           {activeCadTool === 'measure' && (
             <>
               <div className="flex items-center justify-between">
@@ -3659,7 +3781,29 @@ export function Viewport3D({
               activeCadTool={viewMode === 'stl' ? activeCadTool : null}
               isDraggingGizmo={isDraggingGizmo}
               onSelectInstance={() => setActiveInstanceIdx(idx)}
-              onSurfaceClick={handleMeasureClick}
+              onSurfaceClick={(pt) => {
+                if (activeCadTool === 'support_blocker' && onChangeSupportBlockers) {
+                  const nx = Math.round(pt.x * 10) / 10;
+                  const ny = Math.round(-pt.z * 10) / 10;
+                  const nz = Math.max(0, Math.round(pt.y * 10) / 10);
+                  const tooClose = supportBlockers.some(
+                    (b) => Math.hypot(b.x - nx, b.y - ny, b.z - nz) < blockerRadius * 0.45,
+                  );
+                  if (tooClose) return;
+                  onChangeSupportBlockers([
+                    ...supportBlockers,
+                    {
+                      id: Math.random().toString(36).slice(2, 9),
+                      x: nx,
+                      y: ny,
+                      z: nz,
+                      radius: blockerRadius,
+                    },
+                  ]);
+                } else {
+                  handleMeasureClick(pt);
+                }
+              }}
               onCommitOffset={(patch) => updateActiveInstance(patch)}
               onDraggingChange={setIsDraggingGizmo}
             />
@@ -3675,6 +3819,30 @@ export function Viewport3D({
             bedSpan={bedSpan}
           />
         )}
+
+        {/* Volúmenes bloqueadores de soportes (No Soportes) */}
+        {viewMode === 'stl' &&
+          stlFile &&
+          supportBlockers.map((b) => (
+            <group
+              key={b.id}
+              position={[b.x, b.z, -b.y]}
+              onClick={(ev) => {
+                if (activeCadTool !== 'support_blocker') return;
+                ev.stopPropagation();
+                onChangeSupportBlockers?.(supportBlockers.filter((x) => x.id !== b.id));
+              }}
+            >
+              <mesh>
+                <sphereGeometry args={[b.radius, 20, 16]} />
+                <meshBasicMaterial color="#ef4444" transparent opacity={0.34} depthWrite={false} />
+              </mesh>
+              <mesh>
+                <sphereGeometry args={[b.radius, 12, 10]} />
+                <meshBasicMaterial color="#fca5a5" wireframe transparent opacity={0.45} />
+              </mesh>
+            </group>
+          ))}
 
         {/* Facetas iluminadas de Colocar en Cara */}
         {viewMode === 'stl' &&
@@ -3718,7 +3886,7 @@ export function Viewport3D({
 
         <OrbitControls
           makeDefault
-          enabled={!isDraggingGizmo && !marqueeRect}
+          enabled={!isDraggingGizmo && !marqueeRect && !(activeCadTool === 'support_blocker' && isBlockerBrushMode)}
           enableDamping
           dampingFactor={0.08}
           minDistance={25}

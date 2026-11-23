@@ -98,6 +98,8 @@ fi
   --hidden-import "pydantic" \
   --hidden-import "httpx" \
   --hidden-import "trimesh" \
+  --hidden-import "rtree" \
+  --collect-all "rtree" \
   --hidden-import "webview" \
   --hidden-import "mcp.server.mcpserver" \
   --collect-submodules "fastapi" \

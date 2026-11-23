@@ -393,6 +393,49 @@ def nikk_delete_project(project_id: str) -> str:
     return _json_str({"deleted": delete_full_project(project_id), "project_id": project_id})
 
 
+@mcp.tool()
+def nikk_get_sliced_profile_snapshot(
+    job_id: str | None = None,
+    project_id: str | None = None,
+) -> str:
+    """Devuelve la instantánea exacta de 7 secciones del perfil efectivo con el que se laminó un `job_id` o `project_id`."""
+    if project_id:
+        proj = get_full_project(project_id)
+        if proj is None:
+            raise ValueError(f"Proyecto no encontrado: {project_id}")
+        snap = (proj.get("state") or {}).get("sliced_profile_snapshot")
+        if isinstance(snap, dict):
+            return _json_str({"source": "project", "project_id": project_id, "sliced_profile_snapshot": snap})
+        raise ValueError(f"El proyecto {project_id} no contiene sliced_profile_snapshot.")
+
+    if job_id:
+        snap_path = TEMP_DIR / job_id / "sliced_profile_snapshot.json"
+        if snap_path.is_file():
+            return _json_str(
+                {
+                    "source": "job",
+                    "job_id": job_id,
+                    "sliced_profile_snapshot": json.loads(snap_path.read_text(encoding="utf-8")),
+                }
+            )
+        out_dir = TEMP_DIR / job_id / "output"
+        if out_dir.is_dir():
+            for gcode_p in sorted(out_dir.glob("*.gcode")):
+                for line in reversed(gcode_p.read_text(encoding="utf-8", errors="ignore").splitlines()):
+                    s = line.strip()
+                    if s.startswith("; NIKK_SLICER_PROFILE_JSON:"):
+                        return _json_str(
+                            {
+                                "source": "gcode",
+                                "job_id": job_id,
+                                "sliced_profile_snapshot": json.loads(s.split(":", 1)[1].strip()),
+                            }
+                        )
+        raise FileNotFoundError(f"No se encontró sliced_profile_snapshot para job_id={job_id}")
+
+    raise ValueError("Debes indicar `job_id` o `project_id`.")
+
+
 # ==============================================================================
 # 7. TELEMETRÍA Y CONTROL EN VIVO DE LAS 6 IMPRESORAS
 # ==============================================================================

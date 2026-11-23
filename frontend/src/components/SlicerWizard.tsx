@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { GlobalProcessingOverlay, type ProcessingOverlayMode } from './GlobalProcessingOverlay';
+import { ProfileInspectorDrawer } from './ProfileInspectorDrawer';
 import { QuoteCalculatorModal } from './QuoteCalculatorModal';
 import { useI18n } from '../i18n/I18nContext';
 import {
@@ -39,7 +40,6 @@ import {
 import {
   fetchTelemetryLearnings,
   getGcodeUrl,
-  getSavedProjectDownloadUrl,
   requestAIDefectDiagnose,
   type AIAnalyzeModelResponse,
   type AIDefectDiagnoseResponse,
@@ -58,6 +58,7 @@ import {
   type SavedProjectRecord,
   type QualityPreset,
   type SliceResponse,
+  type SlicedProfileSnapshot,
   type SupportType,
   type ZColorRange,
 } from '../services/api';
@@ -499,6 +500,8 @@ interface SlicerWizardProps {
   onToggleSupports: (v: boolean) => void;
   supportType: SupportType;
   onChangeSupportType: (t: SupportType) => void;
+  supportStyle?: string;
+  onChangeSupportStyle?: (s: string) => void;
   supportOnBuildPlateOnly: boolean;
   onChangeSupportOnBuildPlateOnly: (v: boolean) => void;
   supportZDistance: number;
@@ -576,6 +579,10 @@ interface SlicerWizardProps {
   onCancelSlice?: () => void;
   isSlicing: boolean;
   sliceResult: SliceResponse | null;
+  slicedProfileSnapshot?: SlicedProfileSnapshot | null;
+  profileDrawerOpen?: boolean;
+  onSetProfileDrawerOpen?: (open: boolean) => void;
+  onApplyProfileAndReslice?: (overrides: Record<string, unknown>) => Promise<void> | void;
   errorMsg: string | null;
   detectedVolumes: string[];
   configuredSdVolume: string;
@@ -672,6 +679,8 @@ export function SlicerWizard({
   onToggleSupports,
   supportType,
   onChangeSupportType,
+  supportStyle = 'default',
+  onChangeSupportStyle,
   supportOnBuildPlateOnly,
   onChangeSupportOnBuildPlateOnly,
   supportZDistance,
@@ -715,6 +724,10 @@ export function SlicerWizard({
   onCancelSlice,
   isSlicing,
   sliceResult,
+  slicedProfileSnapshot,
+  profileDrawerOpen: controlledProfileOpen,
+  onSetProfileDrawerOpen,
+  onApplyProfileAndReslice,
   errorMsg,
   detectedVolumes,
   configuredSdVolume,
@@ -774,6 +787,13 @@ export function SlicerWizard({
     }
   }, [externalProjectsOpen]);
   const [quoteModalOpen, setQuoteModalOpen] = useState(false);
+  const [internalProfileDrawerOpen, setInternalProfileDrawerOpen] = useState(false);
+  const profileDrawerOpen = controlledProfileOpen ?? internalProfileDrawerOpen;
+  const setProfileDrawerOpen = (next: boolean) => {
+    setInternalProfileDrawerOpen(next);
+    onSetProfileDrawerOpen?.(next);
+  };
+  const effectiveProfileSnapshot = sliceResult?.sliced_profile_snapshot ?? slicedProfileSnapshot ?? null;
   const [defectTargetProj, setDefectTargetProj] = useState<SavedProjectRecord | null>(null);
   const [defectText, setDefectText] = useState('');
   const [isDiagnosingDefect, setIsDiagnosingDefect] = useState(false);
@@ -1812,7 +1832,12 @@ export function SlicerWizard({
                 <div className="grid grid-cols-2 gap-1.5">
                   <button
                     type="button"
-                    onClick={() => onChangeSupportType('tree(auto)')}
+                    onClick={() => {
+                      onChangeSupportType('tree(auto)');
+                      if (supportStyle === 'grid' || supportStyle === 'snug') {
+                        onChangeSupportStyle?.('default');
+                      }
+                    }}
                     className={`rounded-lg border py-1 text-[11px] font-medium transition ${
                       supportType === 'tree(auto)'
                         ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
@@ -1823,7 +1848,17 @@ export function SlicerWizard({
                   </button>
                   <button
                     type="button"
-                    onClick={() => onChangeSupportType('normal(auto)')}
+                    onClick={() => {
+                      onChangeSupportType('normal(auto)');
+                      if (
+                        supportStyle === 'tree_slim' ||
+                        supportStyle === 'tree_strong' ||
+                        supportStyle === 'tree_hybrid' ||
+                        supportStyle === 'organic'
+                      ) {
+                        onChangeSupportStyle?.('default');
+                      }
+                    }}
                     className={`rounded-lg border py-1 text-[11px] font-medium transition ${
                       supportType === 'normal(auto)'
                         ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
@@ -1833,6 +1868,32 @@ export function SlicerWizard({
                     Normal / Típico
                   </button>
                 </div>
+
+                {onChangeSupportStyle && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-slate-300">Estilo de soporte</span>
+                    <select
+                      value={supportStyle}
+                      onChange={(e) => onChangeSupportStyle(e.target.value)}
+                      className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] font-medium text-slate-100 focus:border-cyan-500 focus:outline-none"
+                    >
+                      <option value="default">Por defecto</option>
+                      {supportType.startsWith('normal') ? (
+                        <>
+                          <option value="grid">Rejilla</option>
+                          <option value="snug">Ajustado (Snug)</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="tree_slim">Árbol delgado</option>
+                          <option value="tree_strong">Árbol fuerte</option>
+                          <option value="tree_hybrid">Árbol híbrido</option>
+                          <option value="organic">Árbol orgánico</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-1.5">
                   <button
@@ -2888,6 +2949,27 @@ export function SlicerWizard({
             </h2>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={!effectiveProfileSnapshot}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                if (effectiveProfileSnapshot) setProfileDrawerOpen(true);
+              }}
+              className={`flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[10px] font-semibold transition ${
+                effectiveProfileSnapshot
+                  ? 'border-cyan-500/45 bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/25'
+                  : 'cursor-not-allowed border-slate-700/60 bg-slate-900/50 text-slate-500 opacity-50'
+              }`}
+              title={
+                effectiveProfileSnapshot
+                  ? t.profileInspector.savedBadge
+                  : t.profileInspector.disabledTooltip
+              }
+            >
+              <SlidersHorizontal className="h-3 w-3" />
+              <span>{t.profileInspector.buttonLabel}</span>
+            </button>
             {!isStep4Expanded && sliceResult && (
               <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-300">
                 Laminado listo · {sliceResult.estimated_time} · {sliceResult.filament_grams}g
@@ -3457,14 +3539,36 @@ export function SlicerWizard({
 
         {sliceResult && !isSlicing && (
           <div className="mt-2.5 space-y-2 rounded-xl border border-emerald-500/35 bg-emerald-500/5 p-2.5">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
                 <CheckCircle2 className="h-3.5 w-3.5" />
                 Laminado listo
               </span>
-              <span className="font-mono text-[10px] text-slate-400">
-                {sliceResult.job_id}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={!effectiveProfileSnapshot}
+                  onClick={() => {
+                    if (effectiveProfileSnapshot) setProfileDrawerOpen(true);
+                  }}
+                  className={`flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[10px] font-semibold transition ${
+                    effectiveProfileSnapshot
+                      ? 'border-cyan-500/45 bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/25'
+                      : 'cursor-not-allowed border-slate-700/60 bg-slate-900/50 text-slate-500 opacity-50'
+                  }`}
+                  title={
+                    effectiveProfileSnapshot
+                      ? t.profileInspector.savedBadge
+                      : t.profileInspector.disabledTooltip
+                  }
+                >
+                  <SlidersHorizontal className="h-3 w-3" />
+                  <span>{t.profileInspector.buttonLabel}</span>
+                </button>
+                <span className="font-mono text-[10px] text-slate-400">
+                  {sliceResult.job_id}
+                </span>
+              </div>
             </div>
 
             <div className="grid grid-cols-3 gap-1.5 text-center">
@@ -3792,28 +3896,6 @@ export function SlicerWizard({
                         >
                           Confirmar Descarga
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const cleanName =
-                              customBaseName.replace(/^_+|_+$/g, '') ||
-                              `slicerhub_${sliceResult.job_id}`;
-                            const isC5P = selectedProfileId === 'creator5_pro';
-                            const baseUrl = getGcodeUrl(sliceResult.gcode_url, cleanName);
-                            const sep = baseUrl.includes('?') ? '&' : '?';
-                            const dlUrl = isC5P ? `${baseUrl}${sep}format=flashforge` : baseUrl;
-                            setPendingOutputAction(null);
-                            void triggerFileDownload(dlUrl, `${cleanName}.gcode`);
-                            void triggerFileDownload(
-                              getSavedProjectDownloadUrl(sliceResult.job_id),
-                              `${cleanName}.nikk.json`,
-                            );
-                          }}
-                          className="rounded-lg border border-cyan-500/50 bg-cyan-500/20 px-2.5 py-1 font-semibold text-cyan-100 hover:bg-cyan-500/30"
-                          title="Descarga el .gcode más la ficha JSON con todos los parámetros"
-                        >
-                          .gcode + Ficha (.json)
-                        </button>
                       </div>
                     )}
                   </div>
@@ -4108,6 +4190,19 @@ export function SlicerWizard({
         triangleCount={analysis?.triangle_count ?? 0}
         layerHeightMm={qualityPreset === 'rapidez_extrema' ? 0.24 : 0.2}
       />
+
+      {effectiveProfileSnapshot && (
+        <ProfileInspectorDrawer
+          open={profileDrawerOpen}
+          onClose={() => setProfileDrawerOpen(false)}
+          snapshot={effectiveProfileSnapshot}
+          projectTitle={stlFile?.name || 'Proyecto 3D'}
+          isSlicing={isSlicing}
+          onApplyAndReslice={async (ov) => {
+            await onApplyProfileAndReslice?.(ov);
+          }}
+        />
+      )}
     </div>
   );
 }

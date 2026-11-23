@@ -298,6 +298,7 @@ export interface SlicePayload {
   lithophane_mode?: boolean;
   supports: boolean;
   support_type: SupportType;
+  support_style?: string;
   support_on_build_plate_only: boolean;
   support_z_distance: number;
   support_xy_distance?: number;
@@ -329,6 +330,113 @@ export interface SlicePayload {
   layer_pauses?: LayerPauseItem[];
   scene_objects?: SceneObjectTransform[];
   quality_overrides?: string[];
+  profile_overrides?: Record<string, unknown>;
+  support_blockers?: SupportBlockerItem[];
+}
+
+export interface SupportBlockerItem {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+}
+
+export interface SlicedProfileFilament {
+  slot: string;
+  material: string;
+  brand_or_name: string;
+  color_hex: string;
+  nozzle_temp_initial: number;
+  nozzle_temp: number;
+  bed_temp_initial: number;
+  bed_temp: number;
+  fan_min_speed: number;
+  fan_max_speed: number;
+  overhang_fan_speed: number;
+  retraction_length: number;
+  retraction_speed: number;
+  max_volumetric_flow: number;
+  density_g_cm3: number;
+  cost_per_kg_cop: number;
+}
+
+export interface SlicedProfileSnapshot {
+  quality: {
+    layer_height: number;
+    initial_layer_height: number;
+    line_width: number;
+    outer_wall_line_width: number;
+    inner_wall_line_width?: number;
+    top_surface_line_width?: number;
+    infill_line_width?: number;
+    support_line_width?: number;
+    wall_generator: string;
+    seam_position: string;
+    ironing_type: string;
+    top_surface_pattern: string;
+  };
+  strength: {
+    wall_loops: number;
+    top_shell_layers: number;
+    bottom_shell_layers: number;
+    sparse_infill_density: string;
+    sparse_infill_pattern: string;
+    infill_wall_overlap: string;
+  };
+  speed: {
+    outer_wall_speed: number;
+    inner_wall_speed: number;
+    initial_layer_speed: number;
+    sparse_infill_speed: number;
+    top_surface_speed?: number;
+    overhang_speed: number;
+    overhang_1_4_speed?: number;
+    overhang_2_4_speed?: number;
+    overhang_3_4_speed?: number;
+    overhang_4_4_speed?: number;
+    bridge_speed?: number;
+    travel_speed: number;
+    max_volumetric_speed_qmax: number;
+    acceleration_print: number;
+  };
+  support: {
+    enable_support: boolean;
+    support_type: string;
+    support_style?: string;
+    support_threshold_angle: number;
+    support_top_z_distance: number;
+    support_bottom_z_distance: number;
+    support_object_xy_distance: number;
+    support_interface_top_layers: number;
+    support_interface_bottom_layers?: number;
+    support_interface_spacing: number;
+    support_interface_pattern: string;
+  };
+  multimaterial: {
+    active_tools: string[];
+    tool_mapping: Record<string, number>;
+    enable_prime_tower: boolean;
+    prime_tower_width: number;
+    prime_tower_brim_width?: number;
+    flush_volumes: unknown;
+    support_interface_filament: number;
+    z_color_changes: ZColorRange[];
+  };
+  others: {
+    brim_type: string;
+    brim_width: number;
+    skirt_loops: number;
+    layer_pauses: LayerPauseItem[];
+    anti_stringing_active: boolean;
+    chamber_temp?: number;
+    bed_temp?: number;
+    gcode_filename?: string;
+    printer_name: string;
+    slicer_engine: string;
+    sliced_at_timestamp: string;
+  };
+  filaments: SlicedProfileFilament[];
 }
 
 export interface SliceResponse {
@@ -348,6 +456,7 @@ export interface SliceResponse {
   mesh_warnings: string[];
   dimensions_mm: DimensionsMM;
   applied_pauses?: LayerPauseItem[];
+  sliced_profile_snapshot?: SlicedProfileSnapshot | null;
 }
 
 export interface AIRecommendPayload {
@@ -372,6 +481,7 @@ export interface AIRecommendPayload {
 export interface AIRecommendResponse {
   supports: boolean;
   support_type: SupportType;
+  support_style?: string;
   support_on_build_plate_only: boolean;
   support_z_distance: number;
   support_xy_distance?: number;
@@ -407,6 +517,7 @@ export interface AISupportOrientResponse {
   badge_status: 'SIN_SOPORTES' | 'SOPORTES_OBLIGATORIOS';
   badge_label: string;
   support_type: SupportType;
+  support_style?: string;
   support_on_build_plate_only: boolean;
   support_z_distance: number;
   support_xy_distance?: number;
@@ -1065,6 +1176,7 @@ export interface AIOptimizeSliceResponse {
   rot_z: number;
   supports_required: boolean;
   support_type: SupportType;
+  support_style?: string;
   support_on_build_plate_only: boolean;
   support_z_distance: number;
   support_xy_distance: number;
@@ -1274,6 +1386,9 @@ export async function sliceModel(
   }
   form.append('supports', String(payload.supports));
   form.append('support_type', payload.support_type);
+  if (payload.support_style) {
+    form.append('support_style', payload.support_style);
+  }
   form.append(
     'support_on_build_plate_only',
     String(payload.support_on_build_plate_only),
@@ -1382,6 +1497,12 @@ export async function sliceModel(
   }
   if (payload.quality_overrides && payload.quality_overrides.length > 0) {
     form.append('quality_overrides_json', JSON.stringify(payload.quality_overrides));
+  }
+  if (payload.profile_overrides && Object.keys(payload.profile_overrides).length > 0) {
+    form.append('profile_overrides_json', JSON.stringify(payload.profile_overrides));
+  }
+  if (payload.support_blockers && payload.support_blockers.length > 0) {
+    form.append('support_blockers_json', JSON.stringify(payload.support_blockers));
   }
 
   const res = await fetchWithTimeout(

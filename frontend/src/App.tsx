@@ -53,6 +53,8 @@ import {
   type PrinterInfo,
   type PrintersConfigResponse,
   type ProfileId,
+  type SlicedProfileSnapshot,
+  type SupportBlockerItem,
   type QualityPreset,
   type SavedProjectRecord,
   type SceneObjectInfo,
@@ -248,6 +250,7 @@ export function App() {
 
   const [supports, setSupports] = useState<boolean>(false);
   const [supportType, setSupportType] = useState<SupportType>('tree(auto)');
+  const [supportStyle, setSupportStyle] = useState<string>('default');
   const [supportOnBuildPlateOnly, setSupportOnBuildPlateOnly] =
     useState<boolean>(true);
   const [supportZDistance, setSupportZDistance] = useState<number>(
@@ -370,6 +373,9 @@ export function App() {
 
   const [isSlicing, setIsSlicing] = useState(false);
   const [sliceResult, setSliceResult] = useState<SliceResponse | null>(null);
+  const [slicedProfileSnapshot, setSlicedProfileSnapshot] = useState<SlicedProfileSnapshot | null>(null);
+  const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
+  const [supportBlockers, setSupportBlockers] = useState<SupportBlockerItem[]>([]);
   const [gcodeText, setGcodeText] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -1045,6 +1051,42 @@ export function App() {
       setAdhesionType(res.analysis.suggests_raft ? 'raft' : 'none');
       setAutoOrientMsg(res.message);
       setPartExtruderMap({});
+      if (res.parts_count > 1) {
+        try {
+          const splitRes = await splitMeshObjects({
+            printerId: selectedPrinterId,
+            meshId: res.mesh_id,
+          });
+          const mappedObjs: SceneObjectTransform[] = splitRes.scene_objects.map((o) => ({
+            object_id: o.object_id,
+            name: o.name,
+            extruder: o.extruder,
+            color_hex: o.color_hex,
+            mesh_url: o.mesh_url,
+            offset_x: o.position?.[0] ?? 0,
+            offset_y: o.position?.[1] ?? 0,
+            offset_z: o.position?.[2] ?? 0,
+            rot_x: o.rotation?.[0] ?? 0,
+            rot_y: o.rotation?.[1] ?? 0,
+            rot_z: o.rotation?.[2] ?? 0,
+            scale_percent: o.scale?.[0] ?? 100,
+            scale_x: null,
+            scale_y: null,
+            scale_z: null,
+            drop_to_bed: true,
+            dimensions_mm: o.dimensions_mm ?? [0, 0, 0],
+          }));
+          setSceneObjects(mappedObjs);
+          setSelectedObjectIds(mappedObjs.length > 0 ? [mappedObjs[0].object_id] : []);
+          setMeshId(splitRes.mesh_id);
+        } catch {
+          setSceneObjects([]);
+          setSelectedObjectIds([]);
+        }
+      } else {
+        setSceneObjects([]);
+        setSelectedObjectIds([]);
+      }
     } catch (err: unknown) {
       setErrorMsg(
         err instanceof Error ? err.message : 'Error ejecutando el corte geométrico.',
@@ -1117,6 +1159,7 @@ export function App() {
     fuzzySkinThicknessOverride?: number;
     fuzzySkinPointDistanceOverride?: number;
     aiStrategyLabelOverride?: string | null;
+    profileOverrides?: Record<string, unknown>;
   }): Promise<{ res: SliceResponse; rawGcode: string }> => {
     const minBound = Math.min(spoolMinTemp, spoolMaxTemp - 5);
     const maxBound = Math.max(spoolMaxTemp, minBound + 5);
@@ -1172,6 +1215,7 @@ export function App() {
       lithophane_mode: lithophaneMode,
       supports: effSupports,
       support_type: overrides?.supportTypeOverride ?? supportType,
+      support_style: supportStyle,
       support_on_build_plate_only:
         overrides?.plateOnlyOverride !== undefined
           ? overrides.plateOnlyOverride
@@ -1201,6 +1245,10 @@ export function App() {
       transform: overrides?.transformOverride ?? transform,
       layer_pauses: layerPauses,
       ...(aiQualityOverrides.length > 0 ? { quality_overrides: aiQualityOverrides } : {}),
+      ...(overrides?.profileOverrides && Object.keys(overrides.profileOverrides).length > 0
+        ? { profile_overrides: overrides.profileOverrides }
+        : {}),
+      ...(supportBlockers.length > 0 ? { support_blockers: supportBlockers } : {}),
       ...(sceneObjects.length > 0 ? { scene_objects: sceneObjects } : {}),
       ...(activeProfileId === 'creator5_pro'
         ? {
@@ -1326,6 +1374,8 @@ export function App() {
           layer_pauses: layerPauses,
           mesh_id: meshId,
           job_id: effSlice?.job_id ?? null,
+          sliced_profile_snapshot:
+            effSlice?.sliced_profile_snapshot ?? slicedProfileSnapshot ?? null,
           slice_metrics: effSlice
             ? {
                 estimated_time: effSlice.estimated_time,
@@ -1384,6 +1434,11 @@ export function App() {
       }
       if (st.ai_analysis_result && typeof st.ai_analysis_result === 'object') {
         setAiAnalysisResult(st.ai_analysis_result as AIAnalyzeModelResponse);
+      }
+      if (st.sliced_profile_snapshot && typeof st.sliced_profile_snapshot === 'object') {
+        setSlicedProfileSnapshot(st.sliced_profile_snapshot as SlicedProfileSnapshot);
+      } else {
+        setSlicedProfileSnapshot(null);
       }
       const nextTransform =
         st.transform && typeof st.transform === 'object'
@@ -2440,7 +2495,7 @@ export function App() {
     spoolMaxTemp,
   ]);
 
-  const handleSlice = async () => {
+  const handleSlice = async (profileOverrides?: Record<string, unknown>) => {
     if (!stlFile && !meshId) return;
     sliceAbortRef.current?.abort();
     const ctrl = new AbortController();
@@ -2450,8 +2505,15 @@ export function App() {
     setSendPrintMsg(null);
 
     try {
-      const { res, rawGcode } = await runRealSlice();
+      const { res, rawGcode } = await runRealSlice(
+        profileOverrides && Object.keys(profileOverrides).length > 0
+          ? { profileOverrides }
+          : undefined,
+      );
       setSliceResult(res);
+      if (res.sliced_profile_snapshot) {
+        setSlicedProfileSnapshot(res.sliced_profile_snapshot);
+      }
       setGcodeText(rawGcode);
       if (!aiAnalysisResult) {
         const aiRes = await handleAnalyzeModelAI(res);
@@ -2501,6 +2563,7 @@ export function App() {
         custom_filename: customFilename,
       });
       setSendPrintMsg(res.message);
+      void saveCurrentProject({ overrideSlice: sliceResult });
     } catch (err: unknown) {
       setErrorMsg(
         err instanceof Error ? err.message : 'Error enviando G-code a la impresora.',
@@ -2872,6 +2935,8 @@ export function App() {
             onToggleSupports={setSupports}
             supportType={supportType}
             onChangeSupportType={setSupportType}
+            supportStyle={supportStyle}
+            onChangeSupportStyle={setSupportStyle}
             supportOnBuildPlateOnly={supportOnBuildPlateOnly}
             onChangeSupportOnBuildPlateOnly={setSupportOnBuildPlateOnly}
             supportZDistance={supportZDistance}
@@ -2926,10 +2991,14 @@ export function App() {
             onRefreshSavedProjects={refreshSavedProjects}
             onLoadSavedProject={handleLoadSavedProject}
             onApplyDefectCorrection={handleApplyDefectCorrection}
-            onSlice={handleSlice}
+            onSlice={() => void handleSlice()}
             onCancelSlice={handleCancelSlice}
             isSlicing={isSlicing}
             sliceResult={sliceResult}
+            slicedProfileSnapshot={sliceResult?.sliced_profile_snapshot ?? slicedProfileSnapshot}
+            profileDrawerOpen={profileDrawerOpen}
+            onSetProfileDrawerOpen={setProfileDrawerOpen}
+            onApplyProfileAndReslice={(ov) => handleSlice(ov)}
             errorMsg={errorMsg}
             detectedVolumes={printersConfig?.detected_volumes ?? []}
             configuredSdVolume={configuredSdVolume}
@@ -2980,6 +3049,10 @@ export function App() {
             onCloseOrientations={() => setOrientationsData(null)}
             onAutoArrange={handleAutoArrange}
             isAutoArranging={isAutoArranging}
+            hasSlicedProfile={Boolean(sliceResult?.sliced_profile_snapshot ?? slicedProfileSnapshot)}
+            onOpenProfileInspector={() => setProfileDrawerOpen(true)}
+            supportBlockers={supportBlockers}
+            onChangeSupportBlockers={setSupportBlockers}
             onFetchLayOnFaces={handleFetchLayOnFaces}
             onCutMesh={handleCutMesh}
             isCuttingMesh={isCuttingMesh}

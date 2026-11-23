@@ -208,6 +208,16 @@ class ZColorRange(BaseModel):
     extruder_index: int = Field(ge=0, le=3)
 
 
+class SupportBlockerItem(BaseModel):
+    """Volumen esférico bloqueador de soportes en coordenadas de cama (mm)."""
+
+    id: str = ""
+    x: float
+    y: float
+    z: float
+    radius: float = Field(default=10.0, ge=1.0, le=80.0)
+
+
 class SliceRequest(BaseModel):
     """Parámetros de entrada para laminar un STL."""
 
@@ -221,6 +231,7 @@ class SliceRequest(BaseModel):
     lithophane_mode: bool = False
     supports: bool = False
     support_type: SupportType = "tree(auto)"
+    support_style: str = "default"
     support_on_build_plate_only: bool = True
     support_z_distance: float | None = Field(default=None, ge=0.05, le=0.5)
     support_xy_distance: float | None = Field(default=None, ge=0.1, le=2.0)
@@ -262,6 +273,8 @@ class SliceRequest(BaseModel):
     layer_pauses: list["LayerPauseItem"] = Field(default_factory=list)
     scene_objects: list["SceneObjectTransform"] = Field(default_factory=list)
     quality_overrides: list[str] = Field(default_factory=list)
+    profile_overrides: dict[str, Any] = Field(default_factory=dict)
+    support_blockers: list[SupportBlockerItem] = Field(default_factory=list)
 
 
 class SceneObjectTransform(BaseModel):
@@ -347,6 +360,7 @@ class SliceResponse(BaseModel):
     mesh_warnings: list[str] = Field(default_factory=list)
     dimensions_mm: DimensionsMM
     applied_pauses: list[LayerPauseItem] = Field(default_factory=list)
+    sliced_profile_snapshot: dict[str, Any] | None = None
 
 
 class AIRecommendRequest(BaseModel):
@@ -540,6 +554,7 @@ class AIOptimizeSliceResponse(BaseModel):
     rot_z: float = 0.0
     supports_required: bool = False
     support_type: SupportType = "tree(auto)"
+    support_style: str = "default"
     support_on_build_plate_only: bool = True
     support_z_distance: float = 0.20
     support_xy_distance: float = 0.50

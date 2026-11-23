@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
+
+logger = logging.getLogger("slicerhub.main")
 
 from app.config import (
     DEFAULT_SUPPORT_XY_BY_MATERIAL,
@@ -106,7 +109,11 @@ from app.core.error_journal import (
 )
 from app.core.gcode_3mf_packager import package_gcode_as_3mf, prepare_flashforge_gcode
 from app.core.gcode_postprocessor import apply_layer_pauses_to_file
-from app.core.json_patcher import patch_profiles_for_job
+from app.core.json_patcher import (
+    build_sliced_profile_snapshot,
+    inject_profile_snapshot_into_gcode,
+    patch_profiles_for_job,
+)
 from app.core.print_telemetry_recorder import (
     get_machine_material_learnings,
     telemetry_recorder,
@@ -122,6 +129,7 @@ from app.core.mesh_analyzer import (
     evaluate_orientation_candidates,
     find_optimal_anti_support_orientation,
     get_scene_object_stl_path,
+    inject_support_blockers_into_3mf,
     load_and_transform_mesh,
     prepare_painted_3mf_for_slicer,
     sanitize_euler_rotation,
@@ -812,6 +820,44 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
     os.replace(tmp_path, path)
 
 
+def _persist_snapshot_sidecar(
+    job_id: str,
+    target_filename: str | None = None,
+    *,
+    extra_dir: Path | None = None,
+) -> Path | None:
+    """Guarda automáticamente `<nombre_del_gcode>.json` junto al .gcode y en el directorio del job."""
+    job_dir = TEMP_DIR / job_id
+    snap_path = job_dir / "sliced_profile_snapshot.json"
+    if not snap_path.is_file():
+        return None
+    try:
+        snap = json.loads(snap_path.read_text(encoding="utf-8"))
+        if not isinstance(snap, dict):
+            return None
+    except Exception:
+        return None
+    out_dir = job_dir / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(target_filename).stem if target_filename else f"slicerhub_{job_id}"
+    if target_filename:
+        others = snap.setdefault("others", {})
+        if isinstance(others, dict):
+            others["gcode_filename"] = target_filename
+        snap_path.write_text(json.dumps(snap, indent=2, ensure_ascii=False), encoding="utf-8")
+    sidecar_path = out_dir / f"{stem}.json"
+    sidecar_path.write_text(json.dumps(snap, indent=2, ensure_ascii=False), encoding="utf-8")
+    if extra_dir is not None and extra_dir.is_dir():
+        try:
+            (extra_dir / f"{stem}.json").write_text(
+                json.dumps(snap, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    return sidecar_path
+
+
 def _execute_slice_job_sync(
     req: SliceRequest,
     printer: PrinterConfig,
@@ -990,6 +1036,14 @@ def _execute_slice_job_sync(
         model_input = stl_for_slicer
         f_ids = None
 
+    if req.support_blockers:
+        try:
+            model_input = inject_support_blockers_into_3mf(
+                model_input, job_dir, printer, req.support_blockers
+            )
+        except Exception as exc:
+            logger.warning("No se pudieron inyectar support_blockers en job %s: %s", job_id, exc)
+
     try:
         result = run_slicer_cli(
             printer, model_input, patched, request=req, filament_ids=f_ids
@@ -1057,6 +1111,29 @@ def _execute_slice_job_sync(
             )
         except Exception:
             applied_pauses_raw = []
+
+    sliced_profile_snapshot: dict[str, Any] | None = None
+    try:
+        slicer_engine_label = getattr(result, "slicer_engine", None) or (
+            "Flash Studio" if printer.profile_id == "creator5_pro" else "OrcaSlicer"
+        )
+        sliced_profile_snapshot = build_sliced_profile_snapshot(
+            patched=patched,
+            request=req,
+            printer_name=printer.display_name,
+            slicer_engine=str(slicer_engine_label),
+            gcode_filename=result.gcode_path.name,
+            applied_pauses=applied_pauses_raw,
+        )
+        (job_dir / "sliced_profile_snapshot.json").write_text(
+            json.dumps(sliced_profile_snapshot, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        _persist_snapshot_sidecar(job_id, result.gcode_path.name)
+        inject_profile_snapshot_into_gcode(result.gcode_path, sliced_profile_snapshot)
+    except Exception as exc:
+        logger.warning("No se pudo construir sliced_profile_snapshot para job %s: %s", job_id, exc)
+        sliced_profile_snapshot = None
 
     if printer.profile_id == "creator5_pro":
         try:
@@ -1150,6 +1227,7 @@ def _execute_slice_job_sync(
                 "volumetric_guard": patched.volumetric_guard,
                 "extruders_config": [s.model_dump() for s in req.extruders_config] if req.extruders_config else None,
                 "part_extruder_map": req.part_extruder_map,
+                "sliced_profile_snapshot": sliced_profile_snapshot,
             },
             metrics={
                 "estimated_time": result.estimated_time,
@@ -1180,6 +1258,7 @@ def _execute_slice_job_sync(
         mesh_warnings=analysis.warnings,
         dimensions_mm=analysis.dimensions_mm,
         applied_pauses=[LayerPauseItem(**p) for p in applied_pauses_raw],
+        sliced_profile_snapshot=sliced_profile_snapshot,
     )
 
 
@@ -1235,6 +1314,7 @@ async def slice_endpoint(
     lithophane_mode: bool = Form(False),
     supports: bool = Form(False),
     support_type: SupportType = Form("tree(auto)"),
+    support_style: str = Form("default"),
     support_on_build_plate_only: bool = Form(True),
     support_z_distance: float | None = Form(None),
     support_xy_distance: float | None = Form(None),
@@ -1276,6 +1356,8 @@ async def slice_endpoint(
     layer_pauses_json: str | None = Form(None),
     scene_objects_json: str | None = Form(None),
     quality_overrides_json: str | None = Form(None),
+    profile_overrides_json: str | None = Form(None),
+    support_blockers_json: str | None = Form(None),
     file: UploadFile | None = File(None),
 ) -> SliceResponse:
     """Lamina `.stl` o `.3mf` multicolor usando caché `mesh_id`, bloqueo por malla y escritura atómica."""
@@ -1343,6 +1425,30 @@ async def slice_endpoint(
                 status_code=400, detail=f"quality_overrides_json inválido: {exc}"
             ) from exc
 
+    parsed_profile_overrides: dict[str, Any] = {}
+    if profile_overrides_json:
+        try:
+            raw_po = json.loads(profile_overrides_json)
+            if isinstance(raw_po, dict):
+                parsed_profile_overrides = raw_po
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"profile_overrides_json inválido: {exc}"
+            ) from exc
+
+    parsed_support_blockers: list[Any] = []
+    if support_blockers_json:
+        try:
+            from app.models.schemas import SupportBlockerItem
+
+            raw_sb = json.loads(support_blockers_json)
+            if isinstance(raw_sb, list):
+                parsed_support_blockers = [SupportBlockerItem(**item) for item in raw_sb if isinstance(item, dict)]
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"support_blockers_json inválido: {exc}"
+            ) from exc
+
     parsed_instances = _parse_instances_json(instances_json)
     clean_rx, clean_ry, clean_rz = sanitize_euler_rotation(rot_x, rot_y, rot_z)
     eff_material: MaterialType = "pla" if lithophane_mode else material
@@ -1364,6 +1470,7 @@ async def slice_endpoint(
             layer_pauses=parsed_layer_pauses,
             scene_objects=parsed_scene_objects,
             support_type=support_type,
+            support_style=support_style,
             support_on_build_plate_only=support_on_build_plate_only,
             support_z_distance=support_z_distance,
             support_xy_distance=support_xy_distance,
@@ -1403,6 +1510,8 @@ async def slice_endpoint(
             z_color_ranges=parsed_z_ranges,
             part_extruder_map=parsed_part_map,
             quality_overrides=parsed_quality_overrides,
+            profile_overrides=parsed_profile_overrides,
+            support_blockers=parsed_support_blockers,
         )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=f"Parámetros de laminado inválidos: {exc}") from exc
@@ -1437,6 +1546,7 @@ def download_gcode(
     if not gcodes:
         raise HTTPException(status_code=404, detail="G-code no encontrado para este job_id.")
     safe_name = _sanitize_gcode_filename(filename, job_id)
+    _persist_snapshot_sidecar(job_id, safe_name)
     if format.lower() == "flashforge":
         ff_gcode = out_dir / "model.flashforge.gcode"
         if not ff_gcode.is_file():
@@ -1760,6 +1870,11 @@ async def _dispatch_job_to_printer(
 
     gcode_path = gcodes[0]
     filename = _sanitize_gcode_filename(custom_filename, job_id)
+    _persist_snapshot_sidecar(
+        job_id,
+        filename,
+        extra_dir=Path(sd_volume_path) if mode == "sd_volume" and sd_volume_path else None,
+    )
     try:
         resolved_pid, cfg = get_printer_instance(printer_id)
     except ValueError as exc:

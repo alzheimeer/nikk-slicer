@@ -99,11 +99,29 @@ def save_full_project(
         model_rel = dest_model.name
 
     gcode_rel = existing.get("gcode_file")
+    profile_json_rel = existing.get("profile_json_file")
     src_gcode = _find_job_gcode(job_id)
     if src_gcode is not None:
         dest_gcode = proj_dir / "output.gcode"
         shutil.copy2(src_gcode, dest_gcode)
         gcode_rel = dest_gcode.name
+
+    next_state = state if state is not None else existing.get("state", {})
+    snap = next_state.get("sliced_profile_snapshot") if isinstance(next_state, dict) else None
+    if snap is None and job_id:
+        snap_src = TEMP_DIR / _sanitize_project_id(job_id) / "sliced_profile_snapshot.json"
+        if snap_src.is_file():
+            try:
+                snap = json.loads(snap_src.read_text(encoding="utf-8"))
+                if isinstance(next_state, dict) and isinstance(snap, dict):
+                    next_state["sliced_profile_snapshot"] = snap
+            except Exception:
+                snap = None
+    if isinstance(snap, dict):
+        gcode_stem = Path(str((snap.get("others") or {}).get("gcode_filename") or gcode_rel or "output")).stem
+        _atomic_write_json(proj_dir / f"{gcode_stem}.json", snap)
+        _atomic_write_json(proj_dir / "output.json", snap)
+        profile_json_rel = f"{gcode_stem}.json"
 
     thumb_rel = existing.get("thumbnail_file")
     if thumbnail_base64 and "," in thumbnail_base64:
@@ -127,8 +145,9 @@ def save_full_project(
         "material": material,
         "model_file": model_rel,
         "gcode_file": gcode_rel,
+        "profile_json_file": profile_json_rel,
         "thumbnail_file": thumb_rel,
-        "state": state if state is not None else existing.get("state", {}),
+        "state": next_state,
     }
     _atomic_write_json(json_path, record)
     return _format_summary(record)
@@ -208,6 +227,35 @@ def get_full_project(project_id: str) -> dict[str, Any] | None:
             gcode_text = (proj_dir / str(gcode_rel)).read_text(encoding="utf-8", errors="ignore")
         except Exception:
             gcode_text = None
+
+    if "sliced_profile_snapshot" not in state or not isinstance(state.get("sliced_profile_snapshot"), dict):
+        cand_jsons: list[Path] = []
+        if record.get("profile_json_file"):
+            cand_jsons.append(proj_dir / str(record["profile_json_file"]))
+        if gcode_rel:
+            cand_jsons.append(proj_dir / f"{Path(str(gcode_rel)).stem}.json")
+        cand_jsons.append(proj_dir / "output.json")
+        for jp_sidecar in cand_jsons:
+            if jp_sidecar.is_file():
+                try:
+                    snap = json.loads(jp_sidecar.read_text(encoding="utf-8"))
+                    if isinstance(snap, dict):
+                        state["sliced_profile_snapshot"] = snap
+                        break
+                except Exception:
+                    pass
+
+    if "sliced_profile_snapshot" not in state and gcode_text:
+        for line in reversed(gcode_text.splitlines()):
+            s = line.strip()
+            if s.startswith("; NIKK_SLICER_PROFILE_JSON:"):
+                try:
+                    snap = json.loads(s.split(":", 1)[1].strip())
+                    if isinstance(snap, dict):
+                        state["sliced_profile_snapshot"] = snap
+                except Exception:
+                    pass
+                break
 
     summary = _format_summary(record)
     return {
