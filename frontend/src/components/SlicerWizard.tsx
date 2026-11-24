@@ -519,6 +519,8 @@ interface SlicerWizardProps {
   primeTowerEnabled: boolean;
   onTogglePrimeTower: (enabled: boolean) => void;
   primeTowerReason: string | null;
+  primeTowerBrimWidthMm?: number | null;
+  onChangePrimeTowerBrimWidthMm?: (w: number | null) => void;
   qualityPreset: QualityPreset;
   onChangePreset: (p: QualityPreset) => void;
   specializedProfileId:
@@ -704,6 +706,8 @@ export function SlicerWizard({
   primeTowerEnabled,
   onTogglePrimeTower,
   primeTowerReason,
+  primeTowerBrimWidthMm = null,
+  onChangePrimeTowerBrimWidthMm,
   qualityPreset,
   onChangePreset: _onChangePreset,
   specializedProfileId,
@@ -2353,36 +2357,74 @@ export function SlicerWizard({
                 </span>
               </div>
 
-              {/* Torre de Purga Inteligente Ultra-Ahorro */}
-              <div className="flex items-center justify-between gap-2 rounded-lg border border-purple-500/25 bg-slate-950/75 px-2.5 py-1.5">
-                <div className="min-w-0">
-                  <div className="text-[11px] font-semibold text-slate-200">
-                    {primeTowerEnabled
-                      ? 'Activada Ultra-Ahorro 20mm + Purga en Relleno'
-                      : 'Torre de Purga: Desactivada (Ahorro 4 cabezales)'}
+              {/* Torre de Purga con Anclaje Anti-Desprendimiento */}
+              <div className="space-y-1.5 rounded-lg border border-purple-500/25 bg-slate-950/75 px-2.5 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-semibold text-slate-200">
+                      {primeTowerEnabled
+                        ? 'Activada (≥45 mm) + Purga en Relleno'
+                        : 'Torre de Purga: Desactivada (Ahorro 4 cabezales)'}
+                    </div>
+                    {primeTowerReason && (
+                      <p className="truncate text-[10px] text-purple-300/80">
+                        {primeTowerReason}
+                      </p>
+                    )}
                   </div>
-                  {primeTowerReason && (
-                    <p className="truncate text-[10px] text-purple-300/80">
-                      {primeTowerReason}
-                    </p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={primeTowerEnabled}
-                  aria-label="Torre de Purga Inteligente"
-                  onClick={() => onTogglePrimeTower(!primeTowerEnabled)}
-                  className={`relative h-5 w-10 shrink-0 rounded-full transition ${
-                    primeTowerEnabled ? 'bg-purple-500' : 'bg-slate-700'
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-                      primeTowerEnabled ? 'translate-x-5' : 'translate-x-0'
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={primeTowerEnabled}
+                    aria-label="Torre de Purga Inteligente"
+                    onClick={() => onTogglePrimeTower(!primeTowerEnabled)}
+                    className={`relative h-5 w-10 shrink-0 rounded-full transition ${
+                      primeTowerEnabled ? 'bg-purple-500' : 'bg-slate-700'
                     }`}
-                  />
-                </button>
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                        primeTowerEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+                {primeTowerEnabled && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200">
+                    <span className="font-semibold">
+                      Anclaje Torre de Purga: Brim Reforzado (12–15 mm) + Base Estabilizada
+                    </span>
+                    {onChangePrimeTowerBrimWidthMm && (
+                      <label className="flex items-center gap-1 text-[10px] text-emerald-200">
+                        <span>Brim:</span>
+                        <input
+                          type="number"
+                          min={8}
+                          max={40}
+                          step={1}
+                          placeholder={
+                            (analysis?.dimensions_mm?.z ?? 0) > 80 ? 'Auto 15' : 'Auto 12'
+                          }
+                          value={primeTowerBrimWidthMm ?? ''}
+                          onChange={(e) => {
+                            const raw = e.target.value.trim();
+                            if (!raw) {
+                              onChangePrimeTowerBrimWidthMm(null);
+                              return;
+                            }
+                            const num = Number(raw);
+                            if (Number.isFinite(num)) {
+                              onChangePrimeTowerBrimWidthMm(Math.max(8, Math.min(40, num)));
+                            }
+                          }}
+                          className="w-16 rounded border border-emerald-500/40 bg-slate-950 px-1.5 py-0.5 text-right font-mono text-[10px] text-emerald-100 placeholder-emerald-400/60 focus:border-emerald-400 focus:outline-none"
+                          title="Ancho personalizado del brim de la torre de purga en mm (vacío = Auto 12 mm / 15 mm si Z > 80 mm)"
+                        />
+                        <span>mm</span>
+                      </label>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="space-y-2">

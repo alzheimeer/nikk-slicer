@@ -441,6 +441,9 @@ export interface SlicedProfileSnapshot {
     enable_prime_tower: boolean;
     prime_tower_width: number;
     prime_tower_brim_width?: number;
+    wipe_tower_cone_angle?: number;
+    prime_tower_rib_width?: number;
+    prime_tower_anti_detachment?: boolean;
     flush_volumes: unknown;
     support_interface_filament: number;
     z_color_changes: ZColorRange[];

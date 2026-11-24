@@ -98,7 +98,9 @@ const SECTION_FIELDS: FieldSpec[] = [
   { tab: 'multimaterial', key: 'tool_mapping', type: 'readonly' },
   { tab: 'multimaterial', key: 'enable_prime_tower', type: 'boolean' },
   { tab: 'multimaterial', key: 'prime_tower_width', type: 'number', step: 1 },
-  { tab: 'multimaterial', key: 'prime_tower_brim_width', type: 'readonly' },
+  { tab: 'multimaterial', key: 'prime_tower_brim_width', type: 'number', step: 1 },
+  { tab: 'multimaterial', key: 'wipe_tower_cone_angle', type: 'number', step: 1 },
+  { tab: 'multimaterial', key: 'prime_tower_rib_width', type: 'readonly' },
   { tab: 'multimaterial', key: 'flush_volumes', type: 'readonly' },
   { tab: 'multimaterial', key: 'support_interface_filament', type: 'number', step: 1 },
   { tab: 'multimaterial', key: 'z_color_changes', type: 'readonly' },
@@ -367,6 +369,21 @@ export function ProfileInspectorDrawer({
 
       {/* Contenido de parámetros */}
       <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+        {!normalizedQuery &&
+          activeTab === 'multimaterial' &&
+          snapshot.multimaterial?.enable_prime_tower && (
+            <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-200">
+              <div className="flex items-center gap-1.5 font-semibold">
+                <Shield className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                <span>
+                  Anclaje Torre de Purga: Brim Reforzado (12–15 mm) + Base Estabilizada
+                </span>
+              </div>
+              <p className="mt-0.5 text-[10px] text-emerald-300/80">
+                Huella ≥ 45 mm · Costilla 3.0 mm · Z ≥ 60 mm cono 15° · Z-hop ≥ 0.4 mm · Primera capa ≤ 25 mm/s
+              </p>
+            </div>
+          )}
         {(activeTab !== 'filaments' || Boolean(normalizedQuery)) &&
           visibleFields.map((spec) => {
             const val = getFieldValue(spec);

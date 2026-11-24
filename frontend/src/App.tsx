@@ -274,6 +274,7 @@ export function App() {
   );
   const [primeTowerEnabled, setPrimeTowerEnabled] = useState<boolean>(false);
   const [primeTowerReason, setPrimeTowerReason] = useState<string | null>(null);
+  const [primeTowerBrimOverride, setPrimeTowerBrimOverride] = useState<number | null>(null);
   const [enableTimelapse, setEnableTimelapse] = useState<boolean>(false);
   const [autoLeveling, setAutoLeveling] = useState<boolean>(
     Boolean(initialPrefs.autoLeveling),
@@ -1458,9 +1459,16 @@ export function App() {
       transform: overrides?.transformOverride ?? transform,
       layer_pauses: layerPauses,
       ...(aiQualityOverrides.length > 0 ? { quality_overrides: aiQualityOverrides } : {}),
-      ...(overrides?.profileOverrides && Object.keys(overrides.profileOverrides).length > 0
-        ? { profile_overrides: overrides.profileOverrides }
-        : {}),
+      ...(primeTowerEnabled && primeTowerBrimOverride !== null
+        ? {
+            profile_overrides: {
+              prime_tower_brim_width: primeTowerBrimOverride,
+              ...(overrides?.profileOverrides ?? {}),
+            },
+          }
+        : overrides?.profileOverrides && Object.keys(overrides.profileOverrides).length > 0
+          ? { profile_overrides: overrides.profileOverrides }
+          : {}),
       ...(supportBlockers.length > 0 ? { support_blockers: supportBlockers } : {}),
       ...(sceneObjects.length > 0 ? { scene_objects: sceneObjects } : {}),
       ...(activeProfileId === 'creator5_pro'
@@ -2059,6 +2067,7 @@ export function App() {
       setAdhesionLabel(null);
       setPrimeTowerEnabled(false);
       setPrimeTowerReason(null);
+      setPrimeTowerBrimOverride(null);
       setErrorMsg(null);
       setSendPrintMsg(null);
       setUploadActionMode(null);
@@ -3539,11 +3548,13 @@ export function App() {
               setPrimeTowerEnabled(en);
               setPrimeTowerReason(
                 en
-                  ? 'Activada Ultra-Ahorro 20mm + Purga en Relleno (manual)'
+                  ? 'Activada (≥45 mm) + Anclaje Reforzado + Purga en Relleno (manual)'
                   : 'Torre de Purga: Desactivada (Ahorro 4 cabezales · manual)',
               );
             }}
             primeTowerReason={primeTowerReason}
+            primeTowerBrimWidthMm={primeTowerBrimOverride}
+            onChangePrimeTowerBrimWidthMm={setPrimeTowerBrimOverride}
             qualityPreset={qualityPreset}
             onChangePreset={setQualityPreset}
             specializedProfileId={specializedProfileId}

@@ -444,6 +444,13 @@ def _record_failed_cli_payload(
             "brim_width",
             "raft_layers",
             "layer_height",
+            "enable_prime_tower",
+            "prime_tower_width",
+            "prime_tower_brim_width",
+            "wipe_tower_cone_angle",
+            "wipe_tower_rib_width",
+            "initial_layer_speed",
+            "initial_layer_flow_ratio",
         )
     }
     logger.error(

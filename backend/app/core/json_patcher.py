@@ -133,6 +133,16 @@ def _safe_float_str(
     return f"{val:.{decimals}f}"
 
 
+def _fmt(val: float, decimals: int = 2) -> str:
+    """Formatea un float finito con `decimals` decimales (o entero si `decimals <= 0`)."""
+    if not math.isfinite(val):
+        val = 0.0
+    if decimals <= 0:
+        return str(int(round(val)))
+    formatted = f"{val:.{decimals}f}"
+    return formatted.rstrip("0").rstrip(".") if "." in formatted else formatted
+
+
 def _apply_ai_quality_overrides(
     process_data: dict[str, Any],
     machine_data: dict[str, Any],
@@ -356,7 +366,7 @@ def _apply_anti_stringing_and_tower_positioning(
         printer = get_printer_config(request.printer_id)
         dx = float(model_dimensions_mm[0]) if model_dimensions_mm else 80.0
         dy = float(model_dimensions_mm[1]) if model_dimensions_mm else 80.0
-        tower_w = float(process_data.get("prime_tower_width", "20") or 20.0)
+        tower_w = float(process_data.get("prime_tower_width", "45") or 45.0)
         if printer.origin == "center":
             max_r = (printer.diameter_mm or 260.0) / 2.0 - tower_w - 8.0
             cand_x = request.offset_x + dx / 2.0 + 20.0
@@ -374,6 +384,99 @@ def _apply_anti_stringing_and_tower_positioning(
             cand_y = max(12.0, min(by - tower_w - 12.0, cy + request.offset_y))
         process_data["prime_tower_position_x"] = f"{cand_x:.1f}"
         process_data["prime_tower_position_y"] = f"{cand_y:.1f}"
+
+
+def _apply_prime_tower_anti_detachment(
+    process_data: dict[str, Any],
+    machine_data: dict[str, Any],
+    filament_jsons: list[Path],
+    model_dimensions_mm: tuple[float, float, float] | None,
+    *,
+    is_multimaterial: bool,
+) -> None:
+    """Anclaje reforzado automático para evitar desprendimiento de la torre de purga en impresiones medianas/altas."""
+    tower_active = str(process_data.get("enable_prime_tower", "0")) == "1"
+    if not (tower_active or (is_multimaterial and tower_active)):
+        return
+
+    max_z_mm = (
+        float(model_dimensions_mm[2])
+        if (model_dimensions_mm and len(model_dimensions_mm) >= 3)
+        else 0.0
+    )
+
+    # 1. Brim ancho obligatorio (12.0 mm base; 15.0 mm si altura Z > 80 mm)
+    target_brim_w = 15.0 if max_z_mm > 80.0 else 12.0
+    try:
+        cur_brim_w = float(str(process_data.get("prime_tower_brim_width", "0")).strip() or "0")
+    except ValueError:
+        cur_brim_w = 0.0
+    eff_brim_w = max(cur_brim_w, target_brim_w)
+    process_data["prime_tower_brim_width"] = _fmt(eff_brim_w, 1)
+
+    # 2. Huella amplia (>= 45 mm), cono estabilizador (15° si Z >= 60 mm) y costilla estructural (3.0 mm)
+    try:
+        cur_tower_w = float(str(process_data.get("prime_tower_width", "0")).strip() or "0")
+    except ValueError:
+        cur_tower_w = 0.0
+    process_data["prime_tower_width"] = _fmt(max(cur_tower_w, 45.0), 1)
+
+    if max_z_mm >= 60.0:
+        try:
+            cur_cone = float(str(process_data.get("wipe_tower_cone_angle", "0")).strip() or "0")
+        except ValueError:
+            cur_cone = 0.0
+        process_data["wipe_tower_cone_angle"] = _fmt(max(cur_cone, 15.0), 0)
+
+    process_data["wipe_tower_rib_width"] = "3.0"
+    process_data["prime_tower_rib_width"] = "3.0"
+    if "wipe_tower_bridging" not in process_data:
+        process_data["wipe_tower_bridging"] = "10"
+    process_data["wipe_tower_extra_flow"] = "105%"
+
+    # 3. Primera capa lenta (<= 25 mm/s), flujo completo (100%-105%) y Z-hop >= 0.4 mm anti-golpes
+    try:
+        cur_init_spd = float(str(process_data.get("initial_layer_speed", "25")).strip() or "25")
+    except ValueError:
+        cur_init_spd = 25.0
+    process_data["initial_layer_speed"] = _fmt(min(cur_init_spd, 25.0), 0)
+
+    try:
+        cur_init_flow = float(str(process_data.get("initial_layer_flow_ratio", "1.02")).strip() or "1.02")
+    except ValueError:
+        cur_init_flow = 1.02
+    clamped_flow = max(1.00, min(1.05, cur_init_flow if cur_init_flow >= 1.0 else 1.02))
+    process_data["initial_layer_flow_ratio"] = _fmt(clamped_flow, 2)
+    try:
+        cur_bot_flow = float(str(process_data.get("bottom_solid_infill_flow_ratio", "1.02")).strip() or "1.02")
+    except ValueError:
+        cur_bot_flow = 1.02
+    if cur_bot_flow < 1.00:
+        process_data["bottom_solid_infill_flow_ratio"] = _fmt(clamped_flow, 2)
+
+    raw_mach_zhop = machine_data.get("z_hop")
+    if isinstance(raw_mach_zhop, list) and raw_mach_zhop:
+        new_mach_zhop: list[str] = []
+        for zv in raw_mach_zhop:
+            try:
+                new_mach_zhop.append(_fmt(max(0.4, float(zv)), 2))
+            except (TypeError, ValueError):
+                new_mach_zhop.append("0.4")
+        machine_data["z_hop"] = new_mach_zhop
+
+    for f_path in filament_jsons:
+        try:
+            f_data = _load_json(f_path)
+            raw_zhop = f_data.get("z_hop")
+            if isinstance(raw_zhop, list) and raw_zhop:
+                cur_zhop = max(float(raw_zhop[0]), 0.4)
+                f_data["z_hop"] = [_fmt(cur_zhop, 2) for _ in raw_zhop]
+            else:
+                f_data["z_hop"] = ["0.4"]
+            f_data["z_hop_types"] = ["Slope Lift"]
+            _save_json(f_path, f_data)
+        except Exception:
+            pass
 
 
 def patch_profiles_for_job(
@@ -625,9 +728,10 @@ def patch_profiles_for_job(
         process_data["flush_into_infill"] = "1"
         process_data["flush_into_objects"] = "0"
         if use_tower:
-            process_data["prime_tower_width"] = "20"
-            process_data["prime_volume"] = "10"
-            process_data["prime_tower_brim_width"] = "3"
+            max_z_est = float(model_dimensions_mm[2]) if (model_dimensions_mm and len(model_dimensions_mm) >= 3) else 0.0
+            process_data["prime_tower_width"] = "45"
+            process_data["prime_volume"] = "15"
+            process_data["prime_tower_brim_width"] = "15" if max_z_est > 80.0 else "12"
 
         sup_fil = str(request.support_extruder + 1)
         process_data["support_filament"] = sup_fil
@@ -818,6 +922,12 @@ def patch_profiles_for_job(
         except Exception:
             pass
 
+    if profile_id != "creator5_pro":
+        if request.enable_prime_tower is True:
+            process_data["enable_prime_tower"] = "1"
+        elif request.enable_prime_tower is False:
+            process_data["enable_prime_tower"] = "0"
+
     _apply_first_layer_perfection(
         process_data,
         filament_jsons,
@@ -832,6 +942,18 @@ def patch_profiles_for_job(
         profile_id,
         is_multicolor=bool(is_multicolor or multimaterial_3mf),
         model_dimensions_mm=model_dimensions_mm,
+    )
+    _apply_prime_tower_anti_detachment(
+        process_data,
+        machine_data,
+        filament_jsons,
+        model_dimensions_mm,
+        is_multimaterial=bool(
+            is_multicolor
+            or multimaterial_3mf
+            or len(request.z_color_ranges) > 0
+            or (request.supports and request.support_extruder != request.model_extruder)
+        ),
     )
     _apply_ai_quality_overrides(process_data, machine_data, filament_jsons, request)
     _apply_profile_overrides(process_data, machine_data, filament_jsons, request)
@@ -908,6 +1030,10 @@ def _apply_profile_overrides(
         "support_interface_pattern": ("support_interface_pattern", "str"),
         "enable_prime_tower": ("enable_prime_tower", "bool"),
         "prime_tower_width": ("prime_tower_width", "float"),
+        "prime_tower_brim_width": ("prime_tower_brim_width", "float"),
+        "wipe_tower_cone_angle": ("wipe_tower_cone_angle", "float"),
+        "prime_tower_rib_width": ("wipe_tower_rib_width", "float"),
+        "wipe_tower_rib_width": ("wipe_tower_rib_width", "float"),
         "support_interface_filament": ("support_interface_filament", "int"),
         "brim_type": ("brim_type", "str"),
         "brim_width": ("brim_width", "float"),
@@ -1157,8 +1283,11 @@ def build_sliced_profile_snapshot(
             "active_tools": active_tools,
             "tool_mapping": dict(request.part_extruder_map or {}),
             "enable_prime_tower": _as_str(proc.get("enable_prime_tower"), "0") == "1",
-            "prime_tower_width": _as_float(proc.get("prime_tower_width"), 35.0),
-            "prime_tower_brim_width": _as_float(proc.get("prime_tower_brim_width"), 3.0),
+            "prime_tower_width": _as_float(proc.get("prime_tower_width"), 45.0),
+            "prime_tower_brim_width": _as_float(proc.get("prime_tower_brim_width"), 12.0),
+            "wipe_tower_cone_angle": _as_float(proc.get("wipe_tower_cone_angle"), 0.0),
+            "prime_tower_rib_width": _as_float(proc.get("wipe_tower_rib_width") or proc.get("prime_tower_rib_width"), 3.0),
+            "prime_tower_anti_detachment": _as_str(proc.get("enable_prime_tower"), "0") == "1",
             "flush_volumes": proc.get("flush_volumes_matrix") or proc.get("flush_multiplier") or "1.0",
             "support_interface_filament": _as_int(proc.get("support_interface_filament"), 0),
             "z_color_changes": [z.model_dump() for z in (request.z_color_ranges or [])],
