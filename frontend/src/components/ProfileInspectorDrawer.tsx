@@ -541,7 +541,9 @@ export function ProfileInspectorDrawer({
                       className="h-3 w-3 rounded-full border border-white/30"
                       style={{ backgroundColor: fil.color_hex }}
                     />
-                    <span>{fil.slot}</span>
+                    <span>
+                      Slot {idx + 1} ({fil.slot})
+                    </span>
                     <span className="text-[10px] text-slate-400">{fil.material}</span>
                   </button>
                 ))}

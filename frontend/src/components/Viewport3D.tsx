@@ -4261,7 +4261,9 @@ export function Viewport3D({
                       className="h-3 w-3 rounded-sm border border-white/25"
                       style={{ backgroundColor: col }}
                     />
-                    <span className="font-mono font-semibold text-slate-200">T{idx}</span>
+                    <span className="font-mono font-semibold text-slate-200">
+                      Slot {idx + 1} (T{idx})
+                    </span>
                     <span className="ml-auto font-mono text-[10px] text-slate-500">
                       {col.toUpperCase()}
                     </span>

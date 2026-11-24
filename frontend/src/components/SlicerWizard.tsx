@@ -2480,7 +2480,7 @@ export function SlicerWizard({
                             style={{ backgroundColor: slot.color_hex }}
                           />
                           <span className="font-mono text-[11px] font-bold text-slate-100">
-                            T{slot.extruder_index}
+                            Slot {slot.extruder_index + 1} (T{slot.extruder_index})
                           </span>
                           <input
                             type="text"
@@ -2982,7 +2982,7 @@ export function SlicerWizard({
                             )}
                             {[1, 2, 3, 4].map((extNum) => (
                               <option key={extNum} value={extNum}>
-                                T{extNum - 1}
+                                Slot {extNum} (T{extNum - 1})
                               </option>
                             ))}
                           </select>
@@ -3006,7 +3006,7 @@ export function SlicerWizard({
                   >
                     {[0, 1, 2, 3].map((i) => (
                       <option key={i} value={i}>
-                        T{i} ({extrudersConfig[i]?.material.toUpperCase()})
+                        Slot {i + 1} (T{i}) · {extrudersConfig[i]?.material.toUpperCase()}
                       </option>
                     ))}
                   </select>
@@ -3022,7 +3022,7 @@ export function SlicerWizard({
                   >
                     {[0, 1, 2, 3].map((i) => (
                       <option key={i} value={i}>
-                        T{i} ({extrudersConfig[i]?.material.toUpperCase()})
+                        Slot {i + 1} (T{i}) · {extrudersConfig[i]?.material.toUpperCase()}
                       </option>
                     ))}
                   </select>
@@ -3106,7 +3106,7 @@ export function SlicerWizard({
                     >
                       {[0, 1, 2, 3].map((i) => (
                         <option key={i} value={i}>
-                          T{i}
+                          Slot {i + 1} (T{i})
                         </option>
                       ))}
                     </select>
