@@ -6,12 +6,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from logging.handlers import RotatingFileHandler
@@ -384,8 +386,9 @@ class DesktopApi:
         win = webview.active_window()
         if win is None:
             return {"saved": False, "reason": "No hay ventana activa."}
+        dialog_type = getattr(getattr(webview, "FileDialog", None), "SAVE", webview.SAVE_DIALOG)
         target = win.create_file_dialog(
-            webview.SAVE_DIALOG,
+            dialog_type,
             save_filename=suggested_name,
         )
         if not target:
@@ -393,6 +396,58 @@ class DesktopApi:
         dest = Path(target[0] if isinstance(target, (list, tuple)) else target)
         with urllib.request.urlopen(url, timeout=45) as resp:
             dest.write_bytes(resp.read())
+        return {"saved": True, "path": str(dest)}
+
+    def save_post_file(
+        self,
+        url: str,
+        payload_json: str,
+        suggested_name: str,
+        file_types: list[str] | None = None,
+    ) -> dict[str, object]:
+        import webview  # type: ignore[import-not-found]
+
+        win = webview.active_window()
+        if win is None:
+            return {"saved": False, "error": "No hay ventana activa."}
+
+        dialog_type = getattr(getattr(webview, "FileDialog", None), "SAVE", webview.SAVE_DIALOG)
+        ft_tuple = tuple(str(ft) for ft in (file_types or []) if ft)
+        target = win.create_file_dialog(
+            dialog_type,
+            save_filename=suggested_name,
+            file_types=ft_tuple,
+        )
+        if not target:
+            return {"saved": False, "cancelled": True}
+
+        dest = Path(target[0] if isinstance(target, (list, tuple)) else target)
+        expected_ext = Path(suggested_name).suffix
+        if expected_ext and dest.suffix.lower() != expected_ext.lower():
+            dest = dest.with_suffix(expected_ext)
+
+        target_url = url if str(url).startswith(("http://", "https://")) else f"http://127.0.0.1:8000{url}"
+        req = urllib.request.Request(
+            target_url,
+            data=payload_json.encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with dest.open("wb") as fh:
+                    shutil.copyfileobj(resp, fh)
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="ignore")
+            try:
+                detail = json.loads(err_body).get("detail") or err_body
+            except Exception:
+                detail = err_body or str(exc)
+            return {"saved": False, "error": f"Error al exportar ({exc.code}): {detail}"}
+        except Exception as exc:
+            return {"saved": False, "error": str(exc)}
+
         return {"saved": True, "path": str(dest)}
 
     def open_new_window(self, project_id: str | None = None) -> dict[str, object]:

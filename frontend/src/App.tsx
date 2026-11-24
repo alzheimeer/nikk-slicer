@@ -6,6 +6,7 @@ import { ErrorJournalModal } from './components/ErrorJournalModal';
 import { QuoteCalculatorModal } from './components/QuoteCalculatorModal';
 import { SystemSetupModal } from './components/SystemSetupModal';
 import {
+  API_BASE_URL,
   analyzeMesh,
   applyLayerPauses,
   autoArrangeModels,
@@ -3074,7 +3075,28 @@ export function App() {
         !opts.exportAllPlate && effSceneObjs.length === 1
           ? effSceneObjs[0].name
           : (stlFile?.name || 'modelo').replace(/\.(stl|3mf|obj)$/i, '');
-      const { blob, filename } = await exportSelection({
+      const effInstances =
+        effSceneObjs.length === 0
+          ? (transform.instances && transform.instances.length > 0
+              ? transform.instances
+              : [
+                  {
+                    instance_id: 'inst_1',
+                    offset_x: transform.offsetX ?? 0,
+                    offset_y: transform.offsetY ?? 0,
+                    offset_z: transform.offsetZ ?? 0,
+                    scale_percent: transform.scalePercent ?? 100,
+                    scale_x: transform.scaleX ?? null,
+                    scale_y: transform.scaleY ?? null,
+                    scale_z: transform.scaleZ ?? null,
+                    rot_x: transform.rotX ?? 0,
+                    rot_y: transform.rotY ?? 0,
+                    rot_z: transform.rotZ ?? 0,
+                    drop_to_bed: transform.dropToBed ?? true,
+                  },
+                ])
+          : [];
+      const exportPayload = {
         mesh_id: meshId,
         printer_id: selectedPrinterId,
         format: opts.format,
@@ -3082,10 +3104,50 @@ export function App() {
         center_on_bed: opts.centerOnBed,
         export_all_plate: opts.exportAllPlate,
         scene_objects: effSceneObjs,
-        instances: effSceneObjs.length === 0 ? (transform.instances ?? []) : [],
+        instances: effInstances,
         part_extruder_map: partExtruderMap,
         filename_base: baseName,
-      });
+      };
+      const cleanSuggestedBase = (baseName || 'modelo').replace(/\.(stl|3mf|obj)$/i, '') || 'modelo';
+      const suggestedFilename = `${cleanSuggestedBase}.${opts.format}`;
+      const pySavePost = (
+        window as unknown as {
+          pywebview?: {
+            api?: {
+              save_post_file?: (
+                url: string,
+                payloadJson: string,
+                suggestedName: string,
+                fileTypes?: string[],
+              ) => Promise<{ saved?: boolean; cancelled?: boolean; path?: string; error?: string }>;
+            };
+          };
+        }
+      ).pywebview?.api?.save_post_file;
+
+      if (pySavePost) {
+        const fileTypes =
+          opts.format === 'stl'
+            ? ['STL Binary (*.stl)', 'All files (*.*)']
+            : opts.format === 'obj'
+              ? ['Wavefront OBJ (*.obj)', 'All files (*.*)']
+              : ['3MF Project (*.3mf)', 'All files (*.*)'];
+        const saveRes = await pySavePost(
+          `${API_BASE_URL}/export-selection`,
+          JSON.stringify(exportPayload),
+          suggestedFilename,
+          fileTypes,
+        );
+        if (saveRes?.error) {
+          throw new Error(saveRes.error);
+        }
+        if (saveRes?.saved && saveRes.path) {
+          setAutoOrientMsg(`Exportado en: ${saveRes.path}`);
+        }
+        return;
+      }
+
+      const { blob, filename } = await exportSelection(exportPayload);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -3094,6 +3156,7 @@ export function App() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      setAutoOrientMsg(`Exportado: ${filename}`);
     } catch (err: unknown) {
       setErrorMsg(
         err instanceof Error ? err.message : 'Error al exportar la selección.',

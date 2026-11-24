@@ -3904,6 +3904,20 @@ def export_instances_with_support_paint_3mf(
     return out_3mf
 
 
+def _find_cached_mesh_path(mesh_id: str | None) -> Path | None:
+    """Busca un archivo de modelo en caché (`MESH_CACHE_DIR`) por `mesh_id`."""
+    if not mesh_id:
+        return None
+    clean_id = "".join(ch for ch in str(mesh_id) if ch.isalnum() or ch in ("-", "_"))
+    if not clean_id:
+        return None
+    for ext in (".stl", ".3mf", ".obj"):
+        cand = MESH_CACHE_DIR / f"{clean_id}{ext}"
+        if cand.is_file():
+            return cand
+    return None
+
+
 def export_selection_to_file(
     mesh_id: str,
     out_dir: Path,
@@ -3919,9 +3933,10 @@ def export_selection_to_file(
 ) -> Path:
     """Exporta las piezas seleccionadas (o el plato completo) a .3mf, .stl o .obj."""
     out_dir.mkdir(parents=True, exist_ok=True)
+    raw_base = re.sub(r"\.(stl|3mf|obj)$", "", (filename_base or "export").strip(), flags=re.IGNORECASE)
     safe_base = "".join(
         ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
-        for ch in (filename_base or "export").strip()
+        for ch in raw_base
     ).strip("_.") or "export"
     fmt_clean = fmt.lower().strip(".")
     if fmt_clean not in ("stl", "3mf", "obj"):
@@ -3962,31 +3977,66 @@ def export_selection_to_file(
     if center_on_bed and sc_list:
         cx_avg = sum(o.offset_x for o in sc_list) / len(sc_list)
         cy_avg = sum(o.offset_y for o in sc_list) / len(sc_list)
-        sc_list = [
-            o.model_copy(
-                update={
-                    "offset_x": round(o.offset_x - cx_avg, 3),
-                    "offset_y": round(o.offset_y - cy_avg, 3),
-                    "offset_z": 0.0,
-                    "drop_to_bed": True,
-                }
-            )
-            for o in sc_list
-        ]
+        if len(sc_list) == 1:
+            sc_list = [
+                sc_list[0].model_copy(
+                    update={
+                        "offset_x": 0.0,
+                        "offset_y": 0.0,
+                        "offset_z": 0.0,
+                        "drop_to_bed": True,
+                    }
+                )
+            ]
+        else:
+            # Conservar desplazamientos Z relativos en grupos apilados; si ninguno toca Z=0, bajar al bloque más bajo
+            has_grounded = any(getattr(o, "drop_to_bed", True) or abs(float(o.offset_z)) < 1e-4 for o in sc_list)
+            min_off_z = 0.0 if has_grounded else min(float(o.offset_z) for o in sc_list)
+            sc_list = [
+                o.model_copy(
+                    update={
+                        "offset_x": round(o.offset_x - cx_avg, 3),
+                        "offset_y": round(o.offset_y - cy_avg, 3),
+                        **(
+                            {}
+                            if has_grounded
+                            else {"offset_z": round(float(o.offset_z) - min_off_z, 3)}
+                        ),
+                    }
+                )
+                for o in sc_list
+            ]
     elif center_on_bed and inst_list:
         cx_avg = sum(it.offset_x for it in inst_list) / len(inst_list)
         cy_avg = sum(it.offset_y for it in inst_list) / len(inst_list)
-        inst_list = [
-            it.model_copy(
-                update={
-                    "offset_x": round(it.offset_x - cx_avg, 3),
-                    "offset_y": round(it.offset_y - cy_avg, 3),
-                    "offset_z": 0.0,
-                    "drop_to_bed": True,
-                }
-            )
-            for it in inst_list
-        ]
+        if len(inst_list) == 1:
+            inst_list = [
+                inst_list[0].model_copy(
+                    update={
+                        "offset_x": 0.0,
+                        "offset_y": 0.0,
+                        "offset_z": 0.0,
+                        "drop_to_bed": True,
+                    }
+                )
+            ]
+        else:
+            has_grounded = any(getattr(it, "drop_to_bed", True) or abs(float(it.offset_z)) < 1e-4 for it in inst_list)
+            min_off_z = 0.0 if has_grounded else min(float(it.offset_z) for it in inst_list)
+            inst_list = [
+                it.model_copy(
+                    update={
+                        "offset_x": round(it.offset_x - cx_avg, 3),
+                        "offset_y": round(it.offset_y - cy_avg, 3),
+                        **(
+                            {}
+                            if has_grounded
+                            else {"offset_z": round(float(it.offset_z) - min_off_z, 3)}
+                        ),
+                    }
+                )
+                for it in inst_list
+            ]
 
     if fmt_clean == "3mf":
         if sc_list:
@@ -4001,22 +4051,24 @@ def export_selection_to_file(
             raise FileNotFoundError(f"No se encontró la malla en caché: {mesh_id}")
         eff_insts = inst_list or [ModelInstanceTransform()]
         if cached_path.suffix.lower() == ".3mf":
-            analysis = analyze_mesh_file(cached_path, printer)
-            if len(analysis.multimaterial_parts) > 1:
-                out_p, _ = transform_and_export_3mf_parts(
-                    cached_path,
-                    out_dir,
-                    printer,
-                    part_extruder_map=part_extruder_map,
-                    instances=eff_insts,
-                )
-            elif analysis.is_multicolor:
+            parts_3mf = extract_3mf_parts_and_meshes(cached_path)
+            paint_info = inspect_3mf_multicolor_info(cached_path)
+            has_tri_paint = bool(paint_info.get("has_triangle_painting", False))
+            if has_tri_paint:
                 out_p = prepare_painted_3mf_for_slicer(
                     cached_path,
                     out_dir,
                     printer,
                     instances=eff_insts,
                     part_extruder_map=part_extruder_map,
+                )
+            elif len(parts_3mf) > 1:
+                out_p, _ = transform_and_export_3mf_parts(
+                    cached_path,
+                    out_dir,
+                    printer,
+                    part_extruder_map=part_extruder_map,
+                    instances=eff_insts,
                 )
             else:
                 out_p = export_instances_with_support_paint_3mf(
