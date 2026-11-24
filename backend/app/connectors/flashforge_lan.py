@@ -162,6 +162,47 @@ def _candidate_flashforge_ips(cfg: dict[str, Any]) -> list[str]:
     return ips
 
 
+_FLASHFORGE_ERROR_CATALOG: dict[str, str] = {
+    "E0163": "Atasco o resistencia de filamento detectada (Clog detected). Revisa boquilla, tubo PTFE o carrete.",
+    "E0162": "Fallo de alimentación de filamento o sensor de extrusor. Revisa el carrete y el tubo guía.",
+    "E0161": "Fin de filamento detectado (Filament runout).",
+    "E0164": "Error en el cargador/estación de filamento (IFS/dock). Verifica el slot activo.",
+    "E0011": "Error térmico de boquilla (Heating failed). Verifica termistor y cartucho calentador.",
+    "E0017": "Desviación térmica detectada (Thermal runaway).",
+}
+
+
+def _parse_flashforge_error(detail: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Extrae `errorCode` del `/detail` de FlashForge y lo traduce a mensaje legible."""
+    raw_err = str(detail.get("errorCode") or "").strip()
+    if not raw_err or raw_err.lower() in ("0", "ok", "none", "null", "success"):
+        return None, None
+    err_upper = raw_err.upper()
+    base_msg = _FLASHFORGE_ERROR_CATALOG.get(
+        err_upper,
+        f"Alerta reportada por la impresora ({err_upper}). Revisa la pantalla de la máquina.",
+    )
+    matl = detail.get("matlStationInfo")
+    if isinstance(matl, dict):
+        cur_slot = matl.get("currentSlot")
+        slots = matl.get("slotInfos")
+        slot_desc = ""
+        if cur_slot and isinstance(slots, list):
+            for s in slots:
+                if isinstance(s, dict) and s.get("slotId") == cur_slot:
+                    mat_name = str(s.get("materialName") or "").strip()
+                    mat_col = str(s.get("materialColor") or "").strip()
+                    slot_desc = f" — Slot #{cur_slot}" + (
+                        f" ({mat_name} {mat_col})".rstrip() if mat_name or mat_col else ""
+                    )
+                    break
+        elif cur_slot:
+            slot_desc = f" — Slot #{cur_slot}"
+        if slot_desc:
+            base_msg = f"{base_msg}{slot_desc}"
+    return err_upper, base_msg
+
+
 async def _resolve_flashforge_target(
     cfg: dict[str, Any],
     client: httpx.AsyncClient,
@@ -271,11 +312,14 @@ async def query_flashforge_status(
                     detail = body.get("detail", {})
                     if isinstance(detail, dict) and detail:
                         raw_status = str(detail.get("status", "ready")).lower()
+                        err_code, err_msg = _parse_flashforge_error(detail)
                         state = (
                             "printing"
                             if "print" in raw_status or "build" in raw_status
                             else "paused"
                             if "pause" in raw_status
+                            else "error"
+                            if "error" in raw_status or "fail" in raw_status
                             else "standby"
                         )
                         cam_stream = str(detail.get("cameraStreamUrl") or cand_cam)
@@ -367,6 +411,8 @@ async def query_flashforge_status(
                             chamber_temp=round(float(chamber_t), 1) if chamber_t is not None else None,
                             filament_used_mm=fil_mm,
                             filament_used_g=fil_g,
+                            error_code=err_code,
+                            error_message=err_msg,
                         )
                     code = body.get("code")
                     if code == -2 or "lan mode" in msg_txt.lower():

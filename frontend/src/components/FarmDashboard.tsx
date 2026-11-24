@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Archive,
   Camera,
   CameraOff,
@@ -100,40 +101,79 @@ function CameraStreamBox({
   url,
   name,
   onExpand,
+  pausedExternal = false,
 }: {
   url: string;
   name: string;
   onExpand?: () => void;
+  pausedExternal?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
   const [streamNonce, setStreamNonce] = useState(0);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+
+  const releaseSocket = useCallback(() => {
+    if (imgRef.current) {
+      imgRef.current.src = '';
+    }
+  }, []);
 
   useEffect(() => {
     setFailed(false);
     setIsPlaying(true);
-  }, [url]);
+    return () => releaseSocket();
+  }, [url, releaseSocket]);
 
   useEffect(() => {
-    if (!url || failed || !isPlaying) return;
+    if (pausedExternal) {
+      releaseSocket();
+    }
+  }, [pausedExternal, releaseSocket]);
+
+  useEffect(() => {
+    if (!url || failed || !isPlaying || pausedExternal) return;
     const timer = window.setTimeout(() => {
+      releaseSocket();
       setIsPlaying(false);
     }, CAMERA_AUTO_SLEEP_MS);
     return () => window.clearTimeout(timer);
-  }, [url, failed, isPlaying, streamNonce]);
+  }, [url, failed, isPlaying, pausedExternal, streamNonce, releaseSocket]);
+
+  // Auto-reintento suave cada 4s cuando el stream falla (ej. límite de 1 cliente en Creator 5 Pro)
+  useEffect(() => {
+    if (!url || !failed || !isPlaying || pausedExternal) return;
+    const retryTimer = window.setTimeout(() => {
+      setFailed(false);
+      setStreamNonce(Date.now());
+    }, 4000);
+    return () => window.clearTimeout(retryTimer);
+  }, [url, failed, isPlaying, pausedExternal]);
 
   const handleResume = () => {
+    releaseSocket();
     setFailed(false);
-    setStreamNonce((n) => n + 1);
+    setStreamNonce(Date.now());
     setIsPlaying(true);
   };
+
+  if (pausedExternal) {
+    return (
+      <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/90 px-3 text-center">
+        <Camera className="h-5 w-5 text-cyan-400" />
+        <p className="text-[11px] font-medium text-slate-300">
+          Abierta en vista ampliada
+        </p>
+      </div>
+    );
+  }
 
   if (!url || failed) {
     return (
       <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/80 text-center">
         <CameraOff className="h-5 w-5 text-slate-600" />
         <p className="text-[11px] font-medium text-slate-500">
-          {url ? 'Cámara MJPEG sin señal' : 'Sin URL de cámara configurada'}
+          {url ? 'Cámara MJPEG sin señal (reintentando...)' : 'Sin URL de cámara configurada'}
         </p>
         {url && (
           <button
@@ -175,9 +215,13 @@ function CameraStreamBox({
   return (
     <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl border border-slate-800 bg-black">
       <img
+        ref={imgRef}
         src={withStreamNonce(url, streamNonce)}
         alt={`Cámara ${name}`}
-        onError={() => setFailed(true)}
+        onError={() => {
+          releaseSocket();
+          setFailed(true);
+        }}
         className="h-full w-full bg-black object-contain"
       />
       <span className="absolute left-2 top-2 flex items-center gap-1 rounded-md bg-slate-950/80 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 backdrop-blur">
@@ -187,7 +231,10 @@ function CameraStreamBox({
       <div className="absolute right-2 top-2 flex items-center gap-1">
         <button
           type="button"
-          onClick={() => setIsPlaying(false)}
+          onClick={() => {
+            releaseSocket();
+            setIsPlaying(false);
+          }}
           title="Pausar cámara para ahorrar recursos"
           aria-label={`Pausar cámara ${name}`}
           className="flex items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/80 p-1 text-slate-300 backdrop-blur transition hover:border-amber-400/70 hover:text-amber-200"
@@ -706,6 +753,9 @@ export function FarmDashboard() {
                   <CameraStreamBox
                     url={st.camera_url}
                     name={st.display_name}
+                    pausedExternal={
+                      Boolean(expandedCamera) && expandedCamera?.name === st.display_name
+                    }
                     onExpand={() =>
                       setExpandedCamera({ url: st.camera_url, name: st.display_name })
                     }
@@ -776,6 +826,44 @@ export function FarmDashboard() {
                       />
                     </div>
                   </div>
+
+                  {/* Alerta / Código de error reportado por el firmware de la impresora */}
+                  {(st.error_code || st.error_message) && (
+                    <div
+                      className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-xs ${
+                        lowerState === 'error' ||
+                        (st.error_code && st.error_code !== 'PAUSE_REASON')
+                          ? 'border-rose-500/60 bg-rose-950/50 text-rose-200'
+                          : 'border-amber-500/60 bg-amber-950/45 text-amber-200'
+                      }`}
+                    >
+                      <AlertTriangle
+                        className={`mt-0.5 h-4 w-4 shrink-0 ${
+                          lowerState === 'error' ||
+                          (st.error_code && st.error_code !== 'PAUSE_REASON')
+                            ? 'text-rose-400'
+                            : 'text-amber-400'
+                        }`}
+                      />
+                      <div className="min-w-0 flex-1 space-y-0.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-semibold uppercase tracking-wide">
+                            Alerta de Impresora
+                          </span>
+                          {st.error_code && (
+                            <span className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[10px] font-bold">
+                              {st.error_code}
+                            </span>
+                          )}
+                        </div>
+                        {st.error_message && (
+                          <p className="text-[11px] leading-snug opacity-95">
+                            {st.error_message}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Telemetría avanzada en vivo */}
                   {st.online && (

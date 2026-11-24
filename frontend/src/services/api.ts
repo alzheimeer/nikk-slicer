@@ -626,6 +626,8 @@ export interface PrinterLiveStatus {
   chamber_mode?: string | null;
   filament_used_mm?: number;
   filament_used_g?: number;
+  error_code?: string | null;
+  error_message?: string | null;
 }
 
 export interface PrinterStoredFile {

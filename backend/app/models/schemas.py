@@ -724,6 +724,8 @@ class PrinterLiveStatus(BaseModel):
     chamber_mode: str | None = None
     filament_used_mm: float = 0.0
     filament_used_g: float = 0.0
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 class SendPrintRequest(BaseModel):

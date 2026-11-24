@@ -31,6 +31,7 @@ class _SerialState:
     progress_percent: float = 0.0
     current_file: str | None = None
     last_message: str = "Listo para USB Serial o SD /Volumes/"
+    last_error: str | None = None
     paused: bool = False
     cancel_requested: bool = False
 
@@ -135,6 +136,12 @@ class MarlinSerialManager:
                 current_file=st.current_file,
                 camera_url=camera_url,
                 message=msg,
+                error_code=(
+                    "MARLIN_ERROR"
+                    if (st.state == "error" or st.last_error)
+                    else None
+                ),
+                error_message=st.last_error or (msg if st.state == "error" else None),
             )
 
     def start_print(self, cfg: dict[str, Any], gcode_path: Path, filename: str) -> str:
@@ -236,7 +243,14 @@ class MarlinSerialManager:
             if not raw:
                 continue
             self._parse_temps(raw)
-            if "ok" in raw.lower():
+            low = raw.lower()
+            if low.startswith("error:") or raw.startswith("!!"):
+                with self._lock:
+                    self._state.last_error = raw
+                    self._state.state = "error"
+                    self._state.last_message = raw
+                raise RuntimeError(raw)
+            if "ok" in low:
                 return
         raise TimeoutError("Timeout esperando respuesta 'ok' de Marlin.")
 

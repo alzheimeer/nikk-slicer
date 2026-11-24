@@ -112,7 +112,7 @@ async def query_moonraker_status(
                 url = (
                     f"{base}/printer/objects/query"
                     "?heater_bed&extruder&print_stats&virtual_sdcard"
-                    "&gcode_move&fan&display_status&box_light"
+                    "&gcode_move&fan&display_status&webhooks&box_light"
                     "&output_pin%20LED_pin&output_pin%20caselight"
                     "&temperature_sensor%20mcu_temp&temperature_sensor%20Armv7%20mcu"
                 )
@@ -130,6 +130,31 @@ async def query_moonraker_status(
                     fan = status.get("fan", {})
 
                     raw_state = str(print_stats.get("state", "standby")).lower()
+                    webhooks = status.get("webhooks") or {}
+                    webhooks_state = str(webhooks.get("state", "")).lower()
+                    webhooks_msg = str(webhooks.get("state_message") or "").strip()
+                    print_msg = str(print_stats.get("message") or "").strip()
+                    display_msg = str((status.get("display_status") or {}).get("message") or "").strip()
+
+                    eff_state = raw_state
+                    err_code: str | None = None
+                    err_msg: str | None = None
+                    if raw_state == "error" or webhooks_state in ("error", "shutdown"):
+                        eff_state = "error"
+                        err_code = "KLIPPER_SHUTDOWN" if webhooks_state == "shutdown" else "KLIPPER_ERROR"
+                        err_msg = print_msg or webhooks_msg or "Klipper reportó un error o parada."
+                    elif raw_state == "paused":
+                        pause_detail = print_msg or (
+                            display_msg
+                            if any(
+                                k in display_msg.lower()
+                                for k in ("error", "filament", "runout", "jam", "clog", "pause", "atasco")
+                            )
+                            else ""
+                        )
+                        if pause_detail:
+                            err_code = "PAUSE_REASON"
+                            err_msg = pause_detail
                     progress = float(virtual_sd.get("progress", 0.0) or 0.0) * 100.0
                     total_dur = float(print_stats.get("total_duration", 0.0) or 0.0)
                     print_dur = float(print_stats.get("print_duration", 0.0) or 0.0)
@@ -200,7 +225,7 @@ async def query_moonraker_status(
                         port=cand_port,
                         enabled=enabled,
                         online=True,
-                        state=raw_state,
+                        state=eff_state,
                         nozzle_temp=round(float(extruder.get("temperature", 0.0)), 1),
                         nozzle_target=round(float(extruder.get("target", 0.0)), 1),
                         bed_temp=round(float(heater_bed.get("temperature", 0.0)), 1),
@@ -222,6 +247,8 @@ async def query_moonraker_status(
                         host_temp=host_temp,
                         filament_used_mm=filament_used_mm,
                         filament_used_g=filament_used_g,
+                        error_code=err_code,
+                        error_message=err_msg,
                     )
                 except (httpx.HTTPError, ValueError, KeyError) as exc:
                     last_err = type(exc).__name__
