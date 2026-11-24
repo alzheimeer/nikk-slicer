@@ -14,7 +14,7 @@
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![React + Three.js](https://img.shields.io/badge/Frontend-React%20%2B%20Three.js-61DAFB?logo=react&logoColor=000000)](https://react.dev/)
 [![AI Copilot](https://img.shields.io/badge/AI%20Copilot-DeepSeek%20%7C%20Gemini-4D6BFE)](https://www.deepseek.com/)
-[![MCP Server](https://img.shields.io/badge/MCP-22%20Tools%20%7C%20HTTP%20%2B%20stdio-8A2BE2)](https://modelcontextprotocol.io/)
+[![MCP Server](https://img.shields.io/badge/MCP-24%20Tools%20%7C%20HTTP%20%2B%20stdio-8A2BE2)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Download macOS DMG](https://img.shields.io/badge/Download-NikkSlicer_macOS.dmg-22c55e?logo=apple&logoColor=white)](https://github.com/alzheimeer/nikk-slicer/releases/latest)
 [![Download Windows Setup](https://img.shields.io/badge/Download-NikkSlicer_Windows_Setup.exe-0078D6?logo=windows&logoColor=white)](https://github.com/alzheimeer/nikk-slicer/releases/latest)
@@ -98,15 +98,15 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) todo el f
   - Cada laminado guarda la instantánea efectiva en `sliced_profile_snapshot.json`, la embebe como comentario `; NIKK_SLICER_PROFILE_JSON:` en el `.gcode` y genera un sidecar **`<nombre>.json`** junto al archivo exportado (consultable también vía MCP).
 - **Gestor de Proyectos `.nikkproj`, Carga Progresiva y Ventana Maximizada (`project_manager.py`):**
   - Arranque desktop siempre maximizado en Windows y macOS (`maximized=True` + `window.maximize()` en `desktop_launcher.py`).
-  - Menú nativo **`Archivo`** (*Nuevo*, *Abrir proyecto* con galería de miniaturas 3D, *Guardar*, *Guardar como*, *Recientes*) y restauración íntegra de escena multi-objeto (piezas divididas, transformaciones, overrides por pieza y pintura de soportes sin sobrescribir tus ajustes al reabrir).
+  - Menú nativo **`Archivo`** (*Nuevo*, *Abrir proyecto* con galería de miniaturas 3D separada en pestañas **Proyectos Guardados** y **Diagnóstico Post-Impresión**, *Guardar*, *Guardar como*, *Cerrar proyecto*, *Recientes*) y restauración íntegra de escena multi-objeto (piezas divididas, transformaciones, overrides por pieza y pintura de soportes sin sobrescribir tus ajustes al reabrir).
   - **Modal bloqueante de carga (`Cargando...` `0% → 100%`):** oculta el canvas 3D mientras restaura metadatos (`20%`), geometría multicolor (`55%`), piezas/posiciones (`85%`) y escena lista (`100%`).
   - Soporte multi-ventana con color distintivo automático por proyecto y pestañas de cambio rápido sincronizadas en tiempo real (`BroadcastChannel("nikk_slicer_windows")`).
 - **Protocolo Unificado FlashForge LAN (`:8898`) y Modal Global Progresivo (`GlobalProcessingOverlay.tsx`):**
   - **`Subir sin Imprimir`** (`printNow=false`) y **`Subir e Imprimir Ahora`** (`printNow=true`) utilizan el mismo adaptador FlashForge LAN HTTP (`:8898`) con verificación posterior en `/gcodeList` y bloqueo visual progresivo durante el envío.
 - **Laminado Inteligente con Perfiles Dinámicos (`0.08–0.28 mm`) y Primera Capa Optimizada:**
-  - **Slider Discreto Calidad vs. Velocidad (`0.08`, `0.12`, `0.16`, `0.20`, `0.24`, `0.28 mm`):** recalcula en tiempo real tarjetas dinámicas (*Estándar*, *Mecánico / Estructural*, *Piel Difusa / Textura*, *Litofanía HD* en `0.08–0.12 mm` y *Rapidez Extrema Blindada* en `0.24–0.28 mm`) según los límites térmicos/cinemáticos de cada impresora y material (`PLA`, `PETG`, `ABS`, `TPU`).
-  - Optimización de primera capa, retracción/wipe/Z-hop `0.2 mm` para **PETG** y multicolor, desplazamientos rápidos y torre de purga cercana.
-  - **Análisis IA Contextual (`POST /api/ai/analyze-model`):** cubre las 6 resoluciones con variantes desplegables, tiempos estimados según `Q_max` y filtrado estricto por geometría/modo (en Litofanía oculta materiales incompatibles y restringe alturas a `0.08 / 0.12 mm`).
+  - **Slider Discreto Calidad vs. Velocidad (`0.08`, `0.12`, `0.16`, `0.20`, `0.24`, `0.28 mm`) y Relleno (Infill) previo al corte:** recalcula en tiempo real tarjetas dinámicas (*Estándar*, *Mecánico / Estructural*, *Piel Difusa / Textura*, *Litofanía HD* en `0.08–0.12 mm` y *Rapidez Extrema Blindada* en `0.24–0.28 mm`) según los límites térmicos/cinemáticos de cada impresora y material (`PLA`, `PETG`, `ABS`, `TPU`), e incluye selector rápido de **Relleno (`Auto`, `12%`, `15%`, `25%`, `50%`, `100%`)** antes de laminar.
+  - Optimización de primera capa, retracción/wipe/Z-hop `0.2 mm` para **PETG** y multicolor, desplazamientos rápidos y torre de purga cercana con **Anclaje Reforzado (`Prime Tower Anti-Detachment`: brim `12–15 mm`, cono estabilizador y costillas `3 mm`)**.
+  - **Análisis IA Contextual (`POST /api/ai/analyze-model`):** cubre las 6 resoluciones con variantes desplegables (incluyendo **`Relleno Sólido 100%`** para tarjetas de luz o piezas macizas), tiempos estimados según `Q_max` y filtrado estricto por geometría/modo (en Litofanía oculta materiales incompatibles y restringe alturas a `0.08 / 0.12 mm`).
   - Cálculo automático de temperaturas (`1.ª Capa` e `Impresión`), diámetro de boquilla (`0.2 / 0.4 / 0.6 / 0.8 mm`) y separación calibrada de soportes Z/XY por material.
 - **Auto-Orientación IA Multi-Opción con Previsualización 3D en Vivo (`POST /api/ai/orientations`):**
   - Evalúa con `trimesh` + IA 5 orientaciones (*Posición Original*, *Espalda en Cama / Cara Libre*, *Inclinado 45°*, *Mínimo Tiempo / Menor Altura Z* y *Máxima Estabilidad / Base Amplia*) tanto de una pieza individual (`object_id`) como de toda la cama (`scene_objects_json`), con previsualización instantánea sobre la cama (`dropToBed`) antes de laminar.
@@ -124,7 +124,7 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) todo el f
   - Bloqueo automático a **PLA / PLA HS**, capa fina (`0.08–0.12 mm`), relleno **`99%` rectilíneo**, 6 perímetros (`Arachne`), costura trasera, brim exterior de `8 mm`, desactivación de soportes sobre la cara de imagen y velocidades/aceleraciones anti-ringing por cinemática.
 - **Calculadora Comercial de Cotización 3D (`QuoteCalculatorModal`):**
   - Acceso desde **Laminado listo** (`Calculadora de Venta` pre-rellenada con impresora/Watts, horas/minutos y gramos reales) o desde la barra superior (**Cotizar**).
-  - Calcula costo real en `COP$` (filamento, tarifa Enel Bogotá, desgaste por vida útil/repuestos, margen de fallo, insumos extra, pintura/mano de obra, comisiones de plataforma y multiplicadores `×2`–`×5`), con copia formateada para **WhatsApp** y guardado de preset de taller.
+  - Calcula costo real en `COP$` (filamento, tarifa Enel Bogotá, desgaste por vida útil/repuestos, margen de fallo, insumos extra, pintura/mano de obra, comisiones de plataforma, multiplicadores `×2`–`×5` y **descuentos por volumen `0–50%` sobre ganancia neta** con tramos automáticos editables según unidades `1–9`, `10–24`, `25–49`, `50–99`, `100+`), con copia formateada para **WhatsApp** y guardado de preset de taller.
 - **Monitor en Vivo, Reporte de Errores de Firmware, Cámaras y Aprendizaje Continuo con IA:**
   - <img src="docs/assets/deepseek-logo.png" alt="DeepSeek" width="16" align="absmiddle" /> **Grabador continuo (`0% → 100%`)** en segundo plano: guarda muestras cada 20 s y en hitos de progreso (`backend/temp/telemetry_sessions/`).
   - **Alertas de Firmware en Tiempo Real (`FarmDashboard.tsx`):** captura y muestra banners con código y causa en vivo desde **FlashForge LAN** (catálogo `E0161–E0164`, `E0011`, `E0017` con slot activo de filamento), **Klipper/Moonraker** (`webhooks.state`, shutdown y motivo de pausa) y **Marlin USB Serial** (`error:` / `!!`).
@@ -148,7 +148,7 @@ Nikk Slicer integra en una sola aplicación nativa (`Nikk Slicer.app`) todo el f
 - **Soporte Dual de API Key (BYOK — DeepSeek / Google Gemini):**
   - El usuario elige entre **DeepSeek** o **Google Gemini** e introduce su propia API Key desde el asistente `Entorno / MCP` (`POST /api/system/ai-config` + `POST /api/system/ai-test`).
 - **Servidor MCP Interno Autodescubierto (`backend/app/mcp_server.py`):**
-  - Basado en el SDK oficial `mcp` (`MCPServer("NikkSlicerMCP")`), expone **22 herramientas** (entorno/IA, análisis/división/auto-ordenado/orientación 3D, copiloto IA, laminado, pausas por capa, cotización COP, proyectos guardados, snapshot de perfil, catálogo universal de impresoras y telemetría/control) y **3 recursos** (`nikk://printers`, `nikk://projects/recent`, `nikk://environment`).
+  - Basado en el SDK oficial `mcp` (`MCPServer("NikkSlicerMCP")`), expone **24 herramientas** (entorno/IA, análisis/división/auto-ordenado/orientación 3D, copiloto IA, laminado, **sincronización y re-laminado en vivo de la ventana abierta**, pausas por capa, cotización COP, proyectos guardados, snapshot de perfil, catálogo universal de impresoras y telemetría/control) y **3 recursos** (`nikk://printers`, `nikk://projects/recent`, `nikk://environment`).
   - Disponible por **Streamable HTTP** en `http://127.0.0.1:8000/mcp` (montado en FastAPI) y por **`stdio`** mediante `python3 -m backend.app.mcp_server`, con botón de copia rápida de configuración JSON dentro de `Entorno / MCP`.
 
 ---
@@ -306,13 +306,13 @@ Nikk Slicer expone **22 herramientas** y **3 recursos** MCP tanto por **Streamab
     ```
   También puedes copiar el bloque JSON listo para pegar desde **`Entorno / MCP` → `Copiar configuración JSON MCP`**.
 
-#### Catálogo Completo de Herramientas y Recursos MCP (`22` Tools · `3` Resources)
+#### Catálogo Completo de Herramientas y Recursos MCP (`24` Tools · `3` Resources)
 | Categoría | Herramientas / Recursos MCP |
 | :--- | :--- |
 | **Entorno e IA (4)** | `nikk_get_system_environment`, `nikk_rescan_slicers`, `nikk_set_slicer_path`, `nikk_configure_ai` |
 | **Geometría 3D & `.3mf` (4)** | `nikk_analyze_model`, `nikk_split_objects`, `nikk_auto_arrange`, `nikk_evaluate_orientations` |
 | **Copiloto IA & Laminado (4)** | `nikk_ai_analyze_model`, `nikk_slice_model`, `nikk_apply_layer_pauses`, `nikk_calculate_quote` |
-| **Proyectos & Perfil `.nikkproj` (4)** | `nikk_list_recent_projects`, `nikk_get_project`, `nikk_delete_project`, `nikk_get_sliced_profile_snapshot` |
+| **Proyectos, Perfil & UI en Vivo (6)** | `nikk_list_recent_projects`, `nikk_get_project`, `nikk_delete_project`, `nikk_get_sliced_profile_snapshot`, `nikk_get_live_state`, `nikk_update_live_profile` |
 | **Granja, Catálogo & Bitácora (6)** | `nikk_get_printers_status`, `nikk_upload_and_print`, `nikk_control_printer`, `nikk_get_error_journal`, `nikk_search_printer_catalog`, `nikk_add_custom_printer` |
 | **Recursos MCP (3)** | `nikk://printers`, `nikk://projects/recent`, `nikk://environment` |
 
@@ -348,7 +348,8 @@ http://<IP_DEL_EQUIPO_PRINCIPAL>:8000
 | `POST` | `/api/system/set-slicer-path` | Asigna manualmente la ruta de un ejecutable de laminador |
 | `POST` | `/api/system/ai-config` | Guarda proveedor (`deepseek` / `gemini`) y API Key |
 | `POST` | `/api/system/ai-test` | Prueba en vivo la conexión con DeepSeek o Google Gemini |
-| `HTTP / stdio` | `/mcp` | Servidor MCP interno (`22` herramientas + `3` recursos: `nikk://printers`, `nikk://projects/recent`, `nikk://environment`) |
+| `HTTP / stdio` | `/mcp` | Servidor MCP interno (`24` herramientas + `3` recursos: `nikk://printers`, `nikk://projects/recent`, `nikk://environment`) |
+| `GET / POST` | `/api/live/state`, `/api/live/command` | Sincronización de estado abierto y re-laminado en vivo desde MCP |
 | `POST` | `/api/analyze-mesh` | Análisis geométrico (`trimesh`), extracción `.3mf` multi-objeto y rangos Z |
 | `POST` | `/api/models/split-objects` | División geométrica conservando `paint_color` / `T0–T3` en objetos independientes |
 | `POST` | `/api/cut-mesh` | Corte planar (`trimesh` + `rtree`) en mitades superior, inferior o ambas |
