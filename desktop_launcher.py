@@ -497,11 +497,16 @@ def open_new_project_window(project_id: str | None = None) -> None:
             width=1440,
             height=920,
             min_size=(1100, 720),
+            maximized=True,
             background_color="#020617",
             js_api=DesktopApi(),
         )
         if win is not None:
             _register_window(wsid, win)
+            try:
+                win.maximize()
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -804,6 +809,7 @@ def open_desktop_window(logger: logging.Logger, initial_project_id: str | None =
             width=1440,
             height=920,
             min_size=(1100, 720),
+            maximized=True,
             background_color="#020617",
             js_api=DesktopApi(),
         )
@@ -812,12 +818,20 @@ def open_desktop_window(logger: logging.Logger, initial_project_id: str | None =
         if IS_MACOS:
             _set_macos_dock_icon(logger)
 
-        def _on_webview_ready():
+        def _on_webview_ready(win=None):
             time.sleep(0.35)
+            try:
+                if win is not None:
+                    win.maximize()
+            except Exception:
+                pass
             if IS_MACOS:
                 _install_macos_archivo_menu(logger)
 
-        start_kwargs: dict[str, object] = {"func": _on_webview_ready}
+        start_kwargs: dict[str, object] = {
+            "func": _on_webview_ready,
+            "args": (main_win,),
+        }
         if IS_WINDOWS:
             start_kwargs["gui"] = "edgechromium"
             win_menus = _build_windows_menu(logger)

@@ -14,12 +14,16 @@ backend/.env
 # Bundles compilados y artefactos de distribución local
 Nikk Slicer.app/
 SlicerHub.app/
+build/
 dist_release/
 dist_win/
 nikk_slicer.ico
+Nikk Slicer.spec
 
 # Sistema macOS, repos de referencia externos y modelos pesados de prueba
 .DS_Store
+repos/
 repos_referencia/
+modelopruebas/
 modelosTest/*.stl
 modelosTest/*.3mf

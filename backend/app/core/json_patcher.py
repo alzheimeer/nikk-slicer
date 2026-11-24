@@ -652,7 +652,22 @@ def patch_profiles_for_job(
                 cur_val = float(str(process_data.get(key, cap)).rstrip("%") or cap)
                 process_data[key] = str(int(min(cur_val, cap)))
 
-    if request.supports:
+    paint_sources = list(getattr(request, "scene_objects", None) or []) or list(getattr(request, "instances", None) or [])
+    has_paint_blockers = bool(getattr(request, "support_blockers", None)) or any(
+        2 in (getattr(src, "support_paint_map", None) or {}).values()
+        for src in paint_sources
+    )
+    has_paint_enforcers = any(
+        1 in (getattr(src, "support_paint_map", None) or {}).values()
+        for src in paint_sources
+    )
+    enforcers_only_sources = [
+        src for src in paint_sources
+        if getattr(src, "support_paint_mode", "auto") == "enforcers_only"
+    ]
+    all_enforcers_only = bool(enforcers_only_sources) and len(enforcers_only_sources) == len(paint_sources) and not has_paint_blockers
+
+    if request.supports or has_paint_blockers or has_paint_enforcers:
         z_dist = (
             request.support_z_distance
             if request.support_z_distance is not None
@@ -664,7 +679,10 @@ def patch_profiles_for_job(
             else compute_default_support_xy(request.material, nozzle_d)
         )
         process_data["enable_support"] = "1"
-        process_data["support_type"] = request.support_type
+        base_sup_type = request.support_type
+        if all_enforcers_only:
+            base_sup_type = "normal(manual)" if str(base_sup_type).startswith("normal") else "tree(manual)"
+        process_data["support_type"] = base_sup_type
         if getattr(request, "support_style", None):
             process_data["support_style"] = str(request.support_style).strip() or "default"
         process_data["support_on_build_plate_only"] = (
@@ -1033,6 +1051,55 @@ def build_sliced_profile_snapshot(
         18.0,
     )
 
+    per_object_support_overrides: list[dict[str, Any]] = []
+    per_object_adhesion_overrides: list[dict[str, Any]] = []
+    for idx_obj, sc_obj in enumerate(getattr(request, "scene_objects", None) or [], start=1):
+        ov = getattr(sc_obj, "overrides", None)
+        if ov is None:
+            continue
+        obj_name = str(getattr(sc_obj, "name", f"Pieza {idx_obj}"))
+        if ov.enable_support != "inherit" or ov.support_type != "inherit":
+            per_object_support_overrides.append(
+                {
+                    "name": obj_name,
+                    "enable_support": ov.enable_support,
+                    "support_type": ov.support_type,
+                }
+            )
+        if ov.brim_type != "inherit":
+            per_object_adhesion_overrides.append(
+                {
+                    "name": obj_name,
+                    "brim_type": ov.brim_type,
+                    "brim_width": float(ov.brim_width),
+                    "raft_layers": int(ov.raft_layers),
+                }
+            )
+
+    if not per_object_support_overrides and not per_object_adhesion_overrides:
+        for idx_inst, inst in enumerate(getattr(request, "instances", None) or [], start=1):
+            ov = getattr(inst, "overrides", None)
+            if ov is None:
+                continue
+            inst_name = f"Pieza #{idx_inst}"
+            if ov.enable_support != "inherit" or ov.support_type != "inherit":
+                per_object_support_overrides.append(
+                    {
+                        "name": inst_name,
+                        "enable_support": ov.enable_support,
+                        "support_type": ov.support_type,
+                    }
+                )
+            if ov.brim_type != "inherit":
+                per_object_adhesion_overrides.append(
+                    {
+                        "name": inst_name,
+                        "brim_type": ov.brim_type,
+                        "brim_width": float(ov.brim_width),
+                        "raft_layers": int(ov.raft_layers),
+                    }
+                )
+
     return {
         "quality": {
             "layer_height": _as_float(proc.get("layer_height"), 0.2),
@@ -1084,6 +1151,7 @@ def build_sliced_profile_snapshot(
             "support_interface_bottom_layers": _as_int(proc.get("support_interface_bottom_layers"), 2),
             "support_interface_spacing": _as_float(proc.get("support_interface_spacing"), 0.5),
             "support_interface_pattern": _as_str(proc.get("support_interface_pattern"), "rectilinear"),
+            "per_object_overrides": per_object_support_overrides,
         },
         "multimaterial": {
             "active_tools": active_tools,
@@ -1107,6 +1175,7 @@ def build_sliced_profile_snapshot(
             "printer_name": printer_name,
             "slicer_engine": slicer_engine,
             "sliced_at_timestamp": datetime.now(timezone.utc).isoformat(),
+            "per_object_overrides": per_object_adhesion_overrides,
         },
         "filaments": filaments_out,
     }

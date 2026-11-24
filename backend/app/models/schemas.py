@@ -117,6 +117,16 @@ class AutoOrientResponse(BaseModel):
     analysis: MeshAnalysisResponse
 
 
+class ObjectPrintOverrides(BaseModel):
+    """Anulaciones individuales por pieza/instancia para soportes y adhesión en cama."""
+
+    enable_support: Literal["inherit"] | bool = "inherit"
+    support_type: Literal["inherit", "tree(auto)", "normal(auto)"] = "inherit"
+    brim_type: Literal["inherit", "no_brim", "outer_only", "brim_and_skirt", "raft"] = "inherit"
+    brim_width: float = Field(default=5.0, ge=0.0, le=30.0)
+    raft_layers: int = Field(default=2, ge=0, le=10)
+
+
 class ModelInstanceTransform(BaseModel):
     """Transformación CAD de una instancia individual en el plato."""
 
@@ -132,6 +142,9 @@ class ModelInstanceTransform(BaseModel):
     rot_y: float = 0.0
     rot_z: float = 0.0
     drop_to_bed: bool = True
+    overrides: ObjectPrintOverrides | None = None
+    support_paint_map: dict[int, int] | None = None
+    support_paint_mode: Literal["auto", "enforcers_only"] = "auto"
 
 
 class AutoArrangeRequest(BaseModel):
@@ -297,6 +310,9 @@ class SceneObjectTransform(BaseModel):
     scale_z: float | None = None
     drop_to_bed: bool = True
     dimensions_mm: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    overrides: ObjectPrintOverrides | None = None
+    support_paint_map: dict[int, int] | None = None
+    support_paint_mode: Literal["auto", "enforcers_only"] = "auto"
 
 
 class LayerPauseItem(BaseModel):
@@ -612,6 +628,7 @@ class OrientationOption(BaseModel):
     fits_bed: bool = True
     is_recommended: bool = False
     quaternion: list[float] | None = None
+    per_object_rotations: dict[str, OrientationRotation] = Field(default_factory=dict)
 
 
 class AIOrientationsResponse(BaseModel):
@@ -625,6 +642,8 @@ class AIOrientationsResponse(BaseModel):
     hero_face_detected: bool = False
     hero_face_normal: list[float] | None = None
     recommended_id: str = "original"
+    target_object_id: str | None = None
+    flat_base_preserved_ids: list[str] = Field(default_factory=list)
     options: list[OrientationOption] = Field(default_factory=list)
 
 
@@ -937,3 +956,18 @@ class PrinterControlRequest(BaseModel):
     """Comando de control en vivo sobre la impresora."""
 
     action: Literal["pause", "resume", "cancel", "light_on", "light_off", "light_toggle"]
+
+
+class ExportSelectionRequest(BaseModel):
+    """Petición de exportación de piezas seleccionadas o plato completo en .STL, .3MF u .OBJ."""
+
+    mesh_id: str
+    printer_id: PrinterId = "creator5_pro"
+    format: Literal["stl", "3mf", "obj"] = "3mf"
+    apply_transforms: bool = True
+    center_on_bed: bool = True
+    export_all_plate: bool = False
+    scene_objects: list[SceneObjectTransform] = Field(default_factory=list)
+    instances: list[ModelInstanceTransform] = Field(default_factory=list)
+    part_extruder_map: dict[str, int] = Field(default_factory=dict)
+    filename_base: str = "export"

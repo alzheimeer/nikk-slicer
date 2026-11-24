@@ -122,11 +122,14 @@ from app.core.print_telemetry_recorder import (
 from app.core.mesh_analyzer import (
     analyze_model_file,
     assemble_scene_objects_for_slicer,
+    export_instances_with_support_paint_3mf,
+    export_selection_to_file,
     auto_arrange_instances,
     auto_orient_mesh,
     compute_lay_on_face_candidates,
     cut_mesh_by_plane,
     evaluate_orientation_candidates,
+    evaluate_plate_orientation_candidates,
     find_optimal_anti_support_orientation,
     get_scene_object_stl_path,
     inject_support_blockers_into_3mf,
@@ -156,6 +159,7 @@ from app.models.schemas import (
     AutoArrangeResponse,
     AutoOrientResponse,
     CutMeshResponse,
+    ExportSelectionRequest,
     ExtruderSlotConfig,
     LayerPauseItem,
     LayOnFaceResponse,
@@ -668,6 +672,48 @@ async def get_scene_object_stl_endpoint(mesh_id: str, object_id: str) -> FileRes
     return FileResponse(path=stl_path, media_type="application/octet-stream", filename=f"{object_id}.stl")
 
 
+@app.get("/api/models/{mesh_id}/objects/{object_id}.paint.json")
+async def get_scene_object_paint_endpoint(mesh_id: str, object_id: str) -> Response:
+    """Sirve el mapa `paint_color` por triángulo de un objeto dividido si existe."""
+    stl_path = get_scene_object_stl_path(mesh_id, object_id)
+    if stl_path is None:
+        raise HTTPException(status_code=404, detail="Objeto 3D no encontrado en caché.")
+    paint_path = stl_path.with_name(f"{object_id}.paint.json")
+    if not paint_path.is_file():
+        return JSONResponse({"paint_colors": [], "palette": []})
+    return FileResponse(path=paint_path, media_type="application/json")
+
+
+@app.post("/api/export-selection")
+async def export_selection_endpoint(req: ExportSelectionRequest) -> FileResponse:
+    """Exporta las piezas seleccionadas o el plato completo a .3MF, .STL (binario) o .OBJ."""
+    printer = _resolve_printer_or_400(req.printer_id)
+    export_dir = TEMP_DIR / f"export_{uuid.uuid4().hex[:10]}"
+    try:
+        out_path = export_selection_to_file(
+            req.mesh_id,
+            export_dir,
+            printer,
+            fmt=req.format,
+            apply_transforms=req.apply_transforms,
+            center_on_bed=req.center_on_bed,
+            scene_objects=req.scene_objects,
+            instances=req.instances,
+            part_extruder_map=req.part_extruder_map,
+            filename_base=req.filename_base,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    media_type = (
+        "application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
+        if out_path.suffix.lower() == ".3mf"
+        else "application/octet-stream"
+    )
+    return FileResponse(path=out_path, media_type=media_type, filename=out_path.name)
+
+
 @app.post("/api/models/split-objects", response_model=SplitObjectsResponse)
 async def split_objects_endpoint(
     printer_id: PrinterId = Form(...),
@@ -711,18 +757,48 @@ def ai_orientations_endpoint(
     material: MaterialType = Form("pla"),
     mesh_id: str | None = Form(None),
     scale_percent: float = Form(100.0),
+    object_id: str | None = Form(None),
+    scene_objects_json: str | None = Form(None),
     file: UploadFile | None = File(None),
 ) -> AIOrientationsResponse:
-    """Evalúa 5 orientaciones óptimas (trimesh + DeepSeek IA) previsualizables en vivo."""
+    """Evalúa 5 orientaciones óptimas (trimesh + DeepSeek IA) por pieza o plato completo."""
     printer = _resolve_printer_or_400(printer_id)
     resolved_id, cached_path = _resolve_cached_stl(file, mesh_id)
     try:
-        geom_result = evaluate_orientation_candidates(
-            cached_path,
-            printer=printer,
-            mesh_id=resolved_id,
-            scale_percent=scale_percent,
-        )
+        if object_id and object_id.strip():
+            obj_stl = get_scene_object_stl_path(resolved_id, object_id.strip())
+            if obj_stl is None:
+                raise ValueError(f"Objeto '{object_id}' no encontrado en caché.")
+            geom_result = evaluate_orientation_candidates(
+                obj_stl,
+                printer=printer,
+                mesh_id=resolved_id,
+                scale_percent=scale_percent,
+            )
+            geom_result["target_object_id"] = object_id.strip()
+        elif scene_objects_json:
+            raw_objs = json.loads(scene_objects_json)
+            if isinstance(raw_objs, list) and len(raw_objs) > 1:
+                geom_result = evaluate_plate_orientation_candidates(
+                    resolved_id,
+                    scene_objects=raw_objs,
+                    printer=printer,
+                    scale_percent=scale_percent,
+                )
+            else:
+                geom_result = evaluate_orientation_candidates(
+                    cached_path,
+                    printer=printer,
+                    mesh_id=resolved_id,
+                    scale_percent=scale_percent,
+                )
+        else:
+            geom_result = evaluate_orientation_candidates(
+                cached_path,
+                printer=printer,
+                mesh_id=resolved_id,
+                scale_percent=scale_percent,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -999,42 +1075,65 @@ def _execute_slice_job_sync(
         model_input = painted_3mf_path
         f_ids = None
     else:
-        mesh = load_and_transform_mesh(
-            cached_path,
-            printer=printer,
-            scale_percent=req.scale_percent,
-            rot_x=req.rot_x,
-            rot_y=req.rot_y,
-            rot_z=req.rot_z,
-            scale_x=req.scale_x,
-            scale_y=req.scale_y,
-            scale_z=req.scale_z,
-            offset_x=req.offset_x,
-            offset_y=req.offset_y,
-            offset_z=req.offset_z,
-            drop_to_bed=req.drop_to_bed,
-            instances=req.instances,
+        has_inst_paint = any(
+            bool(getattr(inst, "support_paint_map", None))
+            for inst in (req.instances or [])
         )
-        stl_for_slicer = job_dir / "input_prepared.stl"
-        exported_stl = mesh.export(file_type="stl")
-        stl_bytes = (
-            exported_stl
-            if isinstance(exported_stl, (bytes, bytearray))
-            else str(exported_stl).encode("utf-8")
-        )
-        _atomic_write_bytes(stl_for_slicer, bytes(stl_bytes))
-        patched = patch_profiles_for_job(
-            req,
-            job_dir,
-            is_multicolor=bool(analysis.is_multicolor),
-            model_dimensions_mm=(
-                analysis.dimensions_mm.x,
-                analysis.dimensions_mm.y,
-                analysis.dimensions_mm.z,
-            ),
-        )
-        model_input = stl_for_slicer
-        f_ids = None
+        if has_inst_paint and req.instances:
+            model_input = export_instances_with_support_paint_3mf(
+                cached_path,
+                job_dir,
+                printer,
+                req.instances,
+            )
+            patched = patch_profiles_for_job(
+                req,
+                job_dir,
+                is_multicolor=bool(analysis.is_multicolor),
+                model_dimensions_mm=(
+                    analysis.dimensions_mm.x,
+                    analysis.dimensions_mm.y,
+                    analysis.dimensions_mm.z,
+                ),
+            )
+            f_ids = None
+        else:
+            mesh = load_and_transform_mesh(
+                cached_path,
+                printer=printer,
+                scale_percent=req.scale_percent,
+                rot_x=req.rot_x,
+                rot_y=req.rot_y,
+                rot_z=req.rot_z,
+                scale_x=req.scale_x,
+                scale_y=req.scale_y,
+                scale_z=req.scale_z,
+                offset_x=req.offset_x,
+                offset_y=req.offset_y,
+                offset_z=req.offset_z,
+                drop_to_bed=req.drop_to_bed,
+                instances=req.instances,
+            )
+            stl_for_slicer = job_dir / "input_prepared.stl"
+            exported_stl = mesh.export(file_type="stl")
+            stl_bytes = (
+                exported_stl
+                if isinstance(exported_stl, (bytes, bytearray))
+                else str(exported_stl).encode("utf-8")
+            )
+            _atomic_write_bytes(stl_for_slicer, bytes(stl_bytes))
+            patched = patch_profiles_for_job(
+                req,
+                job_dir,
+                is_multicolor=bool(analysis.is_multicolor),
+                model_dimensions_mm=(
+                    analysis.dimensions_mm.x,
+                    analysis.dimensions_mm.y,
+                    analysis.dimensions_mm.z,
+                ),
+            )
+            model_input = stl_for_slicer
+            f_ids = None
 
     if req.support_blockers:
         try:

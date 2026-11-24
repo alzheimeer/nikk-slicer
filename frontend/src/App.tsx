@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Globe, Plus, Server, Settings, Sliders } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Globe, Plus, Redo2, Server, Settings, Sliders, Undo2 } from 'lucide-react';
 import { useI18n } from './i18n/I18nContext';
+import { useSessionHistory } from './hooks/useSessionHistory';
 import { ErrorJournalModal } from './components/ErrorJournalModal';
 import { QuoteCalculatorModal } from './components/QuoteCalculatorModal';
 import { SystemSetupModal } from './components/SystemSetupModal';
@@ -29,6 +30,7 @@ import {
   requestAIOptimizeSlice,
   requestAISupportOrient,
   saveFullProject,
+  exportSelection,
   saveUserPrefs,
   sliceModel,
   splitMeshObjects,
@@ -57,7 +59,6 @@ import {
   type SupportBlockerItem,
   type QualityPreset,
   type SavedProjectRecord,
-  type SceneObjectInfo,
   type SceneObjectTransform,
   type SliceResponse,
   type SupportType,
@@ -74,7 +75,8 @@ import {
   computeSlotThermalConfig,
   negotiateMultiMaterialBedTemp,
 } from './components/SlicerWizard';
-import { Viewport3D } from './components/Viewport3D';
+import { Viewport3D, arrangeSceneObjectsOnBed } from './components/Viewport3D';
+import { GlobalProcessingOverlay } from './components/GlobalProcessingOverlay';
 
 const DEFAULT_TRANSFORM: ModelTransform = {
   scalePercent: 100,
@@ -127,6 +129,9 @@ interface LastSessionData {
   support_xy_distance?: number;
   adhesion_type?: AdhesionType;
   brim_width_mm?: number;
+  scene_objects?: SceneObjectTransform[];
+  selected_object_ids?: string[];
+  support_blockers?: SupportBlockerItem[];
   saved_at?: string;
 }
 
@@ -423,6 +428,178 @@ export function App() {
   const prefsLoadedRef = useRef(false);
   const lastSupportSyncKeyRef = useRef<string>('');
 
+  const sessionSnapshot = useMemo(
+    () => ({
+      selectedPrinterId,
+      transform,
+      sceneObjects,
+      selectedObjectIds,
+      material,
+      nozzleDiameter,
+      highSpeedFilament,
+      lithophaneMode,
+      spoolMinTemp,
+      spoolMaxTemp,
+      nozzleTempInitial,
+      nozzleTemp,
+      bedTemp,
+      supports,
+      supportType,
+      supportStyle,
+      supportOnBuildPlateOnly,
+      supportZDistance,
+      supportXyDistance,
+      adhesionType,
+      brimWidthMm,
+      primeTowerEnabled,
+      qualityPreset,
+      specializedProfileId,
+      layerHeightOverride,
+      outerWallSpeedOverride,
+      flowRatioOverride,
+      infillDensityOverride,
+      fuzzySkin,
+      fuzzySkinThickness,
+      fuzzySkinPointDistance,
+      extrudersConfig,
+      modelExtruder,
+      supportExtruder,
+      partExtruderMap,
+      layerPauses,
+      supportBlockers,
+    }),
+    [
+      selectedPrinterId,
+      transform,
+      sceneObjects,
+      selectedObjectIds,
+      material,
+      nozzleDiameter,
+      highSpeedFilament,
+      lithophaneMode,
+      spoolMinTemp,
+      spoolMaxTemp,
+      nozzleTempInitial,
+      nozzleTemp,
+      bedTemp,
+      supports,
+      supportType,
+      supportStyle,
+      supportOnBuildPlateOnly,
+      supportZDistance,
+      supportXyDistance,
+      adhesionType,
+      brimWidthMm,
+      primeTowerEnabled,
+      qualityPreset,
+      specializedProfileId,
+      layerHeightOverride,
+      outerWallSpeedOverride,
+      flowRatioOverride,
+      infillDensityOverride,
+      fuzzySkin,
+      fuzzySkinThickness,
+      fuzzySkinPointDistance,
+      extrudersConfig,
+      modelExtruder,
+      supportExtruder,
+      partExtruderMap,
+      layerPauses,
+      supportBlockers,
+    ],
+  );
+
+  const applySessionSnapshot = useCallback((snap: typeof sessionSnapshot) => {
+    setSelectedPrinterId(snap.selectedPrinterId);
+    setTransform(snap.transform);
+    setSceneObjects(snap.sceneObjects);
+    setSelectedObjectIds(snap.selectedObjectIds);
+    setMaterial(snap.material);
+    setNozzleDiameter(snap.nozzleDiameter);
+    setHighSpeedFilament(snap.highSpeedFilament);
+    setLithophaneMode(snap.lithophaneMode);
+    setSpoolMinTemp(snap.spoolMinTemp);
+    setSpoolMaxTemp(snap.spoolMaxTemp);
+    setNozzleTempInitial(snap.nozzleTempInitial);
+    setNozzleTemp(snap.nozzleTemp);
+    setBedTemp(snap.bedTemp);
+    setSupports(snap.supports);
+    setSupportType(snap.supportType);
+    setSupportStyle(snap.supportStyle);
+    setSupportOnBuildPlateOnly(snap.supportOnBuildPlateOnly);
+    setSupportZDistance(snap.supportZDistance);
+    setSupportXyDistance(snap.supportXyDistance);
+    setAdhesionType(snap.adhesionType);
+    setBrimWidthMm(snap.brimWidthMm);
+    setPrimeTowerEnabled(snap.primeTowerEnabled);
+    setQualityPreset(snap.qualityPreset);
+    setSpecializedProfileId(snap.specializedProfileId);
+    setLayerHeightOverride(snap.layerHeightOverride);
+    setOuterWallSpeedOverride(snap.outerWallSpeedOverride);
+    setFlowRatioOverride(snap.flowRatioOverride);
+    setInfillDensityOverride(snap.infillDensityOverride);
+    setFuzzySkin(snap.fuzzySkin);
+    setFuzzySkinThickness(snap.fuzzySkinThickness);
+    setFuzzySkinPointDistance(snap.fuzzySkinPointDistance);
+    setExtrudersConfig(snap.extrudersConfig);
+    setModelExtruder(snap.modelExtruder);
+    setSupportExtruder(snap.supportExtruder);
+    setPartExtruderMap(snap.partExtruderMap);
+    setLayerPauses(snap.layerPauses);
+    setSupportBlockers(snap.supportBlockers);
+  }, []);
+
+  const {
+    canUndo,
+    canRedo,
+    undoCount,
+    redoCount,
+    undo: undoSession,
+    redo: redoSession,
+  } = useSessionHistory({
+    currentSnapshot: sessionSnapshot,
+    onApplySnapshot: applySessionSnapshot,
+    maxSteps: 80,
+    debounceMs: 280,
+  });
+
+  useEffect(() => {
+    const onGlobalKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName ?? '';
+      const isTextInput =
+        (tag === 'INPUT' &&
+          !['range', 'checkbox', 'radio', 'button', 'submit'].includes(
+            (target as HTMLInputElement).type || '',
+          )) ||
+        tag === 'TEXTAREA' ||
+        Boolean(target?.isContentEditable);
+
+      const isUndo = key === 'z' && !e.shiftKey;
+      const isRedo =
+        (e.ctrlKey && !e.metaKey && key === 'r') ||
+        (e.metaKey && key === 'y') ||
+        (e.ctrlKey && key === 'y') ||
+        (key === 'z' && e.shiftKey);
+
+      if (isTextInput && !isRedo) return;
+
+      if (isUndo) {
+        e.preventDefault();
+        e.stopPropagation();
+        undoSession();
+      } else if (isRedo) {
+        e.preventDefault();
+        e.stopPropagation();
+        redoSession();
+      }
+    };
+    window.addEventListener('keydown', onGlobalKeyDown, { capture: true });
+    return () => window.removeEventListener('keydown', onGlobalKeyDown, { capture: true });
+  }, [undoSession, redoSession]);
+
   const activePrinter =
     printers.find((p) => p.printer_id === selectedPrinterId) ?? null;
   const activeProfileId: ProfileId =
@@ -575,6 +752,9 @@ export function App() {
           support_xy_distance: supportXyDistance,
           adhesion_type: adhesionType,
           brim_width_mm: brimWidthMm,
+          scene_objects: sceneObjects,
+          selected_object_ids: selectedObjectIds,
+          support_blockers: supportBlockers,
           saved_at: new Date().toISOString(),
         },
       }).catch(() => {});
@@ -594,6 +774,9 @@ export function App() {
     supportXyDistance,
     adhesionType,
     brimWidthMm,
+    sceneObjects,
+    selectedObjectIds,
+    supportBlockers,
   ]);
 
   // Recalcular temperaturas/caudal de T0..T3 si cambia boquilla o perfil y negociar cama en Creator 5 Pro
@@ -696,7 +879,7 @@ export function App() {
   const runAnalysis = async (
     printerId: PrinterId,
     nextTransform: ModelTransform,
-    options: { file?: File; cachedMeshId?: string },
+    options: { file?: File; cachedMeshId?: string; preserveUserSettings?: boolean },
   ) => {
     const seq = ++analyzeSeqRef.current;
     setIsAnalyzing(true);
@@ -727,37 +910,16 @@ export function App() {
       if (seq !== analyzeSeqRef.current) return;
       setMeshId(res.mesh_id);
       setAnalysis(res);
-      if (options.file && res.scene_objects && res.scene_objects.length > 1) {
-        const mappedObjs: SceneObjectTransform[] = res.scene_objects.map((o: SceneObjectInfo) => ({
-          object_id: o.object_id,
-          name: o.name,
-          extruder: o.extruder,
-          color_hex: o.color_hex,
-          mesh_url: o.mesh_url,
-          offset_x: o.position?.[0] ?? 0,
-          offset_y: o.position?.[1] ?? 0,
-          offset_z: o.position?.[2] ?? 0,
-          rot_x: o.rotation?.[0] ?? 0,
-          rot_y: o.rotation?.[1] ?? 0,
-          rot_z: o.rotation?.[2] ?? 0,
-          scale_percent: o.scale?.[0] ?? 100,
-          scale_x: null,
-          scale_y: null,
-          scale_z: null,
-          drop_to_bed: true,
-          dimensions_mm: o.dimensions_mm ?? [0, 0, 0],
-        }));
-        setSceneObjects(mappedObjs);
-        setSelectedObjectIds(mappedObjs[0]?.object_id ? [mappedObjs[0].object_id] : []);
+      if (!options.preserveUserSettings) {
+        setSupports(res.suggests_supports);
+        setAdhesionType(res.suggests_raft ? 'raft' : 'none');
       }
-      setSupports(res.suggests_supports);
-      setAdhesionType(res.suggests_raft ? 'raft' : 'none');
 
       // Al cargar un archivo .3mf nuevo, inicializar mapeo de partes y zonas de color hacia T0..T3
       // SIN sobrescribir los colores físicos reales configurados en los carretes T0..T3
       if (options.file) {
         const nextMap: Record<string, number> = {};
-        if (res.multimaterial_parts && res.multimaterial_parts.length > 0) {
+        if (!res.is_multicolor && res.multimaterial_parts && res.multimaterial_parts.length > 0) {
           for (const p of res.multimaterial_parts) {
             nextMap[p.part_id] = p.extruder;
           }
@@ -857,6 +1019,63 @@ export function App() {
       : {}),
   });
 
+  const applyOrientationToScene = (
+    opt: OrientationOption,
+    targetObjectId?: string | null,
+  ) => {
+    if (sceneObjects.length > 0) {
+      if (targetObjectId) {
+        setSceneObjects((prev) =>
+          prev.map((obj) =>
+            obj.object_id === targetObjectId
+              ? {
+                  ...obj,
+                  rot_x: opt.rotation.rx,
+                  rot_y: opt.rotation.ry,
+                  rot_z: opt.rotation.rz,
+                  offset_z: 0,
+                  drop_to_bed: true,
+                }
+              : obj,
+          ),
+        );
+        return;
+      }
+
+      const perObj = opt.per_object_rotations;
+      setSceneObjects((prev) => {
+        const rotated = prev.map((obj) => {
+          const r = perObj?.[obj.object_id] ?? opt.rotation;
+          return {
+            ...obj,
+            rot_x: r.rx,
+            rot_y: r.ry,
+            rot_z: r.rz,
+            offset_z: 0,
+            drop_to_bed: true,
+          };
+        });
+        return rotated.length > 1
+          ? arrangeSceneObjectsOnBed(
+              rotated,
+              new Set(rotated.map((o) => o.object_id)),
+              activePrinter,
+            )
+          : rotated;
+      });
+      return;
+    }
+
+    handleChangeTransform(
+      applyRotationToTransform(
+        transform,
+        opt.rotation.rx,
+        opt.rotation.ry,
+        opt.rotation.rz,
+      ),
+    );
+  };
+
   const handleAutoOrient = async () => {
     if (!meshId && !stlFile) return;
     setIsAutoOrienting(true);
@@ -865,13 +1084,19 @@ export function App() {
     setSendPrintMsg(null);
     setGcodeText(null);
     const seq = ++analyzeSeqRef.current;
+    const singleSelectedObj =
+      sceneObjects.length > 0 && selectedObjectIds.length === 1
+        ? sceneObjects.find((o) => o.object_id === selectedObjectIds[0]) ?? null
+        : null;
     try {
       const res = await requestAIOrientations({
         printerId: selectedPrinterId,
         material,
         meshId,
         file: meshId ? null : stlFile,
-        scalePercent: transform.scalePercent || 100,
+        scalePercent: singleSelectedObj?.scale_percent || transform.scalePercent || 100,
+        objectId: singleSelectedObj?.object_id ?? null,
+        sceneObjects: !singleSelectedObj && sceneObjects.length > 1 ? sceneObjects : undefined,
       });
       if (seq !== analyzeSeqRef.current) return;
       setMeshId(res.mesh_id);
@@ -880,14 +1105,7 @@ export function App() {
         res.options.find((o) => o.id === res.recommended_id) ?? res.options[0];
       if (rec) {
         setSelectedOrientationId(rec.id);
-        handleChangeTransform(
-          applyRotationToTransform(
-            transform,
-            rec.rotation.rx,
-            rec.rotation.ry,
-            rec.rotation.rz,
-          ),
-        );
+        applyOrientationToScene(rec, res.target_object_id);
         setAutoOrientMsg(`${rec.title}: ${rec.explanation}`);
       }
     } catch (err: unknown) {
@@ -904,26 +1122,7 @@ export function App() {
   const handleSelectOrientation = (opt: OrientationOption) => {
     setSelectedOrientationId(opt.id);
     setAutoOrientMsg(`${opt.title}: ${opt.explanation}`);
-    if (sceneObjects.length > 0) {
-      setSceneObjects((prev) =>
-        prev.map((obj) => ({
-          ...obj,
-          rot_x: opt.rotation.rx,
-          rot_y: opt.rotation.ry,
-          rot_z: opt.rotation.rz,
-          offset_z: 0,
-          drop_to_bed: true,
-        })),
-      );
-    }
-    handleChangeTransform(
-      applyRotationToTransform(
-        transform,
-        opt.rotation.rx,
-        opt.rotation.ry,
-        opt.rotation.rz,
-      ),
-    );
+    applyOrientationToScene(opt, orientationsData?.target_object_id);
   };
 
   const handleSplitObjects = async () => {
@@ -937,24 +1136,31 @@ export function App() {
         file: meshId ? null : stlFile,
       });
       setMeshId(res.mesh_id);
+      const sx = Math.max(0.01, (transform.scaleX ?? transform.scalePercent) / 100);
+      const sy = Math.max(0.01, (transform.scaleY ?? transform.scalePercent) / 100);
+      const sz = Math.max(0.01, (transform.scaleZ ?? transform.scalePercent) / 100);
       const mappedObjs: SceneObjectTransform[] = res.scene_objects.map((o) => ({
         object_id: o.object_id,
         name: o.name,
         extruder: o.extruder,
         color_hex: o.color_hex,
         mesh_url: o.mesh_url,
-        offset_x: o.position?.[0] ?? 0,
-        offset_y: o.position?.[1] ?? 0,
-        offset_z: o.position?.[2] ?? 0,
-        rot_x: o.rotation?.[0] ?? 0,
-        rot_y: o.rotation?.[1] ?? 0,
-        rot_z: o.rotation?.[2] ?? 0,
-        scale_percent: o.scale?.[0] ?? 100,
-        scale_x: null,
-        scale_y: null,
-        scale_z: null,
-        drop_to_bed: true,
-        dimensions_mm: o.dimensions_mm ?? [0, 0, 0],
+        offset_x: Math.round(((transform.offsetX ?? 0) + (o.position?.[0] ?? 0) * sx) * 100) / 100,
+        offset_y: Math.round(((transform.offsetY ?? 0) + (o.position?.[1] ?? 0) * sy) * 100) / 100,
+        offset_z: Math.round(((o.position?.[2] ?? 0) * sz) * 100) / 100,
+        rot_x: transform.rotX,
+        rot_y: transform.rotY,
+        rot_z: transform.rotZ,
+        scale_percent: transform.scalePercent,
+        scale_x: transform.scaleX ?? null,
+        scale_y: transform.scaleY ?? null,
+        scale_z: transform.scaleZ ?? null,
+        drop_to_bed: transform.dropToBed ?? true,
+        dimensions_mm: [
+          Math.round(((o.dimensions_mm?.[0] ?? 0) * sx) * 100) / 100,
+          Math.round(((o.dimensions_mm?.[1] ?? 0) * sy) * 100) / 100,
+          Math.round(((o.dimensions_mm?.[2] ?? 0) * sz) * 100) / 100,
+        ],
       }));
       setSceneObjects(mappedObjs);
       setSelectedObjectIds(mappedObjs[0]?.object_id ? [mappedObjs[0].object_id] : []);
@@ -965,6 +1171,11 @@ export function App() {
     } finally {
       setIsSplittingObjects(false);
     }
+  };
+
+  const handleMergeObjects = () => {
+    setSceneObjects([]);
+    setSelectedObjectIds([]);
   };
 
   const handleAutoArrange = async (instances: ModelInstanceTransform[]) => {
@@ -1369,6 +1580,49 @@ export function App() {
           part_extruder_map: partExtruderMap,
           z_color_ranges: zColorRanges,
           transform,
+          scene_objects: sceneObjects,
+          selected_object_ids: selectedObjectIds,
+          support_blockers: supportBlockers,
+          supports,
+          support_type: supportType,
+          support_on_build_plate_only: supportOnBuildPlateOnly,
+          support_z_distance: supportZDistance,
+          support_xy_distance: supportXyDistance,
+          adhesion_type: adhesionType,
+          brim_width_mm: brimWidthMm,
+          instances: (sceneObjects.length > 0
+            ? sceneObjects.map((o, idx) => ({
+                id: o.object_id,
+                name: o.name,
+                sourceSubmeshIndex: idx,
+                position: [o.offset_x, o.offset_y, o.offset_z],
+                rotation: [o.rot_x, o.rot_y, o.rot_z],
+                scale: [
+                  o.scale_x ?? o.scale_percent,
+                  o.scale_y ?? o.scale_percent,
+                  o.scale_z ?? o.scale_percent,
+                ],
+                drop_to_bed: o.drop_to_bed,
+                overrides: o.overrides,
+                assignedExtruder: o.extruder,
+                supportPaintMap: o.support_paint_map,
+                supportPaintMode: o.support_paint_mode,
+              }))
+            : (transform.instances ?? []).map((it, idx) => ({
+                id: it.instance_id,
+                name: `Pieza #${idx + 1}`,
+                position: [it.offset_x, it.offset_y, it.offset_z],
+                rotation: [it.rot_x, it.rot_y, it.rot_z],
+                scale: [
+                  it.scale_x ?? it.scale_percent,
+                  it.scale_y ?? it.scale_percent,
+                  it.scale_z ?? it.scale_percent,
+                ],
+                drop_to_bed: it.drop_to_bed,
+                overrides: it.overrides,
+                supportPaintMap: it.support_paint_map,
+                supportPaintMode: it.support_paint_mode,
+              }))),
           quality_preset: qualityPreset,
           ai_analysis_result: effAi ?? null,
           layer_pauses: layerPauses,
@@ -1402,6 +1656,11 @@ export function App() {
 
   const handleLoadFullProject = async (projectId: string) => {
     setErrorMsg(null);
+    setProjectLoadState({
+      active: true,
+      progress: 20,
+      subtitle: t.projectLoading.step1,
+    });
     try {
       const proj = await fetchFullProject(projectId);
       const st = (proj.state || {}) as Record<string, unknown>;
@@ -1445,6 +1704,18 @@ export function App() {
           ? (st.transform as ModelTransform)
           : DEFAULT_TRANSFORM;
       setTransform(nextTransform);
+      if (typeof st.supports === 'boolean') setSupports(st.supports);
+      if (typeof st.support_type === 'string') setSupportType(st.support_type as SupportType);
+      if (typeof st.support_on_build_plate_only === 'boolean') {
+        setSupportOnBuildPlateOnly(st.support_on_build_plate_only);
+      }
+      if (typeof st.support_z_distance === 'number') setSupportZDistance(st.support_z_distance);
+      if (typeof st.support_xy_distance === 'number') setSupportXyDistance(st.support_xy_distance);
+      if (typeof st.adhesion_type === 'string') setAdhesionType(st.adhesion_type as AdhesionType);
+      if (typeof st.brim_width_mm === 'number') setBrimWidthMm(st.brim_width_mm);
+      if (Array.isArray(st.support_blockers)) {
+        setSupportBlockers(st.support_blockers as SupportBlockerItem[]);
+      }
       setActiveProjectId(proj.project_id);
       setActiveProjectTitle(proj.title);
       if (proj.gcode_text) {
@@ -1452,6 +1723,11 @@ export function App() {
       }
 
       if (proj.model_url) {
+        setProjectLoadState({
+          active: true,
+          progress: 55,
+          subtitle: t.projectLoading.step2,
+        });
         const resp = await fetch(getProjectModelFileUrl(proj.project_id));
         if (resp.ok) {
           const blob = await resp.blob();
@@ -1461,27 +1737,99 @@ export function App() {
           setStlFile(loadedFile);
           const restoredMeshId =
             typeof st.mesh_id === 'string' && st.mesh_id ? st.mesh_id : null;
+          let activeMid = restoredMeshId;
           if (restoredMeshId) {
             setMeshId(restoredMeshId);
             await runAnalysis(
               (proj.printer_id as PrinterId) || selectedPrinterId,
               nextTransform,
-              { cachedMeshId: restoredMeshId },
+              { cachedMeshId: restoredMeshId, preserveUserSettings: true },
             );
           } else {
             await runAnalysis(
               (proj.printer_id as PrinterId) || selectedPrinterId,
               nextTransform,
-              { file: loadedFile },
+              { file: loadedFile, preserveUserSettings: true },
             );
+          }
+
+          setProjectLoadState({
+            active: true,
+            progress: 85,
+            subtitle: t.projectLoading.step3,
+          });
+          const savedSceneObjs = Array.isArray(st.scene_objects)
+            ? (st.scene_objects as SceneObjectTransform[])
+            : [];
+          if (savedSceneObjs.length > 0) {
+            try {
+              const splitRes = await splitMeshObjects({
+                printerId: (proj.printer_id as PrinterId) || selectedPrinterId,
+                meshId: activeMid || undefined,
+                file: activeMid ? undefined : loadedFile,
+              });
+              const byId = new Map(savedSceneObjs.map((o) => [o.object_id, o]));
+              const restoredObjs: SceneObjectTransform[] = splitRes.scene_objects.map((fresh, idx) => {
+                const savedMatch = byId.get(fresh.object_id) ?? savedSceneObjs[idx];
+                if (savedMatch) {
+                  return {
+                    ...savedMatch,
+                    mesh_url: fresh.mesh_url,
+                  };
+                }
+                return {
+                  object_id: fresh.object_id,
+                  name: fresh.name,
+                  extruder: fresh.extruder,
+                  color_hex: fresh.color_hex,
+                  mesh_url: fresh.mesh_url,
+                  offset_x: fresh.position?.[0] ?? 0,
+                  offset_y: fresh.position?.[1] ?? 0,
+                  offset_z: fresh.position?.[2] ?? 0,
+                  rot_x: fresh.rotation?.[0] ?? 0,
+                  rot_y: fresh.rotation?.[1] ?? 0,
+                  rot_z: fresh.rotation?.[2] ?? 0,
+                  scale_percent: fresh.scale?.[0] ?? 100,
+                  scale_x: null,
+                  scale_y: null,
+                  scale_z: null,
+                  drop_to_bed: true,
+                  dimensions_mm: fresh.dimensions_mm ?? [0, 0, 0],
+                };
+              });
+              setSceneObjects(restoredObjs);
+              setMeshId(splitRes.mesh_id);
+              const savedSel = Array.isArray(st.selected_object_ids)
+                ? (st.selected_object_ids as string[])
+                : [];
+              setSelectedObjectIds(
+                savedSel.length > 0
+                  ? savedSel
+                  : restoredObjs.length > 0
+                    ? [restoredObjs[0].object_id]
+                    : [],
+              );
+            } catch {
+              setSceneObjects(savedSceneObjs);
+            }
+          } else {
+            setSceneObjects([]);
+            setSelectedObjectIds([]);
           }
         }
       }
+      setProjectLoadState({
+        active: true,
+        progress: 100,
+        subtitle: t.projectLoading.step4,
+      });
       showProjectToast(`Proyecto abierto: ${proj.title}`);
     } catch (err: unknown) {
       setErrorMsg(
         err instanceof Error ? err.message : 'Error al abrir el proyecto guardado.',
       );
+    } finally {
+      setProjectLoadState((prev) => ({ ...prev, active: false }));
     }
   };
 
@@ -2696,8 +3044,74 @@ export function App() {
     };
   }, []);
 
+  const [isExportingSelection, setIsExportingSelection] = useState(false);
+  const [projectLoadState, setProjectLoadState] = useState<{
+    active: boolean;
+    progress: number;
+    subtitle: string;
+  }>({ active: false, progress: 0, subtitle: '' });
+
+  const handleExportSelection = async (opts: {
+    format: 'stl' | '3mf' | 'obj';
+    applyTransforms: boolean;
+    centerOnBed: boolean;
+    exportAllPlate: boolean;
+  }) => {
+    if (!meshId) return;
+    setIsExportingSelection(true);
+    setErrorMsg(null);
+    try {
+      const selSet = new Set(selectedObjectIds);
+      const targetSceneObjs =
+        sceneObjects.length > 0
+          ? opts.exportAllPlate
+            ? sceneObjects
+            : sceneObjects.filter((o) => selSet.has(o.object_id))
+          : [];
+      const effSceneObjs =
+        targetSceneObjs.length > 0 ? targetSceneObjs : sceneObjects;
+      const baseName =
+        !opts.exportAllPlate && effSceneObjs.length === 1
+          ? effSceneObjs[0].name
+          : (stlFile?.name || 'modelo').replace(/\.(stl|3mf|obj)$/i, '');
+      const { blob, filename } = await exportSelection({
+        mesh_id: meshId,
+        printer_id: selectedPrinterId,
+        format: opts.format,
+        apply_transforms: opts.applyTransforms,
+        center_on_bed: opts.centerOnBed,
+        export_all_plate: opts.exportAllPlate,
+        scene_objects: effSceneObjs,
+        instances: effSceneObjs.length === 0 ? (transform.instances ?? []) : [],
+        part_extruder_map: partExtruderMap,
+        filename_base: baseName,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Error al exportar la selección.',
+      );
+    } finally {
+      setIsExportingSelection(false);
+    }
+  };
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-100">
+      <GlobalProcessingOverlay
+        active={projectLoadState.active}
+        mode="project_load"
+        printerName={activeProjectTitle || stlFile?.name || 'Nikk Slicer'}
+        controlledProgress={projectLoadState.progress}
+        controlledSubtitle={projectLoadState.subtitle}
+      />
       {isLoadingExternalFile && (
         <div className="fixed inset-0 z-[9995] flex flex-col items-center justify-center bg-slate-950/90 backdrop-blur-md">
           <div className="h-12 w-12 animate-spin rounded-full border-4 border-cyan-400/25 border-t-cyan-400" />
@@ -2844,6 +3258,28 @@ export function App() {
         </nav>
 
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-950 p-1">
+            <button
+              type="button"
+              onClick={() => undoSession()}
+              disabled={!canUndo}
+              title={`Deshacer (Ctrl+Z / Cmd+Z)${undoCount > 0 ? ` · ${undoCount}` : ''}`}
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-slate-200 transition hover:bg-slate-800 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <Undo2 className="h-3.5 w-3.5" />
+              {undoCount > 0 && <span className="font-mono text-[10px] text-cyan-300">{undoCount}</span>}
+            </button>
+            <button
+              type="button"
+              onClick={() => redoSession()}
+              disabled={!canRedo}
+              title={`Rehacer (Ctrl+R / Cmd+Y)${redoCount > 0 ? ` · ${redoCount}` : ''}`}
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-slate-200 transition hover:bg-slate-800 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <Redo2 className="h-3.5 w-3.5" />
+              {redoCount > 0 && <span className="font-mono text-[10px] text-emerald-300">{redoCount}</span>}
+            </button>
+          </div>
           <div className="hidden items-center gap-2 rounded-full border border-slate-800 bg-slate-950 px-3 py-1 text-xs text-slate-300 sm:flex">
             <Cpu className="h-3.5 w-3.5 text-emerald-400" />
             <span className="font-mono text-emerald-400">127.0.0.1:8000</span>
@@ -3030,6 +3466,14 @@ export function App() {
             onDeleteFullProject={handleDeleteFullProject}
             externalProjectsOpen={externalProjectsOpen}
             onChangeExternalProjectsOpen={setExternalProjectsOpen}
+            sceneObjects={sceneObjects}
+            selectedObjectIds={selectedObjectIds}
+            onSelectObjects={setSelectedObjectIds}
+            onChangeSceneObjects={setSceneObjects}
+            instances={transform.instances}
+            onChangeInstances={(next) =>
+              handleChangeTransform({ ...transform, instances: next })
+            }
           />
 
           <Viewport3D
@@ -3064,6 +3508,7 @@ export function App() {
             onSelectObjects={setSelectedObjectIds}
             onChangeSceneObjects={setSceneObjects}
             onSplitObjects={handleSplitObjects}
+            onMergeObjects={handleMergeObjects}
             isSplittingObjects={isSplittingObjects}
             extruderColors={
               activeProfileId === 'creator5_pro'
@@ -3081,6 +3526,8 @@ export function App() {
             partExtruderMap={partExtruderMap}
             gcodeText={gcodeText}
             isAnalyzing={isAnalyzing}
+            onExportSelection={handleExportSelection}
+            isExporting={isExportingSelection}
           />
         </main>
       ) : (
@@ -3223,6 +3670,11 @@ export function App() {
                 onClick={async () => {
                   const sess = pendingRestoreSession;
                   setIsRestoringSession(true);
+                  setProjectLoadState({
+                    active: true,
+                    progress: 20,
+                    subtitle: t.projectLoading.step1,
+                  });
                   try {
                     const targetPrinter = sess.printer_id || selectedPrinterId;
                     if (sess.printer_id) {
@@ -3248,6 +3700,11 @@ export function App() {
                       setBrimWidthMm(sess.brim_width_mm);
                     }
 
+                    setProjectLoadState({
+                      active: true,
+                      progress: 55,
+                      subtitle: t.projectLoading.step2,
+                    });
                     const restoredFile = await fetchCachedMeshFile(sess.mesh_id, sess.file_name);
                     setStlFile(restoredFile);
                     setMeshId(sess.mesh_id);
@@ -3256,8 +3713,26 @@ export function App() {
                     setPendingRestoreSession(null);
                     await runAnalysis(targetPrinter, nextTx, {
                       cachedMeshId: sess.mesh_id,
+                      preserveUserSettings: true,
+                    });
+                    setProjectLoadState({
+                      active: true,
+                      progress: 85,
+                      subtitle: t.projectLoading.step3,
                     });
                     if (sess.part_extruder_map) setPartExtruderMap(sess.part_extruder_map);
+                    if (Array.isArray(sess.support_blockers)) setSupportBlockers(sess.support_blockers);
+                    if (Array.isArray(sess.scene_objects) && sess.scene_objects.length > 0) {
+                      setSceneObjects(sess.scene_objects);
+                      if (Array.isArray(sess.selected_object_ids)) {
+                        setSelectedObjectIds(sess.selected_object_ids);
+                      }
+                    }
+                    setProjectLoadState({
+                      active: true,
+                      progress: 100,
+                      subtitle: t.projectLoading.step4,
+                    });
                   } catch (err: unknown) {
                     setPendingRestoreSession(null);
                     setErrorMsg(
@@ -3267,6 +3742,7 @@ export function App() {
                     );
                   } finally {
                     setIsRestoringSession(false);
+                    setProjectLoadState((prev) => ({ ...prev, active: false }));
                   }
                 }}
                 className="rounded-xl bg-cyan-500 px-3.5 py-1.5 text-xs font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-50"

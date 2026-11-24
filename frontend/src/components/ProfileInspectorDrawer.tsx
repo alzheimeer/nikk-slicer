@@ -446,6 +446,64 @@ export function ProfileInspectorDrawer({
             );
           })}
 
+        {activeTab === 'support' &&
+          Array.isArray(snapshot.support.per_object_overrides) &&
+          snapshot.support.per_object_overrides.length > 0 && (
+            <div className="mt-2 rounded-xl border border-cyan-500/30 bg-cyan-950/15 p-2.5">
+              <div className="mb-1.5 text-[11px] font-semibold text-cyan-200">
+                Anulaciones por Pieza (Soportes)
+              </div>
+              <div className="space-y-1">
+                {snapshot.support.per_object_overrides.map((ov, idx) => (
+                  <div
+                    key={`${ov.name}-${idx}`}
+                    className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1 text-[11px]"
+                  >
+                    <span className="truncate font-medium text-slate-200">{ov.name}</span>
+                    <span className="font-mono text-[10px] text-cyan-300">
+                      {ov.enable_support === false
+                        ? 'Sin soportes'
+                        : ov.support_type === 'tree(auto)'
+                          ? 'Árbol (tree)'
+                          : ov.support_type === 'normal(auto)'
+                            ? 'Normal'
+                            : ov.enable_support === true
+                              ? 'Activado'
+                              : 'Global'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+        {activeTab === 'others' &&
+          Array.isArray(snapshot.others.per_object_overrides) &&
+          snapshot.others.per_object_overrides.length > 0 && (
+            <div className="mt-2 rounded-xl border border-cyan-500/30 bg-cyan-950/15 p-2.5">
+              <div className="mb-1.5 text-[11px] font-semibold text-cyan-200">
+                Anulaciones por Pieza (Balsa / Brim)
+              </div>
+              <div className="space-y-1">
+                {snapshot.others.per_object_overrides.map((ov, idx) => (
+                  <div
+                    key={`${ov.name}-${idx}`}
+                    className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1 text-[11px]"
+                  >
+                    <span className="truncate font-medium text-slate-200">{ov.name}</span>
+                    <span className="font-mono text-[10px] text-cyan-300">
+                      {ov.brim_type === 'raft'
+                        ? `Balsa (Raft ${ov.raft_layers ?? 2})`
+                        : ov.brim_type === 'no_brim'
+                          ? 'Sin Balsa'
+                          : `${ov.brim_type} (${ov.brim_width ?? 5} mm)`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
         {(activeTab === 'filaments' || Boolean(normalizedQuery)) &&
           snapshot.filaments.length > 0 && (
             <div className="space-y-2.5">

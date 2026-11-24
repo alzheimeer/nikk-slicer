@@ -1376,7 +1376,7 @@ def _build_contextual_fixed_options(
                 layer_height=eff_lh,
                 calibrated_speed_mms=base_spd,
                 calibrated_temp_c=base_temp,
-                estimated_time_str=_format_hms(max(120, int(round(base_seconds * 1.15)))),
+                estimated_time_str=_format_est_time(max(120, int(round(base_seconds * 1.15)))),
                 estimated_time_seconds=max(120, int(round(base_seconds * 1.15))),
                 quality_overrides=["adaptive_layers"],
             )
@@ -1391,7 +1391,7 @@ def _build_contextual_fixed_options(
                 layer_height=eff_lh,
                 calibrated_speed_mms=base_spd,
                 calibrated_temp_c=base_temp,
-                estimated_time_str=_format_hms(max(120, int(round(base_seconds * 1.05)))),
+                estimated_time_str=_format_est_time(max(120, int(round(base_seconds * 1.05)))),
                 estimated_time_seconds=max(120, int(round(base_seconds * 1.05))),
                 quality_overrides=["dense_support_interface"],
             )
@@ -1406,7 +1406,7 @@ def _build_contextual_fixed_options(
                 layer_height=eff_lh,
                 calibrated_speed_mms=base_spd,
                 calibrated_temp_c=base_temp,
-                estimated_time_str=_format_hms(max(120, int(round(base_seconds * 1.08)))),
+                estimated_time_str=_format_est_time(max(120, int(round(base_seconds * 1.08)))),
                 estimated_time_seconds=max(120, int(round(base_seconds * 1.08))),
                 quality_overrides=["high_contrast_purge"],
             )
@@ -1421,7 +1421,7 @@ def _build_contextual_fixed_options(
                 layer_height=eff_lh,
                 calibrated_speed_mms=base_spd,
                 calibrated_temp_c=base_temp,
-                estimated_time_str=_format_hms(max(120, int(round(base_seconds * 1.22)))),
+                estimated_time_str=_format_est_time(max(120, int(round(base_seconds * 1.22)))),
                 estimated_time_seconds=max(120, int(round(base_seconds * 1.22))),
                 quality_overrides=["full_character_polish"],
             )
@@ -2168,6 +2168,16 @@ def evaluate_orientations_with_ai(
     for o in raw_options:
         oid = str(o["id"])
         rot = o["rotation"]
+        raw_per_obj = o.get("per_object_rotations") or {}
+        per_obj_models = {
+            str(k): OrientationRotation(
+                rx=float(v["rx"]),
+                ry=float(v["ry"]),
+                rz=float(v["rz"]),
+            )
+            for k, v in raw_per_obj.items()
+            if isinstance(v, dict)
+        }
         options_models.append(
             OrientationOption(
                 id=oid,
@@ -2187,6 +2197,7 @@ def evaluate_orientations_with_ai(
                 fits_bed=bool(o["fits_bed"]),
                 is_recommended=(oid == recommended_id),
                 quaternion=o.get("quaternion"),
+                per_object_rotations=per_obj_models,
             )
         )
 
@@ -2207,5 +2218,7 @@ def evaluate_orientations_with_ai(
         hero_face_detected=hero_face_detected,
         hero_face_normal=hero_face_normal,
         recommended_id=recommended_id,
+        target_object_id=geom_result.get("target_object_id"),
+        flat_base_preserved_ids=list(geom_result.get("flat_base_preserved_ids") or []),
         options=options_models,
     )

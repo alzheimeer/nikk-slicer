@@ -81,6 +81,59 @@ export interface TranslationSchema {
     multicolorMapping: string;
     qualityVsSpeed: string;
     lithophaneMode: string;
+    scopeGlobal: string;
+    scopePerPart: string;
+    overrideInherit: string;
+    overrideTree: string;
+    overrideNormal: string;
+    overrideNoSupport: string;
+    overrideNoBrim: string;
+    overrideBrim: string;
+    overrideRaft: string;
+    perPartSupportsHint: string;
+    perPartAdhesionHint: string;
+    partSupportsLabel: string;
+    partAdhesionLabel: string;
+    noPartsForOverride: string;
+  };
+  supportPainting: {
+    title: string;
+    editingObject: string;
+    selectObjectFirst: string;
+    toolSphere: string;
+    toolSmartFill: string;
+    brushActionEnforce: string;
+    brushActionBlock: string;
+    brushActionErase: string;
+    brushSizeLabel: string;
+    smartFillAngleLabel: string;
+    overhangsOnlyLabel: string;
+    overhangThresholdLabel: string;
+    highlightOverhangsLabel: string;
+    modeAutoBlockers: string;
+    modeEnforcersOnly: string;
+    blockAllObject: string;
+    clearObjectPaint: string;
+    mouseHint: string;
+    paintedStats: string;
+  };
+  exportMenu: {
+    exportSelection: string;
+    export3mf: string;
+    exportStl: string;
+    exportObj: string;
+    exportFullPlate3mf: string;
+    applyTransforms: string;
+    centerOnZ0: string;
+    keepBedPosition: string;
+    exporting: string;
+  };
+  projectLoading: {
+    title: string;
+    step1: string;
+    step2: string;
+    step3: string;
+    step4: string;
   };
   step4: {
     title: string;
@@ -218,6 +271,59 @@ export const translations: Record<Language, TranslationSchema> = {
       multicolorMapping: 'Mapeo Multicolor (T0–T3)',
       qualityVsSpeed: 'Calidad vs. Velocidad',
       lithophaneMode: 'Modo Litofanía HD',
+      scopeGlobal: 'Global',
+      scopePerPart: 'Por Pieza',
+      overrideInherit: 'Global',
+      overrideTree: 'Árbol',
+      overrideNormal: 'Normal',
+      overrideNoSupport: 'No',
+      overrideNoBrim: 'Sin Balsa',
+      overrideBrim: 'Brim',
+      overrideRaft: 'Balsa (Raft)',
+      perPartSupportsHint: 'Anula soportes solo en piezas específicas (el resto hereda Global).',
+      perPartAdhesionHint: 'Anula Brim o Balsa (Raft) solo en piezas específicas.',
+      partSupportsLabel: 'Soportes de esta pieza',
+      partAdhesionLabel: 'Balsa/Brim de esta pieza',
+      noPartsForOverride: 'Importa o divide un modelo para ajustar piezas individuales.',
+    },
+    supportPainting: {
+      title: 'Pintura de Soportes',
+      editingObject: 'Editando soportes de:',
+      selectObjectFirst: 'Haz clic en una pieza del plato para editar sus soportes.',
+      toolSphere: 'Pincel Esférico',
+      toolSmartFill: 'Relleno Inteligente',
+      brushActionEnforce: 'Forzar (Verde)',
+      brushActionBlock: 'Bloquear (Rojo)',
+      brushActionErase: 'Borrar',
+      brushSizeLabel: 'Tamaño del pincel',
+      smartFillAngleLabel: 'Ángulo relleno inteligente',
+      overhangsOnlyLabel: 'Solo en voladizos (> umbral°)',
+      overhangThresholdLabel: 'Umbral de voladizo',
+      highlightOverhangsLabel: 'Resaltar voladizos',
+      modeAutoBlockers: 'Auto + Bloqueadores',
+      modeEnforcersOnly: 'Solo Forzadores',
+      blockAllObject: 'Bloquear todo este objeto',
+      clearObjectPaint: 'Limpiar pintura de este objeto',
+      mouseHint: 'Clic izq: acción activa · Clic der: bloquear · Shift+Clic: borrar',
+      paintedStats: 'Triángulos pintados',
+    },
+    exportMenu: {
+      exportSelection: 'Exportar Selección',
+      export3mf: 'Exportar como .3MF (Multicolor + Config)',
+      exportStl: 'Exportar como .STL (Binario)',
+      exportObj: 'Exportar como .OBJ',
+      exportFullPlate3mf: 'Exportar todo el plato como .3MF',
+      applyTransforms: 'Aplicar rotación y escala actuales',
+      centerOnZ0: 'Centrar en (0, 0) sobre Z=0',
+      keepBedPosition: 'Conservar posición actual en cama',
+      exporting: 'Exportando...',
+    },
+    projectLoading: {
+      title: 'Cargando...',
+      step1: 'Leyendo metadatos del proyecto y perfil guardado.',
+      step2: 'Cargando geometría 3D y colores multicolor.',
+      step3: 'Separando piezas divididas y restaurando posiciones en cama.',
+      step4: 'Listo.',
     },
     step4: {
       title: 'Paso 4 · Laminado y Envío',
@@ -427,6 +533,59 @@ export const translations: Record<Language, TranslationSchema> = {
       multicolorMapping: 'Multicolor Mapping (T0–T3)',
       qualityVsSpeed: 'Quality vs. Speed',
       lithophaneMode: 'HD Lithophane Mode',
+      scopeGlobal: 'Global',
+      scopePerPart: 'Per Part',
+      overrideInherit: 'Global',
+      overrideTree: 'Tree',
+      overrideNormal: 'Normal',
+      overrideNoSupport: 'No',
+      overrideNoBrim: 'No Brim',
+      overrideBrim: 'Brim',
+      overrideRaft: 'Raft',
+      perPartSupportsHint: 'Override supports on specific parts only (others inherit Global).',
+      perPartAdhesionHint: 'Override Brim or Raft on specific parts only.',
+      partSupportsLabel: 'Supports for this part',
+      partAdhesionLabel: 'Brim/Raft for this part',
+      noPartsForOverride: 'Import or split a model to configure individual parts.',
+    },
+    supportPainting: {
+      title: 'Support Painting',
+      editingObject: 'Editing supports for:',
+      selectObjectFirst: 'Click a part on the bed to paint its supports.',
+      toolSphere: 'Sphere Brush',
+      toolSmartFill: 'Smart Fill',
+      brushActionEnforce: 'Enforce (Green)',
+      brushActionBlock: 'Block (Red)',
+      brushActionErase: 'Erase',
+      brushSizeLabel: 'Brush size',
+      smartFillAngleLabel: 'Smart fill angle',
+      overhangsOnlyLabel: 'On overhangs only (> threshold°)',
+      overhangThresholdLabel: 'Overhang threshold',
+      highlightOverhangsLabel: 'Highlight overhangs',
+      modeAutoBlockers: 'Auto + Blockers',
+      modeEnforcersOnly: 'Enforcers Only',
+      blockAllObject: 'Block entire object',
+      clearObjectPaint: 'Clear object painting',
+      mouseHint: 'Left-click: active tool · Right-click: block · Shift+Click: erase',
+      paintedStats: 'Painted triangles',
+    },
+    exportMenu: {
+      exportSelection: 'Export Selection',
+      export3mf: 'Export as .3MF (Multicolor + Settings)',
+      exportStl: 'Export as .STL (Binary)',
+      exportObj: 'Export as .OBJ',
+      exportFullPlate3mf: 'Export entire plate as .3MF',
+      applyTransforms: 'Apply current rotation & scale',
+      centerOnZ0: 'Center at (0, 0) on Z=0',
+      keepBedPosition: 'Keep current bed position',
+      exporting: 'Exporting...',
+    },
+    projectLoading: {
+      title: 'Loading...',
+      step1: 'Reading project metadata and saved profile.',
+      step2: 'Loading 3D geometry and multicolor attributes.',
+      step3: 'Splitting parts and restoring bed positions.',
+      step4: 'Ready.',
     },
     step4: {
       title: 'Step 4 · Slice & Send',

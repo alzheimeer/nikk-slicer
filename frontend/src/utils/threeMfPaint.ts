@@ -521,3 +521,68 @@ export function applyThreeMfTrianglePaintGroups(
 
   return { paintedMeshCount, palette };
 }
+
+/**
+ * Aplica una lista de códigos `paint_color` por triángulo a un `BufferGeometry` STL (no indexado),
+ * generando grupos de extrusor `0..3` y atributo `color` por vértice para renderizado multicolor exacto.
+ */
+export function applyPaintColorsToBufferGeometry(
+  geo: THREE.BufferGeometry,
+  paintColors: Array<string | null>,
+  palette: string[] = [],
+): boolean {
+  const posAttr = geo.getAttribute('position');
+  if (!posAttr || paintColors.length === 0) return false;
+  const triCount = Math.min(paintColors.length, Math.floor(posAttr.count / 3));
+  if (triCount <= 0) return false;
+
+  const fallbackPalette = ['#EC8B20', '#1C1A18', '#E1DDDC', '#DB3B25'];
+  const slots = new Uint8Array(triCount);
+  const counts = [0, 0, 0, 0];
+  let hasAnyPaint = false;
+
+  for (let t = 0; t < triCount; t += 1) {
+    const raw = paintColors[t];
+    if (raw) hasAnyPaint = true;
+    const s = raw ? decodePaintColorSlot(raw) : 0;
+    slots[t] = s;
+    counts[s] += 1;
+  }
+  if (!hasAnyPaint) return false;
+
+  const srcPos = posAttr.array as Float32Array;
+  const nextPos = new Float32Array(triCount * 9);
+  const nextColors = new Float32Array(triCount * 9);
+  const offsets = [0, counts[0] * 9, (counts[0] + counts[1]) * 9, (counts[0] + counts[1] + counts[2]) * 9];
+  const colorObjs = [0, 1, 2, 3].map((s) => new THREE.Color(palette[s] || fallbackPalette[s]));
+
+  for (let t = 0; t < triCount; t += 1) {
+    const s = slots[t];
+    const dst = offsets[s];
+    const src = t * 9;
+    nextPos.set(srcPos.subarray(src, src + 9), dst);
+    const c = colorObjs[s];
+    for (let k = 0; k < 3; k += 1) {
+      nextColors[dst + k * 3] = c.r;
+      nextColors[dst + k * 3 + 1] = c.g;
+      nextColors[dst + k * 3 + 2] = c.b;
+    }
+    offsets[s] += 9;
+  }
+
+  geo.setAttribute('position', new THREE.BufferAttribute(nextPos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(nextColors, 3));
+  geo.computeVertexNormals();
+  geo.clearGroups();
+  let start = 0;
+  for (let s = 0; s < 4; s += 1) {
+    const cnt = counts[s] * 3;
+    if (cnt > 0) {
+      geo.addGroup(start, cnt, s);
+      start += cnt;
+    }
+  }
+  geo.userData.paintedExtruderGroups = true;
+  geo.userData.paintedPalette = palette;
+  return true;
+}

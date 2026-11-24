@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Cpu, Layers, Send } from 'lucide-react';
+import { Check, Cpu, FolderOpen, Layers, Send } from 'lucide-react';
+import { useI18n } from '../i18n/I18nContext';
 
 export type ProcessingOverlayMode =
   | 'slicing'
   | 'ai_optimize'
   | 'ai_analyze'
   | 'upload_only'
-  | 'upload_and_print';
+  | 'upload_and_print'
+  | 'project_load';
 
 export interface GlobalProcessingOverlayProps {
   active: boolean;
@@ -16,6 +18,8 @@ export interface GlobalProcessingOverlayProps {
   fileSizeMb?: number;
   triangleCount?: number;
   layerHeightMm?: number;
+  controlledProgress?: number;
+  controlledSubtitle?: string;
 }
 
 export function GlobalProcessingOverlay({
@@ -26,7 +30,10 @@ export function GlobalProcessingOverlay({
   fileSizeMb = 0,
   triangleCount = 0,
   layerHeightMm = 0.2,
+  controlledProgress,
+  controlledSubtitle,
 }: GlobalProcessingOverlayProps) {
+  const { t } = useI18n();
   const [visible, setVisible] = useState(false);
   const [progress, setProgress] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -40,6 +47,23 @@ export function GlobalProcessingOverlay({
   }, [fileSizeMb, triangleCount, layerHeightMm]);
 
   useEffect(() => {
+    if (mode === 'project_load') {
+      if (active) {
+        setVisible(true);
+        if (typeof controlledProgress === 'number') {
+          setProgress(controlledProgress);
+        }
+      } else if (visible) {
+        setProgress(100);
+        const hideTimer = window.setTimeout(() => {
+          setVisible(false);
+          setProgress(0);
+          setElapsedMs(0);
+        }, 280);
+        return () => window.clearTimeout(hideTimer);
+      }
+      return undefined;
+    }
     if (active) {
       setVisible(true);
       setProgress(1);
@@ -114,7 +138,7 @@ export function GlobalProcessingOverlay({
       return () => window.clearTimeout(hideTimer);
     }
     return undefined;
-  }, [active, visible, mode, expectedStep3Seconds]);
+  }, [active, visible, mode, expectedStep3Seconds, controlledProgress]);
 
   if (!visible) return null;
 
@@ -122,7 +146,14 @@ export function GlobalProcessingOverlay({
   const elapsedStr = `${(elapsedMs / 1000).toFixed(1)}s`;
 
   const steps: Array<{ label: string; threshold: number; liveSubtext?: string }> =
-    mode === 'slicing'
+    mode === 'project_load'
+      ? [
+          { label: t.projectLoading.step1, threshold: 20 },
+          { label: t.projectLoading.step2, threshold: 55 },
+          { label: t.projectLoading.step3, threshold: 85 },
+          { label: t.projectLoading.step4, threshold: 100 },
+        ]
+      : mode === 'slicing'
       ? [
           {
             label: `Validando límites térmicos y caudal de ${printerName}`,
@@ -188,7 +219,9 @@ export function GlobalProcessingOverlay({
 
   return (
     <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-md"
+      className={`fixed inset-0 z-[9999] flex items-center justify-center p-4 backdrop-blur-md ${
+        mode === 'project_load' ? 'bg-slate-950/95' : 'bg-slate-950/85'
+      }`}
       role="dialog"
       aria-modal="true"
       aria-live="polite"
@@ -210,7 +243,9 @@ export function GlobalProcessingOverlay({
           </span>
 
           <div className="mt-3 flex items-center gap-2">
-            {mode === 'slicing' ? (
+            {mode === 'project_load' ? (
+              <FolderOpen className="h-4 w-4 text-cyan-400" />
+            ) : mode === 'slicing' ? (
               <Layers className="h-4 w-4 text-cyan-400" />
             ) : mode === 'upload_only' || mode === 'upload_and_print' ? (
               <Send className="h-4 w-4 text-emerald-400" />
@@ -218,18 +253,22 @@ export function GlobalProcessingOverlay({
               <Cpu className="h-4 w-4 text-violet-400" />
             )}
             <h3 className="text-base font-bold tracking-tight text-white">
-              {mode === 'slicing'
-                ? 'Laminando Modelo 3D'
-                : mode === 'ai_optimize'
-                  ? 'Optimización IA + Re-laminado'
-                  : mode === 'upload_only'
-                    ? 'Subiendo G-code a Memoria'
-                    : mode === 'upload_and_print'
-                      ? 'Enviando e Iniciando Impresión'
-                      : 'Análisis IA del Modelo'}
+              {mode === 'project_load'
+                ? t.projectLoading.title
+                : mode === 'slicing'
+                  ? 'Laminando Modelo 3D'
+                  : mode === 'ai_optimize'
+                    ? 'Optimización IA + Re-laminado'
+                    : mode === 'upload_only'
+                      ? 'Subiendo G-code a Memoria'
+                      : mode === 'upload_and_print'
+                        ? 'Enviando e Iniciando Impresión'
+                        : 'Análisis IA del Modelo'}
             </h3>
           </div>
-          <p className="mt-1 text-xs text-slate-400">{printerName}</p>
+          <p className="mt-1 text-xs text-slate-400">
+            {mode === 'project_load' && controlledSubtitle ? controlledSubtitle : printerName}
+          </p>
         </div>
 
         {/* Barra de progreso luminosa con degradado */}

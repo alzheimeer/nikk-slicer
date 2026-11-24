@@ -51,12 +51,15 @@ import {
   type MachineMaterialLearningsResponse,
   type MaterialType,
   type MeshAnalysisResponse,
+  type ModelInstanceTransform,
   type NozzleDiameter,
+  type ObjectPrintOverrides,
   type PrinterId,
   type PrinterInfo,
   type ProfileId,
   type SavedProjectRecord,
   type QualityPreset,
+  type SceneObjectTransform,
   type SliceResponse,
   type SlicedProfileSnapshot,
   type SupportType,
@@ -620,6 +623,12 @@ interface SlicerWizardProps {
   onDeleteFullProject?: (projectId: string) => void;
   externalProjectsOpen?: boolean;
   onChangeExternalProjectsOpen?: (open: boolean) => void;
+  sceneObjects?: SceneObjectTransform[];
+  selectedObjectIds?: string[];
+  onSelectObjects?: (ids: string[]) => void;
+  onChangeSceneObjects?: (next: SceneObjectTransform[]) => void;
+  instances?: ModelInstanceTransform[];
+  onChangeInstances?: (next: ModelInstanceTransform[]) => void;
 }
 
 const COLOR_PRESETS: Array<{ name: string; hex: string }> = [
@@ -759,8 +768,16 @@ export function SlicerWizard({
   onDeleteFullProject,
   externalProjectsOpen = false,
   onChangeExternalProjectsOpen,
+  sceneObjects = [],
+  selectedObjectIds = [],
+  onSelectObjects,
+  onChangeSceneObjects,
+  instances = [],
+  onChangeInstances,
 }: SlicerWizardProps) {
   const { t } = useI18n();
+  const [supportScope, setSupportScope] = useState<'global' | 'per_part'>('global');
+  const [adhesionScope, setAdhesionScope] = useState<'global' | 'per_part'>('global');
   const [isDragging, setIsDragging] = useState(false);
   const [pauseLayerInput, setPauseLayerInput] = useState('10');
   const [pauseNoteInput, setPauseNoteInput] = useState('');
@@ -1756,22 +1773,174 @@ export function SlicerWizard({
                     : `Desactivados (Puentes 0.92 + Z=${matMeta.defaultSupportZ.toFixed(2)} · XY=${recommendedSupportXY.toFixed(2)} mm)`}
                 </p>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={supports}
-                onClick={() => onToggleSupports(!supports)}
-                className={`relative h-6 w-11 rounded-full transition ${
-                  supports ? 'bg-cyan-500' : 'bg-slate-700'
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
-                    supports ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
+              <div className="flex items-center gap-1.5">
+                <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900 p-0.5 text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => setSupportScope('global')}
+                    className={`rounded-md px-2 py-0.5 font-medium transition ${
+                      supportScope === 'global'
+                        ? 'bg-cyan-500/20 text-cyan-200'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {t.step3.scopeGlobal}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSupportScope('per_part')}
+                    className={`rounded-md px-2 py-0.5 font-medium transition ${
+                      supportScope === 'per_part'
+                        ? 'bg-cyan-500/20 text-cyan-200'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {t.step3.scopePerPart}
+                  </button>
+                </div>
+                {supportScope === 'global' && (
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={supports}
+                    onClick={() => onToggleSupports(!supports)}
+                    className={`relative h-6 w-11 rounded-full transition ${
+                      supports ? 'bg-cyan-500' : 'bg-slate-700'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform ${
+                        supports ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                )}
+              </div>
             </div>
+
+            {supportScope === 'per_part' && (
+              <div className="space-y-1.5 border-t border-slate-800/80 pt-2">
+                <p className="text-[10px] text-slate-400">{t.step3.perPartSupportsHint}</p>
+                {sceneObjects.length === 0 && instances.length === 0 ? (
+                  <p className="rounded-lg border border-slate-800 bg-slate-900/60 px-2 py-1.5 text-[10px] text-slate-400">
+                    {t.step3.noPartsForOverride}
+                  </p>
+                ) : (
+                  <div className="max-h-44 space-y-1.5 overflow-y-auto pr-0.5">
+                    {(sceneObjects.length > 0
+                      ? sceneObjects.map((obj, idx) => ({
+                          key: obj.object_id,
+                          name: obj.name || `Pieza ${idx + 1}`,
+                          isSelected: selectedObjectIds.includes(obj.object_id),
+                          overrides: obj.overrides ?? {},
+                          onSelect: () => onSelectObjects?.([obj.object_id]),
+                          onUpdate: (patch: Partial<ObjectPrintOverrides>) => {
+                            if (!onChangeSceneObjects) return;
+                            onChangeSceneObjects(
+                              sceneObjects.map((o) =>
+                                o.object_id === obj.object_id
+                                  ? { ...o, overrides: { ...(o.overrides ?? {}), ...patch } }
+                                  : o,
+                              ),
+                            );
+                          },
+                        }))
+                      : instances.map((inst, idx) => ({
+                          key: inst.instance_id,
+                          name: `Pieza #${idx + 1}`,
+                          isSelected: false,
+                          overrides: inst.overrides ?? {},
+                          onSelect: undefined,
+                          onUpdate: (patch: Partial<ObjectPrintOverrides>) => {
+                            if (!onChangeInstances) return;
+                            onChangeInstances(
+                              instances.map((it) =>
+                                it.instance_id === inst.instance_id
+                                  ? { ...it, overrides: { ...(it.overrides ?? {}), ...patch } }
+                                  : it,
+                              ),
+                            );
+                          },
+                        }))
+                    ).map((row) => {
+                      const activeMode =
+                        row.overrides.enable_support === false
+                          ? 'none'
+                          : row.overrides.support_type === 'tree(auto)'
+                            ? 'tree'
+                            : row.overrides.support_type === 'normal(auto)'
+                              ? 'normal'
+                              : row.overrides.enable_support === true
+                                ? 'tree'
+                                : 'inherit';
+                      return (
+                        <div
+                          key={row.key}
+                          onClick={row.onSelect}
+                          className={`space-y-1 rounded-lg border p-1.5 transition ${
+                            row.isSelected
+                              ? 'border-cyan-500/60 bg-cyan-500/10'
+                              : 'border-slate-800 bg-slate-900/70'
+                          } ${row.onSelect ? 'cursor-pointer' : ''}`}
+                        >
+                          <div className="flex items-center justify-between gap-1 text-[11px]">
+                            <span className="truncate font-medium text-slate-200">{row.name}</span>
+                          </div>
+                          <div
+                            className="grid grid-cols-4 gap-1"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {(
+                              [
+                                ['inherit', t.step3.overrideInherit],
+                                ['tree', t.step3.overrideTree],
+                                ['normal', t.step3.overrideNormal],
+                                ['none', t.step3.overrideNoSupport],
+                              ] as const
+                            ).map(([mode, label]) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => {
+                                  if (mode === 'inherit') {
+                                    row.onUpdate({
+                                      enable_support: 'inherit',
+                                      support_type: 'inherit',
+                                    });
+                                  } else if (mode === 'none') {
+                                    row.onUpdate({
+                                      enable_support: false,
+                                      support_type: 'inherit',
+                                    });
+                                  } else if (mode === 'tree') {
+                                    row.onUpdate({
+                                      enable_support: true,
+                                      support_type: 'tree(auto)',
+                                    });
+                                  } else {
+                                    row.onUpdate({
+                                      enable_support: true,
+                                      support_type: 'normal(auto)',
+                                    });
+                                  }
+                                }}
+                                className={`rounded border py-0.5 text-[10px] font-medium transition ${
+                                  activeMode === mode
+                                    ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
+                                    : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
 
             {aiSupportStatus && (
               <div
@@ -1970,19 +2139,144 @@ export function SlicerWizard({
           {/* Adherencia a Cama (Balsa / Brim / Sin Balsa con ancho IA) */}
           <div className="mt-2 space-y-2 rounded-xl border border-slate-800 bg-slate-950/60 p-2.5">
             <div className="flex flex-wrap items-center justify-between gap-1">
-              <span className="text-xs font-medium text-slate-200">
-                Adherencia en Cama
-              </span>
-              {adhesionLabel ? (
-                <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200">
-                  {adhesionLabel}
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-medium text-slate-200">
+                  Adherencia en Cama
                 </span>
-              ) : analysis?.suggests_raft ? (
-                <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
-                  Balsa sugerida
-                </span>
-              ) : null}
+                {adhesionLabel ? (
+                  <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200">
+                    {adhesionLabel}
+                  </span>
+                ) : analysis?.suggests_raft ? (
+                  <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
+                    Balsa sugerida
+                  </span>
+                ) : null}
+              </div>
+              <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900 p-0.5 text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setAdhesionScope('global')}
+                  className={`rounded-md px-2 py-0.5 font-medium transition ${
+                    adhesionScope === 'global'
+                      ? 'bg-cyan-500/20 text-cyan-200'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {t.step3.scopeGlobal}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdhesionScope('per_part')}
+                  className={`rounded-md px-2 py-0.5 font-medium transition ${
+                    adhesionScope === 'per_part'
+                      ? 'bg-cyan-500/20 text-cyan-200'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {t.step3.scopePerPart}
+                </button>
+              </div>
             </div>
+            {adhesionScope === 'per_part' ? (
+              <div className="space-y-1.5 border-t border-slate-800/80 pt-2">
+                <p className="text-[10px] text-slate-400">{t.step3.perPartAdhesionHint}</p>
+                {sceneObjects.length === 0 && instances.length === 0 ? (
+                  <p className="rounded-lg border border-slate-800 bg-slate-900/60 px-2 py-1.5 text-[10px] text-slate-400">
+                    {t.step3.noPartsForOverride}
+                  </p>
+                ) : (
+                  <div className="max-h-44 space-y-1.5 overflow-y-auto pr-0.5">
+                    {(sceneObjects.length > 0
+                      ? sceneObjects.map((obj, idx) => ({
+                          key: obj.object_id,
+                          name: obj.name || `Pieza ${idx + 1}`,
+                          isSelected: selectedObjectIds.includes(obj.object_id),
+                          overrides: obj.overrides ?? {},
+                          onSelect: () => onSelectObjects?.([obj.object_id]),
+                          onUpdate: (patch: Partial<ObjectPrintOverrides>) => {
+                            if (!onChangeSceneObjects) return;
+                            onChangeSceneObjects(
+                              sceneObjects.map((o) =>
+                                o.object_id === obj.object_id
+                                  ? { ...o, overrides: { ...(o.overrides ?? {}), ...patch } }
+                                  : o,
+                              ),
+                            );
+                          },
+                        }))
+                      : instances.map((inst, idx) => ({
+                          key: inst.instance_id,
+                          name: `Pieza #${idx + 1}`,
+                          isSelected: false,
+                          overrides: inst.overrides ?? {},
+                          onSelect: undefined,
+                          onUpdate: (patch: Partial<ObjectPrintOverrides>) => {
+                            if (!onChangeInstances) return;
+                            onChangeInstances(
+                              instances.map((it) =>
+                                it.instance_id === inst.instance_id
+                                  ? { ...it, overrides: { ...(it.overrides ?? {}), ...patch } }
+                                  : it,
+                              ),
+                            );
+                          },
+                        }))
+                    ).map((row) => {
+                      const activeBrim = row.overrides.brim_type ?? 'inherit';
+                      return (
+                        <div
+                          key={row.key}
+                          onClick={row.onSelect}
+                          className={`space-y-1 rounded-lg border p-1.5 transition ${
+                            row.isSelected
+                              ? 'border-cyan-500/60 bg-cyan-500/10'
+                              : 'border-slate-800 bg-slate-900/70'
+                          } ${row.onSelect ? 'cursor-pointer' : ''}`}
+                        >
+                          <div className="flex items-center justify-between gap-1 text-[11px]">
+                            <span className="truncate font-medium text-slate-200">{row.name}</span>
+                          </div>
+                          <div
+                            className="grid grid-cols-4 gap-1"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {(
+                              [
+                                ['inherit', t.step3.overrideInherit],
+                                ['no_brim', t.step3.overrideNoBrim],
+                                ['outer_only', t.step3.overrideBrim],
+                                ['raft', t.step3.overrideRaft],
+                              ] as const
+                            ).map(([mode, label]) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => {
+                                  row.onUpdate({
+                                    brim_type: mode,
+                                    brim_width: mode === 'outer_only' ? 5 : 0,
+                                    raft_layers: mode === 'raft' ? 2 : 0,
+                                  });
+                                }}
+                                className={`rounded border py-0.5 text-[10px] font-medium transition ${
+                                  activeBrim === mode
+                                    ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
+                                    : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+            <>
             <div className="grid grid-cols-3 gap-1.5">
               {(
                 [
@@ -2026,6 +2320,8 @@ export function SlicerWizard({
                   className="w-full cursor-pointer accent-cyan-500"
                 />
               </div>
+            )}
+            </>
             )}
           </div>
 
@@ -2574,11 +2870,13 @@ export function SlicerWizard({
                   </span>
                   <div className="max-h-36 space-y-1 overflow-y-auto pr-0.5">
                     {analysis.multimaterial_parts.map((part) => {
-                      const assignedExt = partExtruderMap[part.part_id] ?? part.extruder;
+                      const assignedExt = analysis.is_multicolor
+                        ? (partExtruderMap[part.part_id] ?? 0)
+                        : (partExtruderMap[part.part_id] ?? part.extruder);
                       const slotHex =
-                        extrudersConfig[assignedExt - 1]?.color_hex ||
-                        part.color_hex ||
-                        '#94A3B8';
+                        assignedExt > 0
+                          ? (extrudersConfig[assignedExt - 1]?.color_hex || part.color_hex || '#94A3B8')
+                          : (part.color_hex || '#94A3B8');
                       return (
                         <div
                           key={part.part_id}
@@ -2598,14 +2896,21 @@ export function SlicerWizard({
                           </div>
                           <select
                             value={assignedExt}
-                            onChange={(e) =>
-                              onChangePartExtruderMap({
-                                ...partExtruderMap,
-                                [part.part_id]: Number(e.target.value),
-                              })
-                            }
+                            onChange={(e) => {
+                              const nextVal = Number(e.target.value);
+                              const nextMap = { ...partExtruderMap };
+                              if (analysis.is_multicolor && nextVal === 0) {
+                                delete nextMap[part.part_id];
+                              } else {
+                                nextMap[part.part_id] = nextVal;
+                              }
+                              onChangePartExtruderMap(nextMap);
+                            }}
                             className="shrink-0 rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200"
                           >
+                            {analysis.is_multicolor && (
+                              <option value={0}>Pintura original del .3MF (Multicolor)</option>
+                            )}
                             {[1, 2, 3, 4].map((extNum) => (
                               <option key={extNum} value={extNum}>
                                 T{extNum - 1}
@@ -2752,10 +3057,12 @@ export function SlicerWizard({
             </div>
           )}
 
-          {/* Mapeo Extendido Multicolor (+4 Colores · Creator 5 Pro) */}
+          {/* Mapeo Extendido Multicolor (+4 Colores reales · Creator 5 Pro) */}
           {selectedProfileId === 'creator5_pro' &&
             analysis?.multimaterial_parts &&
-            analysis.multimaterial_parts.length > 4 && (
+            (analysis.detected_colors && analysis.detected_colors.length > 0
+              ? analysis.detected_colors.length > 4
+              : analysis.multimaterial_parts.length > 4) && (
               <div className="mt-2.5 space-y-2 rounded-xl border border-fuchsia-500/35 bg-fuchsia-500/5 p-2.5">
                 <div className="flex items-center justify-between">
                   <span className="flex items-center gap-1.5 text-xs font-semibold text-fuchsia-200">

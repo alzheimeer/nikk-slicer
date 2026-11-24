@@ -4,7 +4,16 @@ import { Grid, OrbitControls, TransformControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
-import { applyThreeMfTrianglePaintGroups } from '../utils/threeMfPaint';
+import { applyPaintColorsToBufferGeometry, applyThreeMfTrianglePaintGroups } from '../utils/threeMfPaint';
+import {
+  buildAllTrianglesSupportMap,
+  buildSupportPaintOverlayGeometry,
+  getGeometryTriangleCount,
+  paintSphereWorldOnMesh,
+  smartFillOnGeometry,
+  type SupportPaintMap,
+  type SupportPaintValue,
+} from '../utils/supportPaint';
 import { useI18n } from '../i18n/I18nContext';
 import {
   ArrowDownToLine,
@@ -12,6 +21,7 @@ import {
   Box,
   Compass,
   CopyPlus,
+  Download,
   Eye,
   EyeOff,
   FlipVertical2,
@@ -42,10 +52,12 @@ import type {
   ModelInstanceTransform,
   ModelTransform,
   MultimaterialPartInfo,
+  ObjectPrintOverrides,
   OrientationOption,
   PrinterInfo,
   SceneObjectTransform,
   SupportBlockerItem,
+  SupportPaintMode,
 } from '../services/api';
 import {
   applyVisibleRolesToGeometry,
@@ -104,11 +116,19 @@ interface Viewport3DProps {
   onSelectObjects?: (ids: string[]) => void;
   onChangeSceneObjects?: (next: SceneObjectTransform[]) => void;
   onSplitObjects?: () => Promise<void> | void;
+  onMergeObjects?: () => void;
   isSplittingObjects?: boolean;
   hasSlicedProfile?: boolean;
   onOpenProfileInspector?: () => void;
   supportBlockers?: SupportBlockerItem[];
   onChangeSupportBlockers?: (next: SupportBlockerItem[]) => void;
+  onExportSelection?: (opts: {
+    format: 'stl' | '3mf' | 'obj';
+    applyTransforms: boolean;
+    centerOnBed: boolean;
+    exportAllPlate: boolean;
+  }) => Promise<void> | void;
+  isExporting?: boolean;
 }
 
 function buildInitialInstances(t: ModelTransform): ModelInstanceTransform[] {
@@ -339,6 +359,25 @@ function applyAlwaysOnTopGizmoStyle(ctrl: unknown) {
   });
 }
 
+export interface SupportPaintBrushConfig {
+  active: boolean;
+  isTarget: boolean;
+  tool: 'sphere' | 'smart_fill';
+  action: SupportPaintValue;
+  radiusMm: number;
+  smartFillAngle: number;
+  overhangsOnly: boolean;
+  highlightOverhangs: boolean;
+  overhangThresholdDeg: number;
+  onUpdatePaintMap: (next: SupportPaintMap) => void;
+  onHoverCursor: (
+    cursor: { pos: [number, number, number]; normal: [number, number, number] } | null,
+  ) => void;
+  onPaintingChange?: (painting: boolean) => void;
+  onHoverMeshChange?: (hovering: boolean) => void;
+  onReportTriCount?: (count: number) => void;
+}
+
 function SceneObjectItemPreview({
   obj,
   isSelected,
@@ -347,6 +386,7 @@ function SceneObjectItemPreview({
   extruderColors,
   partExtruderMap,
   activeCadTool,
+  supportPaintConfig,
   onSelect,
   onCommitOffset,
   onDraggingChange,
@@ -358,6 +398,7 @@ function SceneObjectItemPreview({
   extruderColors?: string[];
   partExtruderMap?: Record<string, number>;
   activeCadTool: CadToolMode | null;
+  supportPaintConfig?: SupportPaintBrushConfig;
   onSelect: (ev: ThreeEvent<MouseEvent>) => void;
   onCommitOffset: (patch: Partial<SceneObjectTransform>) => void;
   onDraggingChange: (dragging: boolean) => void;
@@ -366,18 +407,31 @@ function SceneObjectItemPreview({
   const [groupNode, setGroupNode] = useState<THREE.Group | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const controlsRef = useRef<any>(null);
+  const latestMapRef = useRef<SupportPaintMap>(obj.support_paint_map ?? {});
+  latestMapRef.current = obj.support_paint_map ?? {};
 
   useEffect(() => {
     let cancelled = false;
     let loadedGeo: THREE.BufferGeometry | null = null;
     if (!obj.mesh_url) return;
     const loader = new STLLoader();
-    fetch(obj.mesh_url)
-      .then((r) => r.arrayBuffer())
-      .then((buf) => {
+    const paintUrl = obj.mesh_url.replace(/\.stl$/i, '.paint.json');
+    Promise.all([
+      fetch(obj.mesh_url).then((r) => r.arrayBuffer()),
+      fetch(paintUrl)
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+    ])
+      .then(([buf, paintData]) => {
         if (cancelled) return;
         const g = loader.parse(buf);
-        g.computeVertexNormals();
+        const pcs = paintData?.paint_colors as Array<string | null> | undefined;
+        const pal = (paintData?.palette as string[] | undefined) || [];
+        if (Array.isArray(pcs) && pcs.length > 0) {
+          applyPaintColorsToBufferGeometry(g, pcs, pal);
+        } else {
+          g.computeVertexNormals();
+        }
         loadedGeo = g;
         setRawGeo(g);
       })
@@ -460,14 +514,131 @@ function SceneObjectItemPreview({
     return () => window.cancelAnimationFrame(raf);
   }, [groupNode, obj.drop_to_bed, obj.offset_x, obj.offset_y, transformed]);
 
-  if (!transformed) return null;
+  const explicitPartExt = partExtruderMap?.[obj.object_id];
+  const hasPaintGroups = Boolean(transformed?.geo.userData?.paintedExtruderGroups) && !explicitPartExt;
+  const paintedPalette = (transformed?.geo.userData?.paintedPalette as string[] | undefined) || [];
+  const fallbackPalette = ['#EC8B20', '#1C1A18', '#E1DDDC', '#DB3B25'];
 
-  const slotIdx = partExtruderMap?.[obj.object_id] ?? Math.max(0, (obj.extruder || 1) - 1);
+  const slotIdx = explicitPartExt ? Math.max(0, explicitPartExt - 1) : Math.max(0, (obj.extruder || 1) - 1);
   const color = ghostMode
     ? '#22c55e'
     : !fitsInVolume
       ? '#f97316'
       : extruderColors?.[slotIdx] || obj.color_hex || (isSelected ? '#38bdf8' : '#94a3b8');
+
+  const multiMaterials = useMemo(() => {
+    if (!hasPaintGroups) return null;
+    return [0, 1, 2, 3].map((s) => {
+      const hex = ghostMode
+        ? '#22c55e'
+        : !fitsInVolume
+          ? '#f87171'
+          : extruderColors?.[s] || paintedPalette[s] || fallbackPalette[s];
+      return new THREE.MeshStandardMaterial({
+        color: hex,
+        roughness: ghostMode ? 0.6 : 0.42,
+        metalness: 0.12,
+        transparent: ghostMode,
+        opacity: ghostMode ? 0.25 : 1,
+      });
+    });
+  }, [hasPaintGroups, ghostMode, fitsInVolume, extruderColors, paintedPalette]);
+
+  useEffect(() => {
+    return () => {
+      multiMaterials?.forEach((mat) => mat.dispose());
+    };
+  }, [multiMaterials]);
+
+  const supportOverlayGeo = useMemo(() => {
+    if (!transformed || ghostMode) return null;
+    const pMap = obj.support_paint_map ?? {};
+    const showOverhangs = Boolean(supportPaintConfig?.active && supportPaintConfig?.isTarget && supportPaintConfig?.highlightOverhangs);
+    if (Object.keys(pMap).length === 0 && !showOverhangs) return null;
+    return buildSupportPaintOverlayGeometry(
+      transformed.geo,
+      pMap,
+      showOverhangs,
+      supportPaintConfig?.overhangThresholdDeg ?? 40,
+    );
+  }, [
+    transformed,
+    ghostMode,
+    obj.support_paint_map,
+    supportPaintConfig?.active,
+    supportPaintConfig?.isTarget,
+    supportPaintConfig?.highlightOverhangs,
+    supportPaintConfig?.overhangThresholdDeg,
+  ]);
+
+  useEffect(() => () => supportOverlayGeo?.dispose(), [supportOverlayGeo]);
+
+  useEffect(() => {
+    if (transformed?.geo && supportPaintConfig?.isTarget) {
+      supportPaintConfig.onReportTriCount?.(getGeometryTriangleCount(transformed.geo));
+    }
+  }, [transformed, supportPaintConfig?.isTarget]);
+
+  if (!transformed) return null;
+
+  const applyPaintAtEvent = (
+    e: ThreeEvent<PointerEvent>,
+    isMove: boolean,
+  ) => {
+    if (!supportPaintConfig?.active || !groupNode) return;
+    if (!supportPaintConfig.isTarget) {
+      if (!isMove) onSelect(e as unknown as ThreeEvent<MouseEvent>);
+      return;
+    }
+    const hitMesh = (e.object as THREE.Mesh | undefined);
+    if (!hitMesh || !hitMesh.geometry) return;
+    hitMesh.updateMatrixWorld(true);
+    const worldNormal = e.face
+      ? e.face.normal.clone().transformDirection(hitMesh.matrixWorld).normalize()
+      : new THREE.Vector3(0, 1, 0);
+    supportPaintConfig.onHoverMeshChange?.(true);
+    supportPaintConfig.onHoverCursor({
+      pos: [e.point.x, e.point.y, e.point.z],
+      normal: [worldNormal.x, worldNormal.y, worldNormal.z],
+    });
+    if (!isMove) {
+      supportPaintConfig.onPaintingChange?.(true);
+    }
+    if (isMove && !(e.buttons & 1) && !(e.buttons & 2)) return;
+    if (isMove && supportPaintConfig.tool === 'smart_fill') return;
+    const effAction: SupportPaintValue = e.shiftKey
+      ? 0
+      : e.button === 2 || (e.buttons & 2) !== 0
+        ? 2
+        : supportPaintConfig.action;
+    const curMap = latestMapRef.current;
+    const targetGeo = hitMesh.geometry as THREE.BufferGeometry;
+    const nextMap =
+      supportPaintConfig.tool === 'smart_fill' && e.faceIndex != null
+        ? smartFillOnGeometry(
+            targetGeo,
+            e.faceIndex,
+            supportPaintConfig.smartFillAngle,
+            effAction,
+            supportPaintConfig.overhangsOnly,
+            supportPaintConfig.overhangThresholdDeg,
+            curMap,
+          )
+        : paintSphereWorldOnMesh(
+            hitMesh,
+            e.point,
+            supportPaintConfig.radiusMm,
+            effAction,
+            supportPaintConfig.overhangsOnly,
+            supportPaintConfig.overhangThresholdDeg,
+            curMap,
+            e.faceIndex,
+          );
+    if (nextMap) {
+      latestMapRef.current = nextMap;
+      supportPaintConfig.onUpdatePaintMap(nextMap);
+    }
+  };
 
   const showGizmo =
     !ghostMode &&
@@ -481,20 +652,64 @@ function SceneObjectItemPreview({
         position={[obj.offset_x, obj.drop_to_bed ? 0 : obj.offset_z, -obj.offset_y]}
         onClick={(e) => {
           e.stopPropagation();
+          if (supportPaintConfig?.active && supportPaintConfig.isTarget) return;
           onSelect(e);
         }}
+        onPointerDown={(e) => {
+          if (!supportPaintConfig?.active) return;
+          e.stopPropagation();
+          applyPaintAtEvent(e, false);
+        }}
+        onPointerMove={(e) => {
+          if (!supportPaintConfig?.active) return;
+          e.stopPropagation();
+          applyPaintAtEvent(e, true);
+        }}
+        onPointerOut={() => {
+          if (supportPaintConfig?.active) {
+            supportPaintConfig.onHoverCursor(null);
+            supportPaintConfig.onHoverMeshChange?.(false);
+          }
+        }}
+        onContextMenu={(e) => {
+          if (supportPaintConfig?.active) {
+            e.stopPropagation();
+            e.nativeEvent.preventDefault();
+          }
+        }}
       >
-        <mesh geometry={transformed.geo} castShadow receiveShadow>
-          <meshStandardMaterial
-            color={color}
-            roughness={ghostMode ? 0.6 : 0.35}
-            metalness={0.08}
-            transparent={ghostMode}
-            opacity={ghostMode ? 0.25 : 1}
-          />
+        <mesh
+          geometry={transformed.geo}
+          material={multiMaterials ?? undefined}
+          castShadow
+          receiveShadow
+        >
+          {!multiMaterials && (
+            <meshStandardMaterial
+              color={color}
+              roughness={ghostMode ? 0.6 : 0.35}
+              metalness={0.08}
+              transparent={ghostMode}
+              opacity={ghostMode ? 0.25 : 1}
+            />
+          )}
         </mesh>
+        {supportOverlayGeo && (
+          <mesh geometry={supportOverlayGeo} renderOrder={10} raycast={() => null}>
+            <meshBasicMaterial
+              vertexColors
+              transparent
+              opacity={0.85}
+              side={THREE.DoubleSide}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
+              depthWrite={false}
+            />
+          </mesh>
+        )}
         {isSelected && !ghostMode && (
-          <mesh position={[0, transformed.size[2] / 2, 0]}>
+          <mesh position={[0, transformed.size[2] / 2, 0]} raycast={() => null}>
             <boxGeometry
               args={[
                 transformed.size[0] + 1.5,
@@ -612,7 +827,7 @@ function GroupMoveGizmo({
   );
 }
 
-function arrangeSceneObjectsOnBed(
+export function arrangeSceneObjectsOnBed(
   allObjects: SceneObjectTransform[],
   targetIds: Set<string>,
   printer: PrinterInfo | null,
@@ -691,6 +906,7 @@ function SingleInstancePreview({
   partExtruderMap,
   activeCadTool,
   isDraggingGizmo,
+  supportPaintConfig,
   onSelectInstance,
   onSurfaceClick,
   onCommitOffset,
@@ -706,12 +922,15 @@ function SingleInstancePreview({
   partExtruderMap?: Record<string, number>;
   activeCadTool: CadToolMode | null;
   isDraggingGizmo: boolean;
+  supportPaintConfig?: SupportPaintBrushConfig;
   onSelectInstance: () => void;
   onSurfaceClick?: (point: THREE.Vector3) => void;
   onCommitOffset: (next: { offset_x?: number; offset_y?: number; offset_z?: number; rot_x?: number; rot_y?: number; rot_z?: number }) => void;
   onDraggingChange: (dragging: boolean) => void;
 }) {
   const groupRef = useRef<THREE.Group | null>(null);
+  const latestInstMapRef = useRef<SupportPaintMap>(inst.support_paint_map ?? {});
+  latestInstMapRef.current = inst.support_paint_map ?? {};
   const [gizmoTarget, setGizmoTarget] = useState<THREE.Group | null>(null);
   const handleGroupRef = useCallback((el: THREE.Group | null) => {
     groupRef.current = el;
@@ -917,12 +1136,105 @@ function SingleInstancePreview({
     e.stopPropagation();
     if (activeCadTool === 'measure' && onSurfaceClick) {
       onSurfaceClick(e.point.clone());
-    } else if (activeCadTool === 'support_blocker' && onSurfaceClick) {
-      onSurfaceClick(e.point.clone());
+    } else if (supportPaintConfig?.active && !supportPaintConfig.isTarget) {
+      onSelectInstance();
+    } else if (supportPaintConfig?.active && supportPaintConfig.isTarget) {
+      return;
     } else if (!isDraggingGizmo) {
       onSelectInstance();
     }
   };
+
+  const applySinglePaintAtEvent = (
+    e: ThreeEvent<PointerEvent>,
+    isMove: boolean,
+  ) => {
+    if (!supportPaintConfig?.active || !stlBaseResult || !groupRef.current) return;
+    if (!supportPaintConfig.isTarget) {
+      if (!isMove) onSelectInstance();
+      return;
+    }
+    const hitMesh = e.object as THREE.Mesh | undefined;
+    if (!hitMesh || !hitMesh.geometry) return;
+    hitMesh.updateMatrixWorld(true);
+    const worldNormal = e.face
+      ? e.face.normal.clone().transformDirection(hitMesh.matrixWorld).normalize()
+      : new THREE.Vector3(0, 1, 0);
+    supportPaintConfig.onHoverMeshChange?.(true);
+    supportPaintConfig.onHoverCursor({
+      pos: [e.point.x, e.point.y, e.point.z],
+      normal: [worldNormal.x, worldNormal.y, worldNormal.z],
+    });
+    if (!isMove) {
+      supportPaintConfig.onPaintingChange?.(true);
+    }
+    if (isMove && !(e.buttons & 1) && !(e.buttons & 2)) return;
+    if (isMove && supportPaintConfig.tool === 'smart_fill') return;
+    const effAction: SupportPaintValue = e.shiftKey
+      ? 0
+      : e.button === 2 || (e.buttons & 2) !== 0
+        ? 2
+        : supportPaintConfig.action;
+    const curMap = latestInstMapRef.current;
+    const nextMap =
+      supportPaintConfig.tool === 'smart_fill' && e.faceIndex != null
+        ? smartFillOnGeometry(
+            stlBaseResult.geo,
+            e.faceIndex,
+            supportPaintConfig.smartFillAngle,
+            effAction,
+            supportPaintConfig.overhangsOnly,
+            supportPaintConfig.overhangThresholdDeg,
+            curMap,
+          )
+        : paintSphereWorldOnMesh(
+            hitMesh,
+            e.point,
+            supportPaintConfig.radiusMm,
+            effAction,
+            supportPaintConfig.overhangsOnly,
+            supportPaintConfig.overhangThresholdDeg,
+            curMap,
+            e.faceIndex,
+          );
+    if (nextMap) {
+      latestInstMapRef.current = nextMap;
+      supportPaintConfig.onUpdatePaintMap(nextMap);
+    }
+  };
+
+  const singleSupportOverlayGeo = useMemo(() => {
+    if (!stlBaseResult || ghostMode) return null;
+    const pMap = inst.support_paint_map ?? {};
+    const showOverhangs = Boolean(
+      supportPaintConfig?.active &&
+        supportPaintConfig?.isTarget &&
+        supportPaintConfig?.highlightOverhangs,
+    );
+    if (Object.keys(pMap).length === 0 && !showOverhangs) return null;
+    return buildSupportPaintOverlayGeometry(
+      stlBaseResult.geo,
+      pMap,
+      showOverhangs,
+      supportPaintConfig?.overhangThresholdDeg ?? 40,
+    );
+  }, [
+    stlBaseResult,
+    ghostMode,
+    inst.support_paint_map,
+    supportPaintConfig?.active,
+    supportPaintConfig?.isTarget,
+    supportPaintConfig?.highlightOverhangs,
+    supportPaintConfig?.overhangThresholdDeg,
+  ]);
+
+  useEffect(() => () => singleSupportOverlayGeo?.dispose(), [singleSupportOverlayGeo]);
+
+  useEffect(() => {
+    if (stlBaseResult?.geo && supportPaintConfig?.isTarget) {
+      supportPaintConfig.onReportTriCount?.(getGeometryTriangleCount(stlBaseResult.geo));
+    }
+  }, [stlBaseResult, supportPaintConfig?.isTarget]);
 
   const commitGizmo = () => {
     onDraggingChange(false);
@@ -965,7 +1277,13 @@ function SingleInstancePreview({
   };
 
   const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
-    if (ghostMode || e.buttons !== 1) return;
+    if (ghostMode) return;
+    if (supportPaintConfig?.active) {
+      e.stopPropagation();
+      applySinglePaintAtEvent(e, true);
+      return;
+    }
+    if (e.buttons !== 1) return;
     if (activeCadTool === 'support_blocker' && onSurfaceClick) {
       e.stopPropagation();
       onSurfaceClick(e.point.clone());
@@ -980,32 +1298,66 @@ function SingleInstancePreview({
       onPointerMove={handlePointerMove}
     />
   ) : stlBaseResult ? (
-    <mesh
-      geometry={stlBaseResult.geo}
-      scale={gpuScale}
-      castShadow={!ghostMode}
-      receiveShadow={!ghostMode}
-      onClick={handleClick}
-      onPointerMove={handlePointerMove}
-    >
-      {ghostMode ? (
-        <meshBasicMaterial
-          color="#22c55e"
-          transparent
-          opacity={0.16}
-          depthWrite={false}
-          side={THREE.DoubleSide}
-        />
-      ) : (
-        <meshStandardMaterial
-          color={fitsInVolume ? (isSelected ? '#cbd5e1' : '#94a3b8') : '#f87171'}
-          emissive={fitsInVolume ? (isSelected ? '#083344' : '#0f172a') : '#450a0a'}
-          emissiveIntensity={fitsInVolume ? (isSelected ? 0.22 : 0.08) : 0.25}
-          roughness={0.42}
-          metalness={0.18}
-        />
+    <>
+      <mesh
+        geometry={stlBaseResult.geo}
+        scale={gpuScale}
+        castShadow={!ghostMode}
+        receiveShadow={!ghostMode}
+        onClick={handleClick}
+        onPointerDown={(e) => {
+          if (supportPaintConfig?.active) {
+            e.stopPropagation();
+            applySinglePaintAtEvent(e, false);
+          }
+        }}
+        onPointerMove={handlePointerMove}
+        onPointerOut={() => {
+          if (supportPaintConfig?.active) {
+            supportPaintConfig.onHoverCursor(null);
+            supportPaintConfig.onHoverMeshChange?.(false);
+          }
+        }}
+        onContextMenu={(e) => {
+          if (supportPaintConfig?.active) {
+            e.stopPropagation();
+            e.nativeEvent.preventDefault();
+          }
+        }}
+      >
+        {ghostMode ? (
+          <meshBasicMaterial
+            color="#22c55e"
+            transparent
+            opacity={0.16}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        ) : (
+          <meshStandardMaterial
+            color={fitsInVolume ? (isSelected ? '#cbd5e1' : '#94a3b8') : '#f87171'}
+            emissive={fitsInVolume ? (isSelected ? '#083344' : '#0f172a') : '#450a0a'}
+            emissiveIntensity={fitsInVolume ? (isSelected ? 0.22 : 0.08) : 0.25}
+            roughness={0.42}
+            metalness={0.18}
+          />
+        )}
+      </mesh>
+      {singleSupportOverlayGeo && (
+        <mesh geometry={singleSupportOverlayGeo} scale={gpuScale} renderOrder={10} raycast={() => null}>
+          <meshBasicMaterial
+            vertexColors
+            transparent
+            opacity={0.85}
+            side={THREE.DoubleSide}
+            polygonOffset
+            polygonOffsetFactor={-1}
+            polygonOffsetUnits={-1}
+            depthWrite={false}
+          />
+        </mesh>
       )}
-    </mesh>
+    </>
   ) : null;
 
   return (
@@ -1442,11 +1794,14 @@ export function Viewport3D({
   onSelectObjects,
   onChangeSceneObjects,
   onSplitObjects,
+  onMergeObjects,
   isSplittingObjects = false,
   hasSlicedProfile = false,
   onOpenProfileInspector,
   supportBlockers = [],
   onChangeSupportBlockers,
+  onExportSelection,
+  isExporting = false,
 }: Viewport3DProps) {
   const { t } = useI18n();
   const [viewMode, setViewMode] = useState<'stl' | 'gcode'>('stl');
@@ -1480,8 +1835,30 @@ export function Viewport3D({
   const [cutTiltX, setCutTiltX] = useState<number>(0);
   const [cutTiltY, setCutTiltY] = useState<number>(0);
   const [cutKeepMode, setCutKeepMode] = useState<'upper' | 'lower' | 'both'>('both');
-  const [blockerRadius, setBlockerRadius] = useState<number>(15);
-  const [isBlockerBrushMode, setIsBlockerBrushMode] = useState<boolean>(false);
+  const [blockerRadius, setBlockerRadius] = useState<number>(8);
+  const [exportMenuOpen, setExportMenuOpen] = useState<boolean>(false);
+  const [exportApplyTransforms, setExportApplyTransforms] = useState<boolean>(true);
+  const [exportCenterOnBed, setExportCenterOnBed] = useState<boolean>(true);
+  const [supportBrushTool, setSupportBrushTool] = useState<'sphere' | 'smart_fill'>('sphere');
+  const [supportBrushAction, setSupportBrushAction] = useState<1 | 2 | 0>(2);
+  const [supportSmartFillAngle, setSupportSmartFillAngle] = useState<number>(35);
+  const [supportOverhangsOnly, setSupportOverhangsOnly] = useState<boolean>(false);
+  const [supportHighlightOverhangs, setSupportHighlightOverhangs] = useState<boolean>(true);
+  const [supportOverhangThresholdDeg, setSupportOverhangThresholdDeg] = useState<number>(45);
+  const [targetPaintTriCount, setTargetPaintTriCount] = useState<number>(0);
+  const [hoveredBrushCursor, setHoveredBrushCursor] = useState<{
+    pos: [number, number, number];
+    normal: [number, number, number];
+  } | null>(null);
+  const [isPaintingSupport, setIsPaintingSupport] = useState<boolean>(false);
+  const [isHoveringPaintMesh, setIsHoveringPaintMesh] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!isPaintingSupport) return;
+    const handleUp = () => setIsPaintingSupport(false);
+    window.addEventListener('pointerup', handleUp);
+    return () => window.removeEventListener('pointerup', handleUp);
+  }, [isPaintingSupport]);
   const [measurePoints, setMeasurePoints] = useState<THREE.Vector3[]>([]);
 
   const [groupScalePct, setGroupScalePct] = useState<number>(100);
@@ -2441,7 +2818,17 @@ export function Viewport3D({
               <span>Z=0 {isAllDropToBed ? 'ON' : 'OFF'}</span>
             </button>
 
-            {onSplitObjects && (
+            {sceneObjects.length > 0 && onMergeObjects ? (
+              <button
+                type="button"
+                onClick={onMergeObjects}
+                title="Unir objetos divididos en el modelo armado original"
+                className="flex items-center gap-1 rounded-lg border border-cyan-500/50 bg-cyan-500/15 px-2 py-1 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/25"
+              >
+                <Box className="h-3.5 w-3.5" />
+                <span>Unir Objetos</span>
+              </button>
+            ) : onSplitObjects ? (
               <button
                 type="button"
                 disabled={isSplittingObjects}
@@ -2456,7 +2843,7 @@ export function Viewport3D({
                 )}
                 <span>{t.step2.splitObjects}</span>
               </button>
-            )}
+            ) : null}
 
             {(onAutoArrange || sceneObjects.length > 1) && (
               <button
@@ -2487,6 +2874,94 @@ export function Viewport3D({
                 )}
                 <span>Ordenar</span>
               </button>
+            )}
+
+            {onExportSelection && (
+              <div className="relative">
+                <button
+                  type="button"
+                  disabled={isExporting}
+                  onClick={() => setExportMenuOpen((v) => !v)}
+                  className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition disabled:opacity-50 ${
+                    exportMenuOpen
+                      ? 'border-emerald-500 bg-emerald-500/20 text-emerald-200'
+                      : 'border-slate-700 bg-slate-950/70 text-emerald-200 hover:border-emerald-500/60'
+                  }`}
+                >
+                  {isExporting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" />
+                  )}
+                  <span>{isExporting ? t.exportMenu.exporting : t.exportMenu.exportSelection}</span>
+                </button>
+                {exportMenuOpen && (
+                  <div className="absolute right-0 top-full z-40 mt-1.5 w-64 space-y-2 rounded-xl border border-slate-700 bg-slate-900/95 p-2.5 text-[11px] shadow-2xl backdrop-blur">
+                    <label className="flex cursor-pointer items-center justify-between gap-2 text-slate-200">
+                      <span>{t.exportMenu.applyTransforms}</span>
+                      <input
+                        type="checkbox"
+                        checked={exportApplyTransforms}
+                        onChange={(e) => setExportApplyTransforms(e.target.checked)}
+                        className="accent-emerald-400"
+                      />
+                    </label>
+                    <div className="grid grid-cols-2 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setExportCenterOnBed(true)}
+                        className={`rounded-lg border px-1.5 py-1 text-[10px] font-medium transition ${
+                          exportCenterOnBed
+                            ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
+                            : 'border-slate-800 bg-slate-950 text-slate-400'
+                        }`}
+                      >
+                        {t.exportMenu.centerOnZ0}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExportCenterOnBed(false)}
+                        className={`rounded-lg border px-1.5 py-1 text-[10px] font-medium transition ${
+                          !exportCenterOnBed
+                            ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
+                            : 'border-slate-800 bg-slate-950 text-slate-400'
+                        }`}
+                      >
+                        {t.exportMenu.keepBedPosition}
+                      </button>
+                    </div>
+                    <div className="space-y-1 border-t border-slate-800 pt-1.5">
+                      {(
+                        [
+                          ['3mf', false, t.exportMenu.export3mf],
+                          ['stl', false, t.exportMenu.exportStl],
+                          ['obj', false, t.exportMenu.exportObj],
+                          ['3mf', true, t.exportMenu.exportFullPlate3mf],
+                        ] as const
+                      ).map(([fmt, allPlate, label]) => (
+                        <button
+                          key={`${fmt}-${allPlate ? 'all' : 'sel'}`}
+                          type="button"
+                          disabled={isExporting}
+                          onClick={() => {
+                            setExportMenuOpen(false);
+                            void onExportSelection({
+                              format: fmt,
+                              applyTransforms: exportApplyTransforms,
+                              centerOnBed: exportCenterOnBed,
+                              exportAllPlate: allPlate,
+                            });
+                          }}
+                          className="flex w-full items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950/80 px-2 py-1.5 text-left text-[10px] font-medium text-slate-200 hover:border-emerald-500/50 hover:text-emerald-200"
+                        >
+                          <Download className="h-3 w-3 shrink-0 text-emerald-400" />
+                          <span>{label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}
@@ -3197,76 +3672,275 @@ export function Viewport3D({
             </>
           )}
 
-          {activeCadTool === 'support_blocker' && (
-            <>
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-rose-200">
-                  Bloqueador de Soportes ({supportBlockers.length})
-                </span>
-                {supportBlockers.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => onChangeSupportBlockers?.([])}
-                    className="rounded border border-rose-500/40 bg-rose-500/15 px-1.5 py-0.5 text-[10px] text-rose-200 hover:bg-rose-500/25"
-                  >
-                    Limpiar
-                  </button>
-                )}
-              </div>
-              <p className="text-[10px] text-slate-400">
-                Haz clic sobre cualquier zona del modelo para pintar esferas donde NO se generarán soportes al laminar.
-              </p>
-              <div>
-                <div className="mb-0.5 flex items-center justify-between text-[11px]">
-                  <span className="text-slate-300">Radio del pincel / bloqueador</span>
-                  <span className="font-mono font-semibold text-rose-300">{blockerRadius} mm</span>
-                </div>
-                <input
-                  type="range"
-                  min={4}
-                  max={40}
-                  step={1}
-                  value={blockerRadius}
-                  onChange={(e) => setBlockerRadius(Number(e.target.value))}
-                  className="h-1.5 w-full cursor-pointer accent-rose-400"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsBlockerBrushMode((v) => !v)}
-                className={`flex w-full items-center justify-center gap-1.5 rounded-lg border py-1 text-[11px] font-semibold transition ${
-                  isBlockerBrushMode
-                    ? 'border-rose-400 bg-rose-500/25 text-rose-100'
-                    : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-rose-500/50'
-                }`}
-              >
-                {isBlockerBrushMode ? 'Pincel continuo ACTIVO (arrastra sobre el modelo)' : 'Activar pincel continuo (arrastrar)'}
-              </button>
-              {supportBlockers.length > 0 && (
-                <div className="max-h-36 space-y-1 overflow-y-auto pr-1">
-                  {supportBlockers.map((b, idx) => (
-                    <div
-                      key={b.id}
-                      className="flex items-center justify-between rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 font-mono text-[10px] text-rose-100"
+          {activeCadTool === 'support_blocker' && (() => {
+            const isMultiScene = sceneObjects.length > 1;
+            const targetSceneObj =
+              sceneObjects.length === 1
+                ? sceneObjects[0]
+                : selectedSceneObjs.length === 1
+                  ? selectedSceneObjs[0]
+                  : null;
+            const targetInst = sceneObjects.length === 0 ? activeInstance : null;
+            const hasTarget = Boolean(targetSceneObj || targetInst);
+            const targetName = targetSceneObj
+              ? targetSceneObj.name
+              : targetInst
+                ? `Pieza #${safeIdx + 1}`
+                : '';
+            const curMap: SupportPaintMap =
+              (targetSceneObj ? targetSceneObj.support_paint_map : targetInst?.support_paint_map) ?? {};
+            const curMode: SupportPaintMode =
+              (targetSceneObj ? targetSceneObj.support_paint_mode : targetInst?.support_paint_mode) ?? 'auto';
+
+            let enforcerCount = 0;
+            let blockerCount = 0;
+            for (const v of Object.values(curMap)) {
+              if (v === 1) enforcerCount += 1;
+              else if (v === 2) blockerCount += 1;
+            }
+            const totalPainted = enforcerCount + blockerCount;
+
+            const updateTargetPaint = (patch: {
+              support_paint_map?: SupportPaintMap;
+              support_paint_mode?: SupportPaintMode;
+            }) => {
+              if (targetSceneObj && onChangeSceneObjects) {
+                onChangeSceneObjects(
+                  sceneObjects.map((o) =>
+                    o.object_id === targetSceneObj.object_id ? { ...o, ...patch } : o,
+                  ),
+                );
+              } else if (targetInst) {
+                updateActiveInstance(patch);
+              }
+            };
+
+            return (
+              <>
+                <div className="flex items-center justify-between gap-1">
+                  <span className="font-semibold text-cyan-200">{t.supportPainting.title}</span>
+                  {(totalPainted > 0 || targetPaintTriCount > 0) && (
+                    <span
+                      title={`${enforcerCount} forzados · ${blockerCount} bloqueados`}
+                      className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300"
                     >
-                      <span>
-                        #{idx + 1} · Z={b.z.toFixed(1)}mm · R={b.radius}mm
+                      <span className={blockerCount >= enforcerCount ? 'text-rose-400' : 'text-emerald-400'}>
+                        {totalPainted.toLocaleString()}
                       </span>
+                      {targetPaintTriCount > 0 ? ` / ${targetPaintTriCount.toLocaleString()}` : ''}
+                    </span>
+                  )}
+                </div>
+
+                {isMultiScene && !targetSceneObj ? (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-200">
+                    {t.supportPainting.selectObjectFirst}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-cyan-500/35 bg-cyan-500/10 px-2 py-1 text-[10px] text-cyan-100">
+                    <span className="text-slate-400">{t.supportPainting.editingObject} </span>
+                    <strong className="font-semibold">{targetName}</strong>
+                  </div>
+                )}
+
+                {hasTarget && (
+                  <>
+                    {/* Acción: Forzar (Verde) / Bloquear (Rojo) / Borrar */}
+                    <div className="grid grid-cols-3 gap-1">
+                      {(
+                        [
+                          [1, t.supportPainting.brushActionEnforce, 'emerald'],
+                          [2, t.supportPainting.brushActionBlock, 'rose'],
+                          [0, t.supportPainting.brushActionErase, 'slate'],
+                        ] as const
+                      ).map(([act, label, tone]) => {
+                        const active = supportBrushAction === act;
+                        const activeCls =
+                          tone === 'emerald'
+                            ? 'border-emerald-500 bg-emerald-500/20 text-emerald-200'
+                            : tone === 'rose'
+                              ? 'border-rose-500 bg-rose-500/20 text-rose-200'
+                              : 'border-cyan-500 bg-cyan-500/20 text-cyan-200';
+                        return (
+                          <button
+                            key={act}
+                            type="button"
+                            onClick={() => setSupportBrushAction(act)}
+                            className={`rounded-lg border py-1 text-[10px] font-semibold transition ${
+                              active ? activeCls : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Herramienta: Pincel Esférico vs Relleno Inteligente */}
+                    <div className="grid grid-cols-2 gap-1">
                       <button
                         type="button"
-                        onClick={() =>
-                          onChangeSupportBlockers?.(supportBlockers.filter((x) => x.id !== b.id))
-                        }
-                        className="text-rose-300 hover:text-white"
+                        onClick={() => setSupportBrushTool('sphere')}
+                        className={`rounded-lg border py-1 text-[10px] font-semibold transition ${
+                          supportBrushTool === 'sphere'
+                            ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
+                            : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
+                        }`}
                       >
-                        <Trash2 className="h-3 w-3" />
+                        {t.supportPainting.toolSphere}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSupportBrushTool('smart_fill')}
+                        className={`rounded-lg border py-1 text-[10px] font-semibold transition ${
+                          supportBrushTool === 'smart_fill'
+                            ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
+                            : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {t.supportPainting.toolSmartFill}
                       </button>
                     </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
+
+                    {supportBrushTool === 'sphere' ? (
+                      <div>
+                        <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                          <span className="text-slate-300">{t.supportPainting.brushSizeLabel}</span>
+                          <span className="font-mono font-semibold text-cyan-300">{blockerRadius} mm</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={1}
+                          max={25}
+                          step={1}
+                          value={Math.min(25, Math.max(1, blockerRadius))}
+                          onChange={(e) => setBlockerRadius(Number(e.target.value))}
+                          className="h-1.5 w-full cursor-pointer accent-cyan-400"
+                        />
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                          <span className="text-slate-300">{t.supportPainting.smartFillAngleLabel}</span>
+                          <span className="font-mono font-semibold text-cyan-300">{supportSmartFillAngle}°</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={5}
+                          max={80}
+                          step={5}
+                          value={supportSmartFillAngle}
+                          onChange={(e) => setSupportSmartFillAngle(Number(e.target.value))}
+                          className="h-1.5 w-full cursor-pointer accent-cyan-400"
+                        />
+                      </div>
+                    )}
+
+                    {/* Filtros de voladizo (> umbral°) */}
+                    <div className="space-y-1 rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+                      <label className="flex cursor-pointer items-center justify-between gap-2 text-[10px] text-slate-300">
+                        <span>{t.supportPainting.highlightOverhangsLabel}</span>
+                        <input
+                          type="checkbox"
+                          checked={supportHighlightOverhangs}
+                          onChange={(e) => setSupportHighlightOverhangs(e.target.checked)}
+                          className="accent-amber-400"
+                        />
+                      </label>
+                      <label className="flex cursor-pointer items-center justify-between gap-2 text-[10px] text-slate-300">
+                        <span>{t.supportPainting.overhangsOnlyLabel}</span>
+                        <input
+                          type="checkbox"
+                          checked={supportOverhangsOnly}
+                          onChange={(e) => setSupportOverhangsOnly(e.target.checked)}
+                          className="accent-amber-400"
+                        />
+                      </label>
+                      {(supportHighlightOverhangs || supportOverhangsOnly) && (
+                        <div>
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="text-slate-400">{t.supportPainting.overhangThresholdLabel}</span>
+                            <span className="font-mono text-amber-300">{supportOverhangThresholdDeg}°</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={15}
+                            max={75}
+                            step={5}
+                            value={supportOverhangThresholdDeg}
+                            onChange={(e) => setSupportOverhangThresholdDeg(Number(e.target.value))}
+                            className="h-1 w-full cursor-pointer accent-amber-400"
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Modo: Auto + Bloqueadores vs Solo Forzadores */}
+                    <div className="grid grid-cols-2 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => updateTargetPaint({ support_paint_mode: 'auto' })}
+                        className={`rounded-lg border py-1 text-[10px] font-semibold transition ${
+                          curMode === 'auto'
+                            ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
+                            : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {t.supportPainting.modeAutoBlockers}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateTargetPaint({ support_paint_mode: 'enforcers_only' })}
+                        className={`rounded-lg border py-1 text-[10px] font-semibold transition ${
+                          curMode === 'enforcers_only'
+                            ? 'border-emerald-500 bg-emerald-500/20 text-emerald-200'
+                            : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {t.supportPainting.modeEnforcersOnly}
+                      </button>
+                    </div>
+
+                    {/* Acciones por objeto: Bloquear todo / Limpiar */}
+                    <div className="grid grid-cols-2 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (targetSceneObj?.mesh_url) {
+                            new STLLoader().load(targetSceneObj.mesh_url, (geo) => {
+                              updateTargetPaint({
+                                support_paint_map: buildAllTrianglesSupportMap(geo, 2),
+                              });
+                              geo.dispose();
+                            });
+                          } else if (loadedModel?.stlGeo) {
+                            updateTargetPaint({
+                              support_paint_map: buildAllTrianglesSupportMap(loadedModel.stlGeo, 2),
+                            });
+                          }
+                        }}
+                        className="rounded-lg border border-rose-500/40 bg-rose-500/15 py-1 text-[10px] font-semibold text-rose-200 hover:bg-rose-500/25"
+                      >
+                        {t.supportPainting.blockAllObject}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          updateTargetPaint({ support_paint_map: {} });
+                          onChangeSupportBlockers?.([]);
+                        }}
+                        className="rounded-lg border border-slate-700 bg-slate-900 py-1 text-[10px] font-semibold text-slate-300 hover:border-slate-500"
+                      >
+                        {t.supportPainting.clearObjectPaint}
+                      </button>
+                    </div>
+
+                    <p className="text-[9px] text-slate-400">{t.supportPainting.mouseHint}</p>
+                  </>
+                )}
+              </>
+            );
+          })()}
 
           {activeCadTool === 'measure' && (
             <>
@@ -3302,6 +3976,96 @@ export function Viewport3D({
               )}
             </>
           )}
+
+          {/* Acceso rápido por pieza: Soportes y Balsa/Brim en Herramienta CAD */}
+          {(selectedSceneObjs.length === 1 || (sceneObjects.length === 0 && Boolean(activeInstance))) && (() => {
+            const targetSceneObj = selectedSceneObjs.length === 1 ? selectedSceneObjs[0] : null;
+            const currentOv: ObjectPrintOverrides =
+              (targetSceneObj ? targetSceneObj.overrides : activeInstance?.overrides) ?? {};
+            const supportModeVal =
+              currentOv.enable_support === false
+                ? 'none'
+                : currentOv.support_type === 'tree(auto)'
+                  ? 'tree'
+                  : currentOv.support_type === 'normal(auto)'
+                    ? 'normal'
+                    : currentOv.enable_support === true
+                      ? 'tree'
+                      : 'inherit';
+            const adhesionModeVal = currentOv.brim_type ?? 'inherit';
+            const applyCadOverrides = (patch: Partial<ObjectPrintOverrides>) => {
+              const merged: ObjectPrintOverrides = { ...currentOv, ...patch };
+              if (targetSceneObj && onChangeSceneObjects) {
+                onChangeSceneObjects(
+                  sceneObjects.map((o) =>
+                    o.object_id === targetSceneObj.object_id ? { ...o, overrides: merged } : o,
+                  ),
+                );
+              } else if (activeInstance) {
+                updateActiveInstance({ overrides: merged });
+              }
+            };
+            return (
+              <div className="space-y-1.5 border-t border-slate-800/90 pt-2">
+                <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-cyan-300">
+                  <span className="truncate">
+                    {targetSceneObj ? targetSceneObj.name : `Pieza #${safeIdx + 1}`}
+                  </span>
+                  <span className="text-[9px] text-slate-400">Por Pieza</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <label className="space-y-0.5">
+                    <span className="block text-[10px] text-slate-400">
+                      Soportes de esta pieza
+                    </span>
+                    <select
+                      value={supportModeVal}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === 'inherit') {
+                          applyCadOverrides({ enable_support: 'inherit', support_type: 'inherit' });
+                        } else if (v === 'none') {
+                          applyCadOverrides({ enable_support: false, support_type: 'inherit' });
+                        } else if (v === 'tree') {
+                          applyCadOverrides({ enable_support: true, support_type: 'tree(auto)' });
+                        } else if (v === 'normal') {
+                          applyCadOverrides({ enable_support: true, support_type: 'normal(auto)' });
+                        }
+                      }}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-1.5 py-1 text-[11px] text-slate-100 focus:border-cyan-500 focus:outline-none"
+                    >
+                      <option value="inherit">Global</option>
+                      <option value="tree">Árbol</option>
+                      <option value="normal">Normal</option>
+                      <option value="none">No</option>
+                    </select>
+                  </label>
+                  <label className="space-y-0.5">
+                    <span className="block text-[10px] text-slate-400">
+                      Balsa/Brim de esta pieza
+                    </span>
+                    <select
+                      value={adhesionModeVal}
+                      onChange={(e) => {
+                        const v = e.target.value as NonNullable<ObjectPrintOverrides['brim_type']>;
+                        applyCadOverrides({
+                          brim_type: v,
+                          brim_width: v === 'outer_only' || v === 'brim_and_skirt' ? 5 : 0,
+                          raft_layers: v === 'raft' ? 2 : 0,
+                        });
+                      }}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-1.5 py-1 text-[11px] text-slate-100 focus:border-cyan-500 focus:outline-none"
+                    >
+                      <option value="inherit">Global</option>
+                      <option value="no_brim">Sin Balsa</option>
+                      <option value="outer_only">Brim (5 mm)</option>
+                      <option value="raft">Balsa (Raft 2)</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
       </div>
@@ -3716,6 +4480,10 @@ export function Viewport3D({
           <>
             {sceneObjects.map((obj) => {
               const isSel = selectedSet.has(obj.object_id);
+              const isPaintTarget =
+                viewMode === 'stl' &&
+                activeCadTool === 'support_blocker' &&
+                (sceneObjects.length === 1 || (selectedSceneObjs.length === 1 && isSel));
               return (
                 <SceneObjectItemPreview
                   key={obj.object_id}
@@ -3729,6 +4497,34 @@ export function Viewport3D({
                     viewMode === 'stl' && selectedSceneObjs.length === 1
                       ? activeCadTool
                       : null
+                  }
+                  supportPaintConfig={
+                    viewMode === 'stl' && activeCadTool === 'support_blocker'
+                      ? {
+                          active: true,
+                          isTarget: isPaintTarget,
+                          tool: supportBrushTool,
+                          action: supportBrushAction,
+                          radiusMm: blockerRadius,
+                          smartFillAngle: supportSmartFillAngle,
+                          overhangsOnly: supportOverhangsOnly,
+                          highlightOverhangs: supportHighlightOverhangs,
+                          overhangThresholdDeg: supportOverhangThresholdDeg,
+                          onUpdatePaintMap: (nextMap) => {
+                            onChangeSceneObjects?.(
+                              sceneObjects.map((o) =>
+                                o.object_id === obj.object_id
+                                  ? { ...o, support_paint_map: nextMap }
+                                  : o,
+                              ),
+                            );
+                          },
+                          onHoverCursor: setHoveredBrushCursor,
+                          onPaintingChange: setIsPaintingSupport,
+                          onHoverMeshChange: setIsHoveringPaintMesh,
+                          onReportTriCount: setTargetPaintTriCount,
+                        }
+                      : undefined
                   }
                   onSelect={(ev) => {
                     if (ev.shiftKey || ev.metaKey || ev.ctrlKey) {
@@ -3780,6 +4576,31 @@ export function Viewport3D({
               partExtruderMap={partExtruderMap}
               activeCadTool={viewMode === 'stl' ? activeCadTool : null}
               isDraggingGizmo={isDraggingGizmo}
+              supportPaintConfig={
+                viewMode === 'stl' && activeCadTool === 'support_blocker'
+                  ? {
+                      active: true,
+                      isTarget: idx === safeIdx,
+                      tool: supportBrushTool,
+                      action: supportBrushAction,
+                      radiusMm: blockerRadius,
+                      smartFillAngle: supportSmartFillAngle,
+                      overhangsOnly: supportOverhangsOnly,
+                      highlightOverhangs: supportHighlightOverhangs,
+                      overhangThresholdDeg: supportOverhangThresholdDeg,
+                      onUpdatePaintMap: (nextMap) => {
+                        const nextInstances = instances.map((it, i) =>
+                          i === idx ? { ...it, support_paint_map: nextMap } : it,
+                        );
+                        onChangeTransform({ ...transform, instances: nextInstances });
+                      },
+                      onHoverCursor: setHoveredBrushCursor,
+                      onPaintingChange: setIsPaintingSupport,
+                      onHoverMeshChange: setIsHoveringPaintMesh,
+                      onReportTriCount: setTargetPaintTriCount,
+                    }
+                  : undefined
+              }
               onSelectInstance={() => setActiveInstanceIdx(idx)}
               onSurfaceClick={(pt) => {
                 if (activeCadTool === 'support_blocker' && onChangeSupportBlockers) {
@@ -3809,6 +4630,35 @@ export function Viewport3D({
             />
           ))
         )}
+
+        {/* Aro 3D del pincel de pintura de soportes proyectado sobre la superficie */}
+        {viewMode === 'stl' &&
+          stlFile &&
+          activeCadTool === 'support_blocker' &&
+          hoveredBrushCursor && (() => {
+            const n = new THREE.Vector3(...hoveredBrushCursor.normal).normalize();
+            const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+            const p = new THREE.Vector3(...hoveredBrushCursor.pos).addScaledVector(n, 0.15);
+            const ringR = supportBrushTool === 'sphere' ? blockerRadius : 2.5;
+            const ringColor =
+              supportBrushAction === 1
+                ? '#10b981'
+                : supportBrushAction === 2
+                  ? '#ef4444'
+                  : '#38bdf8';
+            return (
+              <mesh position={[p.x, p.y, p.z]} quaternion={q} raycast={() => null}>
+                <ringGeometry args={[Math.max(0.5, ringR * 0.85), ringR, 40]} />
+                <meshBasicMaterial
+                  color={ringColor}
+                  side={THREE.DoubleSide}
+                  transparent
+                  opacity={0.9}
+                  depthTest={false}
+                />
+              </mesh>
+            );
+          })()}
 
         {/* Plano de corte 3D cuando está activa la herramienta Cortar */}
         {viewMode === 'stl' && stlFile && activeCadTool === 'cut' && (
@@ -3886,7 +4736,7 @@ export function Viewport3D({
 
         <OrbitControls
           makeDefault
-          enabled={!isDraggingGizmo && !marqueeRect && !(activeCadTool === 'support_blocker' && isBlockerBrushMode)}
+          enabled={!isDraggingGizmo && !marqueeRect && !isPaintingSupport && !(activeCadTool === 'support_blocker' && isHoveringPaintMesh)}
           enableDamping
           dampingFactor={0.08}
           minDistance={25}

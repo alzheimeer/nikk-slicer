@@ -29,6 +29,17 @@ export type NozzleDiameter = 0.2 | 0.4 | 0.6 | 0.8;
 export type SupportType = 'tree(auto)' | 'normal(auto)';
 export type AdhesionType = 'none' | 'brim' | 'raft';
 
+export type SupportPaintMap = Record<number, 1 | 2>;
+export type SupportPaintMode = 'auto' | 'enforcers_only';
+
+export interface ObjectPrintOverrides {
+  enable_support?: 'inherit' | boolean;
+  support_type?: 'inherit' | 'tree(auto)' | 'normal(auto)';
+  brim_type?: 'inherit' | 'no_brim' | 'outer_only' | 'brim_and_skirt' | 'raft';
+  brim_width?: number;
+  raft_layers?: number;
+}
+
 export interface ModelInstanceTransform {
   instance_id: string;
   offset_x: number;
@@ -42,6 +53,9 @@ export interface ModelInstanceTransform {
   rot_y: number;
   rot_z: number;
   drop_to_bed: boolean;
+  overrides?: ObjectPrintOverrides;
+  support_paint_map?: SupportPaintMap;
+  support_paint_mode?: SupportPaintMode;
 }
 
 export interface ModelTransform {
@@ -215,6 +229,9 @@ export interface SceneObjectTransform {
   scale_z?: number | null;
   drop_to_bed: boolean;
   dimensions_mm: [number, number, number];
+  overrides?: ObjectPrintOverrides;
+  support_paint_map?: SupportPaintMap;
+  support_paint_mode?: SupportPaintMode;
 }
 
 export interface AutoOrientResponse {
@@ -412,6 +429,11 @@ export interface SlicedProfileSnapshot {
     support_interface_bottom_layers?: number;
     support_interface_spacing: number;
     support_interface_pattern: string;
+    per_object_overrides?: Array<{
+      name: string;
+      enable_support?: 'inherit' | boolean;
+      support_type?: string;
+    }>;
   };
   multimaterial: {
     active_tools: string[];
@@ -435,6 +457,12 @@ export interface SlicedProfileSnapshot {
     printer_name: string;
     slicer_engine: string;
     sliced_at_timestamp: string;
+    per_object_overrides?: Array<{
+      name: string;
+      brim_type?: string;
+      brim_width?: number;
+      raft_layers?: number;
+    }>;
   };
   filaments: SlicedProfileFilament[];
 }
@@ -995,6 +1023,7 @@ export interface OrientationOption {
   fits_bed: boolean;
   is_recommended: boolean;
   quaternion?: number[] | null;
+  per_object_rotations?: Record<string, OrientationRotation>;
 }
 
 export interface AIOrientationsResponse {
@@ -1006,6 +1035,8 @@ export interface AIOrientationsResponse {
   hero_face_normal?: number[] | null;
   ai_provider: 'GEMINI_API' | 'DEEPSEEK_API' | 'HEURISTICA_LOCAL';
   recommended_id: string;
+  target_object_id?: string | null;
+  flat_base_preserved_ids?: string[];
   options: OrientationOption[];
 }
 
@@ -1015,17 +1046,39 @@ export async function requestAIOrientations({
   meshId,
   file,
   scalePercent = 100,
+  objectId,
+  sceneObjects,
 }: {
   printerId: PrinterId;
   material: MaterialType;
   meshId?: string | null;
   file?: File | null;
   scalePercent?: number;
+  objectId?: string | null;
+  sceneObjects?: SceneObjectTransform[];
 }): Promise<AIOrientationsResponse> {
   const form = new FormData();
   form.append('printer_id', printerId);
   form.append('material', material);
   form.append('scale_percent', String(scalePercent));
+  if (objectId) {
+    form.append('object_id', objectId);
+  }
+  if (sceneObjects && sceneObjects.length > 1) {
+    form.append(
+      'scene_objects_json',
+      JSON.stringify(
+        sceneObjects.map((o) => ({
+          object_id: o.object_id,
+          name: o.name,
+          scale_percent: o.scale_percent,
+          rot_x: o.rot_x,
+          rot_y: o.rot_y,
+          rot_z: o.rot_z,
+        })),
+      ),
+    );
+  }
   if (meshId) {
     form.append('mesh_id', meshId);
   } else if (file) {
@@ -2115,4 +2168,34 @@ export async function deleteUserPrinter(printerId: string): Promise<void> {
     8000,
   );
   if (!res.ok) throw new Error(await parseError(res));
+}
+
+export async function exportSelection(payload: {
+  mesh_id: string;
+  printer_id: PrinterId;
+  format: 'stl' | '3mf' | 'obj';
+  apply_transforms: boolean;
+  center_on_bed: boolean;
+  export_all_plate?: boolean;
+  scene_objects?: SceneObjectTransform[];
+  instances?: ModelInstanceTransform[];
+  part_extruder_map?: Record<string, number>;
+  filename_base?: string;
+}): Promise<{ blob: Blob; filename: string }> {
+  const res = await fetchWithTimeout(
+    `${API_BASE_URL}/export-selection`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    60000,
+  );
+  if (!res.ok) throw new Error(await parseError(res));
+  const cd = res.headers.get('content-disposition') || '';
+  const m = cd.match(/filename="?([^"]+)"?/i);
+  const ext = payload.format;
+  const filename = m ? m[1] : `${payload.filename_base || 'export'}.${ext}`;
+  const blob = await res.blob();
+  return { blob, filename };
 }

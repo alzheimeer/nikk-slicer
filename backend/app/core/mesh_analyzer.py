@@ -1537,7 +1537,19 @@ def analyze_model_file(
                     )
 
         if len(extracted) > 1 and mesh_id:
-            scene_objects_list = _export_scene_objects_to_cache(mesh_id, extracted)
+            paint_map_init: dict[str, list[str | None]] = {}
+            palette_init: list[str] = []
+            if has_tri_paint:
+                raw_p_init, palette_init = _extract_raw_3mf_parts_with_paint(model_path)
+                for idx_r, (_, _, _, t_rows) in enumerate(raw_p_init):
+                    if idx_r < len(extracted):
+                        paint_map_init[extracted[idx_r][0].part_id] = [r[3] for r in t_rows]
+            scene_objects_list = _export_scene_objects_to_cache(
+                mesh_id,
+                extracted,
+                paint_colors_by_id=paint_map_init or None,
+                palette=palette_init or None,
+            )
     else:
         raw = load_raw_mesh(model_path)
 
@@ -2985,6 +2997,115 @@ def evaluate_orientation_candidates(
     }
 
 
+def _detect_dominant_flat_base(
+    mesh: trimesh.Trimesh,
+    scale_factor: float = 1.0,
+    min_flat_area_mm2: float = 200.0,
+) -> tuple[bool, float]:
+    """Detecta si una pieza posee una suela o base plana dominante en Z=0 (>= 200 mm²)."""
+    if len(mesh.faces) == 0:
+        return (False, 0.0)
+    z_min = float(mesh.vertices[:, 2].min()) * scale_factor
+    centers_z = mesh.triangles_center[:, 2] * scale_factor
+    areas = mesh.area_faces * (scale_factor ** 2)
+    normals_z = mesh.face_normals[:, 2]
+    bottom_mask = (centers_z <= z_min + 0.45) & (normals_z < -0.85)
+    bottom_area = float(areas[bottom_mask].sum())
+    return (bottom_area >= min_flat_area_mm2, round(bottom_area, 2))
+
+
+def evaluate_plate_orientation_candidates(
+    mesh_id: str,
+    scene_objects: list[dict[str, Any]],
+    printer: PrinterConfig,
+    scale_percent: float = 100.0,
+) -> dict[str, Any]:
+    """Evalúa orientaciones por pieza: conserva suelas/bases planas en Z=0 y rota solo piezas orgánicas."""
+    flat_ids: list[str] = []
+    organic_evals: list[tuple[str, int, dict[str, Any]]] = []
+    primary_geom: dict[str, Any] | None = None
+    primary_tris = -1
+
+    for obj in scene_objects:
+        oid = str(obj.get("object_id") or "")
+        if not oid:
+            continue
+        stl_path = get_scene_object_stl_path(mesh_id, oid)
+        if stl_path is None:
+            continue
+        obj_mesh = load_raw_mesh(stl_path)
+        obj_scale = float(obj.get("scale_percent") or scale_percent or 100.0)
+        has_flat, flat_area = _detect_dominant_flat_base(obj_mesh, scale_factor=obj_scale / 100.0)
+        if has_flat:
+            flat_ids.append(oid)
+            continue
+
+        res = evaluate_orientation_candidates(
+            stl_path,
+            printer=printer,
+            mesh_id=mesh_id,
+            scale_percent=obj_scale,
+        )
+        n_tris = len(obj_mesh.faces)
+        organic_evals.append((oid, n_tris, res))
+        if n_tris > primary_tris:
+            primary_tris = n_tris
+            primary_geom = res
+
+    if primary_geom is None:
+        # Todas las piezas tienen base plana dominante -> mantener todas en Z=0
+        first_stl = None
+        for obj in scene_objects:
+            p = get_scene_object_stl_path(mesh_id, str(obj.get("object_id") or ""))
+            if p is not None:
+                first_stl = p
+                break
+        if first_stl is None:
+            raise ValueError("No se encontraron objetos divididos válidos en caché.")
+        base_res = evaluate_orientation_candidates(
+            first_stl, printer=printer, mesh_id=mesh_id, scale_percent=scale_percent
+        )
+        zero_map = {
+            str(o["object_id"]): {"rx": 0.0, "ry": 0.0, "rz": 0.0}
+            for o in scene_objects
+            if o.get("object_id")
+        }
+        for opt in base_res["options"]:
+            opt["per_object_rotations"] = zero_map
+            if opt["id"] == "original":
+                opt["title"] = "Base Plana en Cama"
+                opt["explanation"] = "Todas las piezas tienen base/suela plana estable asentada en Z=0."
+        base_res["recommended_id"] = "original"
+        base_res["flat_base_preserved_ids"] = flat_ids
+        return base_res
+
+    # Construir per_object_rotations para cada opción: bases planas -> (0,0,0), orgánicas -> su rotación por opción
+    opts_by_oid: dict[str, dict[str, dict[str, float]]] = {}
+    for oid, _, o_res in organic_evals:
+        opts_by_oid[oid] = {
+            str(opt["id"]): dict(opt["rotation"])
+            for opt in o_res.get("options", [])
+        }
+
+    for opt in primary_geom.get("options", []):
+        opt_id = str(opt["id"])
+        per_map: dict[str, dict[str, float]] = {}
+        for fid in flat_ids:
+            per_map[fid] = {"rx": 0.0, "ry": 0.0, "rz": 0.0}
+        for oid, o_opts in opts_by_oid.items():
+            per_map[oid] = o_opts.get(opt_id) or dict(opt["rotation"])
+        opt["per_object_rotations"] = per_map
+        if flat_ids and opt_id != "original":
+            opt["explanation"] = (
+                f"{opt['explanation']} ({len(flat_ids)} pieza(s) con base/suela plana permanecen en Z=0)."
+            )
+
+    primary_geom["flat_base_preserved_ids"] = flat_ids
+    primary_geom["is_multicolor"] = True
+    primary_geom["multicolor_parts_count"] = len(scene_objects)
+    return primary_geom
+
+
 def _scene_objects_dir(mesh_id: str) -> Path:
     clean_id = "".join(ch for ch in mesh_id if ch.isalnum() or ch in ("-", "_"))
     return MESH_CACHE_DIR / f"{clean_id}_objs"
@@ -2998,11 +3119,124 @@ def get_scene_object_stl_path(mesh_id: str, object_id: str) -> Path | None:
     return cand if cand.is_file() else None
 
 
+def _extract_raw_3mf_parts_with_paint(
+    threemf_path: Path,
+    zone_map: dict[int, int] | None = None,
+) -> tuple[list[tuple[str, str, np.ndarray, list[tuple[int, int, int, str | None]]]], list[str]]:
+    """Extrae mallas crudas del `.3mf` conservando vértices, triángulos y `paint_color` por triángulo."""
+    raw_parts: list[tuple[str, str, np.ndarray, list[tuple[int, int, int, str | None]]]] = []
+    zmap = zone_map or {}
+    try:
+        palette = list(inspect_3mf_multicolor_info(threemf_path).get("detected_filament_colors", []))  # type: ignore[arg-type]
+    except Exception:
+        palette = []
+
+    with zipfile.ZipFile(threemf_path, "r") as zf:
+        names = zf.namelist()
+        objects_by_key: dict[tuple[str, str], ET.Element] = {}
+        root_model_path: str | None = None
+        root_tree: ET.Element | None = None
+
+        for mf in [n for n in names if n.lower().endswith(".model")]:
+            norm_mf = _norm_zip_path(mf)
+            el_root = ET.fromstring(zf.read(mf))
+            if norm_mf.lower() == "3d/3dmodel.model" or root_model_path is None:
+                root_model_path = norm_mf
+                root_tree = el_root
+            for res_el in el_root:
+                if _strip_ns(res_el.tag) != "resources":
+                    continue
+                for child in res_el:
+                    if _strip_ns(child.tag) == "object" and child.attrib.get("id"):
+                        objects_by_key[(norm_mf, child.attrib["id"])] = child
+
+        if root_tree is None or root_model_path is None:
+            return raw_parts, palette
+
+        def walk_raw(model_path: str, obj_id: str, cur_mat: np.ndarray) -> None:
+            obj_el = objects_by_key.get((model_path, obj_id))
+            if obj_el is None:
+                return
+            mesh_el: ET.Element | None = None
+            comps_el: ET.Element | None = None
+            for ch in obj_el:
+                tn = _strip_ns(ch.tag)
+                if tn == "mesh":
+                    mesh_el = ch
+                elif tn == "components":
+                    comps_el = ch
+
+            if mesh_el is not None:
+                verts_el: ET.Element | None = None
+                tris_el: ET.Element | None = None
+                for ch in mesh_el:
+                    tn = _strip_ns(ch.tag)
+                    if tn == "vertices":
+                        verts_el = ch
+                    elif tn == "triangles":
+                        tris_el = ch
+                if verts_el is not None and tris_el is not None:
+                    verts = np.array(
+                        [(float(v.attrib["x"]), float(v.attrib["y"]), float(v.attrib["z"])) for v in verts_el],
+                        dtype=np.float64,
+                    )
+                    if not np.allclose(cur_mat, np.eye(4)):
+                        verts = verts @ cur_mat[:3, :3].T + cur_mat[:3, 3]
+                    tri_rows: list[tuple[int, int, int, str | None]] = []
+                    for t in tris_el:
+                        pc = t.attrib.get("paint_color")
+                        if pc is None and "pid" in t.attrib and "p1" in t.attrib:
+                            try:
+                                ext = (int(t.attrib["p1"]) % 4) + 1
+                            except ValueError:
+                                ext = 1
+                            ext = zmap.get(ext, ext)
+                            pc = _PAINT_DIRECT_CODE.get(ext, "4")
+                        elif pc is not None and zmap:
+                            ext = decode_paint_color_extruder(pc)
+                            mapped_ext = zmap.get(ext, ext)
+                            if mapped_ext != ext:
+                                pc = _PAINT_DIRECT_CODE.get(mapped_ext, pc)
+                        tri_rows.append(
+                            (int(t.attrib["v1"]), int(t.attrib["v2"]), int(t.attrib["v3"]), pc)
+                        )
+                    if len(verts) > 0 and tri_rows:
+                        pname = obj_el.attrib.get("name") or f"Object_{len(raw_parts) + 1}"
+                        pid_str = f"mesh_{len(raw_parts)}"
+                        raw_parts.append((pid_str, pname, verts, tri_rows))
+
+            if comps_el is not None:
+                for comp in comps_el:
+                    c_id = comp.attrib.get("objectid")
+                    if not c_id:
+                        continue
+                    c_mat = _parse_3mf_transform(comp.attrib.get("transform"))
+                    p_attr = next(
+                        (v for k, v in comp.attrib.items() if k == "path" or k.endswith("}path")),
+                        None,
+                    )
+                    next_mp = _norm_zip_path(p_attr) if p_attr else model_path
+                    walk_raw(next_mp, c_id, cur_mat @ c_mat)
+
+        for child in root_tree:
+            if _strip_ns(child.tag) == "build":
+                for item in child:
+                    if _strip_ns(item.tag) == "item" and item.attrib.get("objectid"):
+                        walk_raw(
+                            root_model_path,
+                            item.attrib["objectid"],
+                            _parse_3mf_transform(item.attrib.get("transform")),
+                        )
+    return raw_parts, palette
+
+
 def _export_scene_objects_to_cache(
     mesh_id: str,
     parts_with_meshes: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]],
+    paint_colors_by_id: dict[str, list[str | None]] | None = None,
+    palette: list[str] | None = None,
 ) -> list[SceneObjectInfo]:
-    """Exporta cada objeto de un `.3mf` como `.stl` independiente centrado localmente."""
+    """Exporta cada objeto de un `.3mf` como `.stl` independiente centrado localmente y su mapa `paint_color`."""
     obj_dir = _scene_objects_dir(mesh_id)
     obj_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3036,6 +3270,15 @@ def _export_scene_objects_to_cache(
         stl_bytes = exported if isinstance(exported, (bytes, bytearray)) else str(exported).encode("utf-8")
         stl_path.write_bytes(bytes(stl_bytes))
 
+        if paint_colors_by_id and p_info.part_id in paint_colors_by_id:
+            pc_list = paint_colors_by_id[p_info.part_id]
+            if any(pc_list):
+                paint_path = obj_dir / f"{obj_id}.paint.json"
+                paint_path.write_text(
+                    json.dumps({"paint_colors": pc_list, "palette": palette or []}, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+
         ext = local_mesh.extents
         out.append(
             SceneObjectInfo(
@@ -3061,12 +3304,63 @@ def split_mesh_into_scene_objects(
     model_path: Path,
     mesh_id: str,
 ) -> list[SceneObjectInfo]:
-    """Divide una malla `.stl` o `.3mf` en componentes geométricos desconectados (`split`)."""
+    """Divide una malla `.stl` o `.3mf` en componentes geométricos conservando `paint_color` por triángulo."""
     is_3mf = model_path.suffix.lower() == ".3mf"
     if is_3mf:
+        raw_parts, palette = _extract_raw_3mf_parts_with_paint(model_path)
+        if len(raw_parts) > 1:
+            extracted = extract_3mf_parts_and_meshes(model_path)
+            paint_map: dict[str, list[str | None]] = {}
+            parts_meshes: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
+            for idx, (pid_str, pname, verts, tri_rows) in enumerate(raw_parts):
+                faces = np.array([(r[0], r[1], r[2]) for r in tri_rows], dtype=np.int64)
+                m = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+                p_info = extracted[idx][0] if idx < len(extracted) else MultimaterialPartInfo(
+                    part_id=pid_str,
+                    name=pname,
+                    extruder=1,
+                    triangle_count=len(tri_rows),
+                )
+                paint_map[p_info.part_id] = [r[3] for r in tri_rows]
+                parts_meshes.append((p_info, m))
+            return _export_scene_objects_to_cache(
+                mesh_id, parts_meshes, paint_colors_by_id=paint_map, palette=palette
+            )
+        if len(raw_parts) == 1:
+            _, base_name, verts, tri_rows = raw_parts[0]
+            faces = np.array([(r[0], r[1], r[2]) for r in tri_rows], dtype=np.int64)
+            raw = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+            comp_labels = trimesh.graph.connected_components(raw.face_adjacency, nodes=np.arange(len(faces)))
+            shells_idx: list[np.ndarray] = [np.asarray(c, dtype=np.int64) for c in comp_labels if len(c) >= 10]
+            if not shells_idx:
+                shells_idx = [np.arange(len(faces), dtype=np.int64)]
+            shells_idx.sort(key=lambda idxs: float(np.prod(raw.submesh([idxs], append=True).extents)), reverse=True)
+
+            paint_map_single: dict[str, list[str | None]] = {}
+            parts_list: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
+            for idx, f_idxs in enumerate(shells_idx[:32]):
+                sub_faces = faces[f_idxs]
+                used_v, inv = np.unique(sub_faces, return_inverse=True)
+                sub_verts = verts[used_v]
+                remapped_faces = inv.reshape((-1, 3))
+                sh = trimesh.Trimesh(vertices=sub_verts, faces=remapped_faces, process=False)
+                pid = f"split_{idx + 1}"
+                paint_map_single[pid] = [tri_rows[int(fi)][3] for fi in f_idxs]
+                parts_list.append(
+                    (
+                        MultimaterialPartInfo(
+                            part_id=pid,
+                            name=f"{base_name}_{idx + 1}" if len(shells_idx) > 1 else base_name,
+                            extruder=1,
+                            triangle_count=int(len(sh.faces)),
+                        ),
+                        sh,
+                    )
+                )
+            return _export_scene_objects_to_cache(
+                mesh_id, parts_list, paint_colors_by_id=paint_map_single, palette=palette
+            )
         extracted = extract_3mf_parts_and_meshes(model_path)
-        if len(extracted) > 1:
-            return _export_scene_objects_to_cache(mesh_id, extracted)
         raw = extracted[0][1]
     else:
         raw = load_raw_mesh(model_path)
@@ -3076,9 +3370,9 @@ def split_mesh_into_scene_objects(
         shells = [raw]
     shells.sort(key=lambda m: float(np.prod(m.extents)), reverse=True)
 
-    parts_list: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
+    parts_list_stl: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
     for idx, sh in enumerate(shells[:32]):
-        parts_list.append(
+        parts_list_stl.append(
             (
                 MultimaterialPartInfo(
                     part_id=f"split_{idx + 1}",
@@ -3089,7 +3383,75 @@ def split_mesh_into_scene_objects(
                 sh,
             )
         )
-    return _export_scene_objects_to_cache(mesh_id, parts_list)
+    return _export_scene_objects_to_cache(mesh_id, parts_list_stl)
+
+
+def _encode_custom_supports_attr(state: Any) -> str:
+    """Codifica el estado de TriangleSelector (1=Enforcer -> '4', 2=Blocker -> '8')."""
+    try:
+        val = int(state)
+    except (TypeError, ValueError):
+        return ""
+    if val == 1:
+        return "4"
+    if val == 2:
+        return "8"
+    return ""
+
+
+def _build_clustered_blocker_boxes(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    blocked_indices: list[int],
+    *,
+    cell_mm: float = 10.0,
+    pad_xy_mm: float = 1.6,
+    pad_z_down_mm: float = 2.5,
+    pad_z_up_mm: float = 1.2,
+    max_boxes: int = 8,
+) -> list[trimesh.Trimesh]:
+    """Agrupa triángulos bloqueados en cajas volumétricas 3D `support_blocker` ajustadas."""
+    if not blocked_indices:
+        return []
+    valid_idx = np.array([i for i in blocked_indices if 0 <= i < len(faces)], dtype=np.int64)
+    if len(valid_idx) == 0:
+        return []
+    tri_verts = verts[faces[valid_idx]]
+    centroids = tri_verts.mean(axis=1)
+    tri_mins = tri_verts.min(axis=1)
+    tri_maxs = tri_verts.max(axis=1)
+
+    step = float(cell_mm)
+    buckets: dict[tuple[int, int, int], list[np.ndarray]] = {}
+    for _ in range(6):
+        buckets.clear()
+        keys = np.floor(centroids / step).astype(np.int64)
+        for idx_k in range(len(valid_idx)):
+            key = (int(keys[idx_k, 0]), int(keys[idx_k, 1]), int(keys[idx_k, 2]))
+            b_entry = buckets.get(key)
+            if b_entry is None:
+                buckets[key] = [tri_mins[idx_k].copy(), tri_maxs[idx_k].copy()]
+            else:
+                b_entry[0] = np.minimum(b_entry[0], tri_mins[idx_k])
+                b_entry[1] = np.maximum(b_entry[1], tri_maxs[idx_k])
+        if len(buckets) <= max_boxes:
+            break
+        step *= 1.8
+
+    boxes: list[trimesh.Trimesh] = []
+    for bmin, bmax in list(buckets.values())[:max_boxes]:
+        lo = [
+            float(bmin[0] - pad_xy_mm),
+            float(bmin[1] - pad_xy_mm),
+            max(0.0, float(bmin[2] - pad_z_down_mm)),
+        ]
+        hi = [
+            float(bmax[0] + pad_xy_mm),
+            float(bmax[1] + pad_xy_mm),
+            max(lo[2] + 0.8, float(bmax[2] + pad_z_up_mm)),
+        ]
+        boxes.append(trimesh.creation.box(bounds=[lo, hi]))
+    return boxes
 
 
 def assemble_scene_objects_for_slicer(
@@ -3099,13 +3461,29 @@ def assemble_scene_objects_for_slicer(
     printer: PrinterConfig,
     part_extruder_map: dict[str, int] | None = None,
 ) -> Path:
-    """Reconstruye un `.3mf` multi-objeto con las transformaciones y filamentos individuales de cada pieza."""
+    """Reconstruye un `.3mf` multi-objeto con `paint_color`, `paint_supports` y volúmenes `support_blocker`."""
     bed_cx, bed_cy = _bed_center_xy(printer)
     override_map = part_extruder_map or {}
+    zone_map: dict[int, int] = {}
+    for key, val in override_map.items():
+        if key.startswith("zone_"):
+            try:
+                z_idx = int(key.split("_", 1)[1])
+                zone_map[z_idx + 1] = max(0, min(3, int(val))) + 1
+            except (ValueError, TypeError):
+                pass
+
     xml_objects: list[str] = []
     xml_items: list[str] = []
+    settings_chunks: list[str] = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        "<config>",
+    ]
+    has_any_paint = False
+    has_any_support_paint = False
+    next_oid = 1
 
-    for idx, obj in enumerate(scene_objects, start=1):
+    for obj in scene_objects:
         stl_path = get_scene_object_stl_path(mesh_id, obj.object_id)
         if stl_path is None:
             continue
@@ -3126,40 +3504,224 @@ def assemble_scene_objects_for_slicer(
             drop_to_bed=obj.drop_to_bed,
             copy=False,
         )
-        ext_num = max(1, min(4, int(override_map.get(obj.object_id, obj.extruder - 1) + 1 if obj.object_id in override_map else obj.extruder)))
+
+        explicit_part_ext = override_map.get(obj.object_id)
+        paint_path = stl_path.with_name(f"{obj.object_id}.paint.json")
+        paint_list: list[str | None] | None = None
+        if (explicit_part_ext is None or explicit_part_ext == 0) and paint_path.is_file():
+            try:
+                p_data = json.loads(paint_path.read_text(encoding="utf-8"))
+                raw_pcs = p_data.get("paint_colors")
+                if isinstance(raw_pcs, list) and len(raw_pcs) == len(transformed.faces):
+                    paint_list = raw_pcs
+            except Exception:
+                paint_list = None
+
         verts = transformed.vertices
         faces = transformed.faces
         v_lines = "\n".join(f'          <vertex x="{v[0]:.4f}" y="{v[1]:.4f}" z="{v[2]:.4f}" />' for v in verts)
-        t_lines = "\n".join(f'          <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}" />' for f in faces)
+
+        raw_sup_map = getattr(obj, "support_paint_map", None) or {}
+        sup_paint_map: dict[int, str] = {}
+        blocked_indices: list[int] = []
+        for k, v in raw_sup_map.items():
+            code = _encode_custom_supports_attr(v)
+            if code:
+                try:
+                    ki = int(k)
+                    sup_paint_map[ki] = code
+                    if code == "8":
+                        blocked_indices.append(ki)
+                except (TypeError, ValueError):
+                    pass
+        if sup_paint_map:
+            has_any_support_paint = True
+
+        part_oid = next_oid
+        next_oid += 1
+        part_ext_num: int | None = None
+
+        if paint_list is not None:
+            has_any_paint = True
+            t_rows: list[str] = []
+            for f_idx, f in enumerate(faces):
+                pc = paint_list[f_idx]
+                if pc and zone_map:
+                    ext = decode_paint_color_extruder(pc)
+                    mapped_ext = zone_map.get(ext, ext)
+                    if mapped_ext != ext:
+                        pc = _PAINT_DIRECT_CODE.get(mapped_ext, pc)
+                sup_code = sup_paint_map.get(f_idx, "")
+                extra_attrs = ""
+                if pc:
+                    extra_attrs += f' paint_color="{pc}"'
+                if sup_code:
+                    extra_attrs += f' paint_supports="{sup_code}" slic3rpe:custom_supports="{sup_code}"'
+                t_rows.append(f'          <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}"{extra_attrs} />')
+            t_lines = "\n".join(t_rows)
+            obj_open = f'    <object id="{part_oid}" type="model" name="{obj.name}">'
+        else:
+            part_ext_num = max(
+                1,
+                min(4, int(explicit_part_ext) if explicit_part_ext and explicit_part_ext > 0 else obj.extruder),
+            )
+            t_rows_single: list[str] = []
+            for f_idx, f in enumerate(faces):
+                sup_code = sup_paint_map.get(f_idx, "")
+                sup_attr = f' paint_supports="{sup_code}" slic3rpe:custom_supports="{sup_code}"' if sup_code else ""
+                t_rows_single.append(f'          <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}"{sup_attr} />')
+            t_lines = "\n".join(t_rows_single)
+            obj_open = f'    <object id="{part_oid}" type="model" name="{obj.name}" p:extruder="{part_ext_num}">'
+
         xml_objects.append(
-            f'    <object id="{idx}" type="model" name="{obj.name}" p:extruder="{ext_num}">\n'
+            f'{obj_open}\n'
             f'      <mesh>\n'
             f'        <vertices>\n{v_lines}\n        </vertices>\n'
             f'        <triangles>\n{t_lines}\n        </triangles>\n'
             f'      </mesh>\n'
             f'    </object>'
         )
-        xml_items.append(f'    <item objectid="{idx}" printable="1" />')
+
+        blocker_boxes = (
+            _build_clustered_blocker_boxes(verts, faces, blocked_indices)
+            if blocked_indices
+            else []
+        )
+        blocker_oids: list[int] = []
+        if blocker_boxes:
+            comp_lines = [
+                f'        <component objectid="{part_oid}" transform="1 0 0 0 1 0 0 0 1 0 0 0" />'
+            ]
+            for bm in blocker_boxes:
+                b_oid = next_oid
+                next_oid += 1
+                blocker_oids.append(b_oid)
+                b_vs = "\n".join(f'          <vertex x="{v[0]:.4f}" y="{v[1]:.4f}" z="{v[2]:.4f}" />' for v in bm.vertices)
+                b_ts = "\n".join(f'          <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}" />' for f in bm.faces)
+                xml_objects.append(
+                    f'    <object id="{b_oid}" type="model">\n'
+                    f'      <mesh>\n'
+                    f'        <vertices>\n{b_vs}\n        </vertices>\n'
+                    f'        <triangles>\n{b_ts}\n        </triangles>\n'
+                    f'      </mesh>\n'
+                    f'    </object>'
+                )
+                comp_lines.append(
+                    f'        <component objectid="{b_oid}" transform="1 0 0 0 1 0 0 0 1 0 0 0" />'
+                )
+            asm_oid = next_oid
+            next_oid += 1
+            xml_objects.append(
+                f'    <object id="{asm_oid}" type="model">\n'
+                f'      <components>\n'
+                + "\n".join(comp_lines)
+                + '\n      </components>\n    </object>'
+            )
+            xml_items.append(f'    <item objectid="{asm_oid}" printable="1" />')
+            config_oid = asm_oid
+        else:
+            xml_items.append(f'    <item objectid="{part_oid}" printable="1" />')
+            config_oid = part_oid
+
+        safe_name = (
+            str(obj.name or f"Pieza_{config_oid}")
+            .replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        ov = getattr(obj, "overrides", None)
+        paint_mode = getattr(obj, "support_paint_mode", "auto")
+        has_obj_paint = bool(sup_paint_map)
+        meta_lines: list[str] = [
+            f'    <metadata type="object" key="name" value="{safe_name}"/>'
+        ]
+        if paint_mode == "enforcers_only" and (ov is None or ov.enable_support != False):
+            meta_lines.append('    <metadata type="object" key="enable_support" value="1"/>')
+            if ov is None or ov.support_type == "inherit":
+                meta_lines.append('    <metadata type="object" key="support_type" value="tree(manual)"/>')
+        elif has_obj_paint and (ov is None or ov.enable_support == "inherit"):
+            meta_lines.append('    <metadata type="object" key="enable_support" value="1"/>')
+        if ov is not None:
+            if ov.enable_support is True:
+                meta_lines.append('    <metadata type="object" key="enable_support" value="1"/>')
+            elif ov.enable_support is False:
+                meta_lines.append('    <metadata type="object" key="enable_support" value="0"/>')
+            if ov.support_type != "inherit":
+                meta_lines.append(
+                    f'    <metadata type="object" key="support_type" value="{ov.support_type}"/>'
+                )
+            if ov.brim_type != "inherit":
+                if ov.brim_type == "raft":
+                    meta_lines.append('    <metadata type="object" key="brim_type" value="no_brim"/>')
+                    meta_lines.append(
+                        f'    <metadata type="object" key="raft_layers" value="{int(ov.raft_layers)}"/>'
+                    )
+                elif ov.brim_type == "no_brim":
+                    meta_lines.append('    <metadata type="object" key="brim_type" value="no_brim"/>')
+                    meta_lines.append('    <metadata type="object" key="raft_layers" value="0"/>')
+                else:
+                    meta_lines.append(
+                        f'    <metadata type="object" key="brim_type" value="{ov.brim_type}"/>'
+                    )
+                    meta_lines.append(
+                        f'    <metadata type="object" key="brim_width" value="{float(ov.brim_width):g}"/>'
+                    )
+                    meta_lines.append('    <metadata type="object" key="raft_layers" value="0"/>')
+
+        if blocker_oids:
+            meta_lines.append(f'    <part id="{part_oid}" subtype="normal_part">')
+            meta_lines.append(f'      <metadata key="name" value="{safe_name}"/>')
+            if part_ext_num is not None:
+                meta_lines.append(f'      <metadata key="extruder" value="{part_ext_num}"/>')
+            meta_lines.append("    </part>")
+            for k_b, b_oid in enumerate(blocker_oids, start=1):
+                meta_lines.append(f'    <part id="{b_oid}" subtype="support_blocker">')
+                meta_lines.append(f'      <metadata key="name" value="support_blocker_{k_b}"/>')
+                meta_lines.append("    </part>")
+
+        settings_chunks.append(f'  <object id="{config_oid}">')
+        settings_chunks.extend(meta_lines)
+        settings_chunks.append("  </object>")
 
     if not xml_objects:
         raise ValueError("No hay objetos activos válidos para ensamblar el .3mf.")
 
+    meta_chunks: list[str] = []
+    if has_any_paint or has_any_support_paint:
+        meta_chunks.append('  <metadata name="BambuStudio:3mfVersion">1</metadata>\n')
+    if has_any_paint:
+        meta_chunks.append('  <metadata name="BambuStudio:MmPaintingVersion">1</metadata>\n')
+    if has_any_support_paint:
+        meta_chunks.append('  <metadata name="BambuStudio:FdmSupportsPaintingVersion">1</metadata>\n')
+        meta_chunks.append('  <metadata name="slic3rpe:Version3mf">1</metadata>\n')
+        meta_chunks.append('  <metadata name="slic3rpe:FdmSupportsPaintingVersion">1</metadata>\n')
+    meta_block = "".join(meta_chunks)
+    slic3rpe_ns = ' xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"' if has_any_support_paint else ""
     model_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<model unit="millimeter" xml:lang="en-US" '
         'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
-        'xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">\n'
-        '  <resources>\n'
+        'xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" '
+        'xmlns:BambuStudio="http://schemas.bambulab.com/package/2021"'
+        + slic3rpe_ns
+        + '>\n'
+        + meta_block
+        + '  <resources>\n'
         + "\n".join(xml_objects)
         + "\n  </resources>\n  <build>\n"
         + "\n".join(xml_items)
         + "\n  </build>\n</model>\n"
     )
+    settings_chunks.append("</config>")
+    model_settings_xml = "\n".join(settings_chunks) + "\n"
+
     content_types = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
         '  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />\n'
         '  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml" />\n'
+        '  <Default Extension="config" ContentType="text/xml" />\n'
         '</Types>\n'
     )
     rels = (
@@ -3174,7 +3736,364 @@ def assemble_scene_objects_for_slicer(
         zf.writestr("[Content_Types].xml", content_types)
         zf.writestr("_rels/.rels", rels)
         zf.writestr("3D/3dmodel.model", model_xml)
+        zf.writestr("Metadata/model_settings.config", model_settings_xml)
     return out_3mf
+
+
+def export_instances_with_support_paint_3mf(
+    mesh_path: Path,
+    job_dir: Path,
+    printer: PrinterConfig,
+    instances: list[ModelInstanceTransform],
+) -> Path:
+    """Exporta un modelo STL/3MF de instancia única/múltiple a `.3mf` con `slic3rpe:custom_supports`."""
+    bed_cx, bed_cy = _bed_center_xy(printer)
+    raw_mesh = load_raw_mesh(mesh_path)
+    xml_objects: list[str] = []
+    xml_items: list[str] = []
+    settings_chunks: list[str] = ['<?xml version="1.0" encoding="UTF-8"?>', "<config>"]
+    has_any_support_paint = False
+    next_oid = 1
+
+    for idx_i, inst in enumerate(instances, start=1):
+        transformed = apply_transform_to_mesh(
+            raw_mesh,
+            scale_percent=inst.scale_percent,
+            rot_x=inst.rot_x,
+            rot_y=inst.rot_y,
+            rot_z=inst.rot_z,
+            scale_x=inst.scale_x,
+            scale_y=inst.scale_y,
+            scale_z=inst.scale_z,
+            offset_x=bed_cx + inst.offset_x,
+            offset_y=bed_cy + inst.offset_y,
+            offset_z=inst.offset_z,
+            drop_to_bed=inst.drop_to_bed,
+            copy=True,
+        )
+        raw_sup_map = getattr(inst, "support_paint_map", None) or {}
+        sup_paint_map: dict[int, str] = {}
+        blocked_indices: list[int] = []
+        for k, v in raw_sup_map.items():
+            code = _encode_custom_supports_attr(v)
+            if code:
+                try:
+                    ki = int(k)
+                    sup_paint_map[ki] = code
+                    if code == "8":
+                        blocked_indices.append(ki)
+                except (TypeError, ValueError):
+                    pass
+        if sup_paint_map:
+            has_any_support_paint = True
+
+        part_oid = next_oid
+        next_oid += 1
+
+        verts = transformed.vertices
+        faces = transformed.faces
+        v_lines = "\n".join(f'          <vertex x="{v[0]:.4f}" y="{v[1]:.4f}" z="{v[2]:.4f}" />' for v in verts)
+        t_rows = []
+        for f_idx, f in enumerate(faces):
+            sc = sup_paint_map.get(f_idx, "")
+            sa = f' paint_supports="{sc}" slic3rpe:custom_supports="{sc}"' if sc else ""
+            t_rows.append(f'          <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}"{sa} />')
+        t_lines = "\n".join(t_rows)
+        xml_objects.append(
+            f'    <object id="{part_oid}" type="model" name="Pieza_{idx_i}">\n'
+            f'      <mesh>\n        <vertices>\n{v_lines}\n        </vertices>\n'
+            f'        <triangles>\n{t_lines}\n        </triangles>\n      </mesh>\n    </object>'
+        )
+
+        blocker_boxes = (
+            _build_clustered_blocker_boxes(verts, faces, blocked_indices)
+            if blocked_indices
+            else []
+        )
+        blocker_oids: list[int] = []
+        if blocker_boxes:
+            comp_lines = [
+                f'        <component objectid="{part_oid}" transform="1 0 0 0 1 0 0 0 1 0 0 0" />'
+            ]
+            for bm in blocker_boxes:
+                b_oid = next_oid
+                next_oid += 1
+                blocker_oids.append(b_oid)
+                b_vs = "\n".join(f'          <vertex x="{v[0]:.4f}" y="{v[1]:.4f}" z="{v[2]:.4f}" />' for v in bm.vertices)
+                b_ts = "\n".join(f'          <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}" />' for f in bm.faces)
+                xml_objects.append(
+                    f'    <object id="{b_oid}" type="model">\n'
+                    f'      <mesh>\n        <vertices>\n{b_vs}\n        </vertices>\n'
+                    f'        <triangles>\n{b_ts}\n        </triangles>\n      </mesh>\n    </object>'
+                )
+                comp_lines.append(
+                    f'        <component objectid="{b_oid}" transform="1 0 0 0 1 0 0 0 1 0 0 0" />'
+                )
+            asm_oid = next_oid
+            next_oid += 1
+            xml_objects.append(
+                f'    <object id="{asm_oid}" type="model">\n'
+                f'      <components>\n'
+                + "\n".join(comp_lines)
+                + '\n      </components>\n    </object>'
+            )
+            xml_items.append(f'    <item objectid="{asm_oid}" printable="1" />')
+            config_oid = asm_oid
+        else:
+            xml_items.append(f'    <item objectid="{part_oid}" printable="1" />')
+            config_oid = part_oid
+
+        settings_chunks.append(f'  <object id="{config_oid}">')
+        settings_chunks.append(f'    <metadata type="object" key="name" value="Pieza_{idx_i}"/>')
+        if getattr(inst, "support_paint_mode", "auto") == "enforcers_only":
+            settings_chunks.append('    <metadata type="object" key="enable_support" value="1"/>')
+            settings_chunks.append('    <metadata type="object" key="support_type" value="tree(manual)"/>')
+        elif sup_paint_map:
+            settings_chunks.append('    <metadata type="object" key="enable_support" value="1"/>')
+        if blocker_oids:
+            settings_chunks.append(f'    <part id="{part_oid}" subtype="normal_part">')
+            settings_chunks.append(f'      <metadata key="name" value="Pieza_{idx_i}"/>')
+            settings_chunks.append("    </part>")
+            for k_b, b_oid in enumerate(blocker_oids, start=1):
+                settings_chunks.append(f'    <part id="{b_oid}" subtype="support_blocker">')
+                settings_chunks.append(f'      <metadata key="name" value="support_blocker_{k_b}"/>')
+                settings_chunks.append("    </part>")
+        settings_chunks.append("  </object>")
+
+    settings_chunks.append("</config>")
+    meta_block = (
+        '  <metadata name="BambuStudio:3mfVersion">1</metadata>\n'
+        '  <metadata name="BambuStudio:FdmSupportsPaintingVersion">1</metadata>\n'
+        '  <metadata name="slic3rpe:Version3mf">1</metadata>\n'
+        '  <metadata name="slic3rpe:FdmSupportsPaintingVersion">1</metadata>\n'
+        if has_any_support_paint
+        else ""
+    )
+    model_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<model unit="millimeter" xml:lang="en-US" '
+        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
+        'xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">\n'
+        + meta_block
+        + '  <resources>\n'
+        + "\n".join(xml_objects)
+        + "\n  </resources>\n  <build>\n"
+        + "\n".join(xml_items)
+        + "\n  </build>\n</model>\n"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
+        '  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />\n'
+        '  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml" />\n'
+        '  <Default Extension="config" ContentType="text/xml" />\n'
+        '</Types>\n'
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+        '  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2015/02/3dmodel" />\n'
+        '</Relationships>\n'
+    )
+    out_3mf = job_dir / "instances_support_paint.3mf"
+    with zipfile.ZipFile(out_3mf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("3D/3dmodel.model", model_xml)
+        zf.writestr("Metadata/model_settings.config", "\n".join(settings_chunks) + "\n")
+    return out_3mf
+
+
+def export_selection_to_file(
+    mesh_id: str,
+    out_dir: Path,
+    printer: PrinterConfig,
+    *,
+    fmt: str = "3mf",
+    apply_transforms: bool = True,
+    center_on_bed: bool = True,
+    scene_objects: list[SceneObjectTransform] | None = None,
+    instances: list[ModelInstanceTransform] | None = None,
+    part_extruder_map: dict[str, int] | None = None,
+    filename_base: str = "export",
+) -> Path:
+    """Exporta las piezas seleccionadas (o el plato completo) a .3mf, .stl o .obj."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_base = "".join(
+        ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
+        for ch in (filename_base or "export").strip()
+    ).strip("_.") or "export"
+    fmt_clean = fmt.lower().strip(".")
+    if fmt_clean not in ("stl", "3mf", "obj"):
+        fmt_clean = "3mf"
+
+    sc_list = list(scene_objects or [])
+    inst_list = list(instances or [])
+    if not apply_transforms:
+        sc_list = [
+            o.model_copy(
+                update={
+                    "rot_x": 0.0,
+                    "rot_y": 0.0,
+                    "rot_z": 0.0,
+                    "scale_percent": 100.0,
+                    "scale_x": None,
+                    "scale_y": None,
+                    "scale_z": None,
+                }
+            )
+            for o in sc_list
+        ]
+        inst_list = [
+            it.model_copy(
+                update={
+                    "rot_x": 0.0,
+                    "rot_y": 0.0,
+                    "rot_z": 0.0,
+                    "scale_percent": 100.0,
+                    "scale_x": None,
+                    "scale_y": None,
+                    "scale_z": None,
+                }
+            )
+            for it in inst_list
+        ]
+
+    if center_on_bed and sc_list:
+        cx_avg = sum(o.offset_x for o in sc_list) / len(sc_list)
+        cy_avg = sum(o.offset_y for o in sc_list) / len(sc_list)
+        sc_list = [
+            o.model_copy(
+                update={
+                    "offset_x": round(o.offset_x - cx_avg, 3),
+                    "offset_y": round(o.offset_y - cy_avg, 3),
+                    "offset_z": 0.0,
+                    "drop_to_bed": True,
+                }
+            )
+            for o in sc_list
+        ]
+    elif center_on_bed and inst_list:
+        cx_avg = sum(it.offset_x for it in inst_list) / len(inst_list)
+        cy_avg = sum(it.offset_y for it in inst_list) / len(inst_list)
+        inst_list = [
+            it.model_copy(
+                update={
+                    "offset_x": round(it.offset_x - cx_avg, 3),
+                    "offset_y": round(it.offset_y - cy_avg, 3),
+                    "offset_z": 0.0,
+                    "drop_to_bed": True,
+                }
+            )
+            for it in inst_list
+        ]
+
+    if fmt_clean == "3mf":
+        if sc_list:
+            assembled = assemble_scene_objects_for_slicer(
+                mesh_id, sc_list, out_dir, printer, part_extruder_map=part_extruder_map
+            )
+            target = out_dir / f"{safe_base}.3mf"
+            os.replace(assembled, target)
+            return target
+        cached_path = _find_cached_mesh_path(mesh_id)
+        if cached_path is None:
+            raise FileNotFoundError(f"No se encontró la malla en caché: {mesh_id}")
+        eff_insts = inst_list or [ModelInstanceTransform()]
+        if cached_path.suffix.lower() == ".3mf":
+            analysis = analyze_mesh_file(cached_path, printer)
+            if len(analysis.multimaterial_parts) > 1:
+                out_p, _ = transform_and_export_3mf_parts(
+                    cached_path,
+                    out_dir,
+                    printer,
+                    part_extruder_map=part_extruder_map,
+                    instances=eff_insts,
+                )
+            elif analysis.is_multicolor:
+                out_p = prepare_painted_3mf_for_slicer(
+                    cached_path,
+                    out_dir,
+                    printer,
+                    instances=eff_insts,
+                    part_extruder_map=part_extruder_map,
+                )
+            else:
+                out_p = export_instances_with_support_paint_3mf(
+                    cached_path, out_dir, printer, eff_insts
+                )
+        else:
+            out_p = export_instances_with_support_paint_3mf(
+                cached_path, out_dir, printer, eff_insts
+            )
+        target = out_dir / f"{safe_base}.3mf"
+        os.replace(out_p, target)
+        return target
+
+    # Formato .stl (binario) o .obj
+    meshes_to_join: list[trimesh.Trimesh] = []
+    bed_cx, bed_cy = _bed_center_xy(printer)
+    if sc_list:
+        for obj in sc_list:
+            stl_p = get_scene_object_stl_path(mesh_id, obj.object_id)
+            if stl_p is None:
+                continue
+            raw_m = load_raw_mesh(stl_p)
+            tx_m = apply_transform_to_mesh(
+                raw_m,
+                scale_percent=obj.scale_percent,
+                rot_x=obj.rot_x,
+                rot_y=obj.rot_y,
+                rot_z=obj.rot_z,
+                scale_x=obj.scale_x,
+                scale_y=obj.scale_y,
+                scale_z=obj.scale_z,
+                offset_x=0.0 if center_on_bed else bed_cx + obj.offset_x,
+                offset_y=0.0 if center_on_bed else bed_cy + obj.offset_y,
+                offset_z=obj.offset_z,
+                drop_to_bed=obj.drop_to_bed,
+                copy=False,
+            )
+            if center_on_bed and len(sc_list) > 1:
+                tx_m.apply_translation([obj.offset_x, obj.offset_y, 0.0])
+            meshes_to_join.append(tx_m)
+    else:
+        cached_path = _find_cached_mesh_path(mesh_id)
+        if cached_path is None:
+            raise FileNotFoundError(f"No se encontró la malla en caché: {mesh_id}")
+        eff_insts = inst_list or [ModelInstanceTransform()]
+        tx_m = load_and_transform_mesh(
+            cached_path,
+            printer=printer,
+            instances=eff_insts,
+        )
+        if center_on_bed:
+            b = tx_m.bounds
+            cx = float((b[0][0] + b[1][0]) * 0.5)
+            cy = float((b[0][1] + b[1][1]) * 0.5)
+            min_z = float(b[0][2])
+            tx_m.apply_translation([-cx, -cy, -min_z])
+        meshes_to_join.append(tx_m)
+
+    if not meshes_to_join:
+        raise ValueError("No hay geometría válida para exportar.")
+    combined = (
+        meshes_to_join[0]
+        if len(meshes_to_join) == 1
+        else trimesh.util.concatenate(meshes_to_join)
+    )
+    if center_on_bed and sc_list:
+        b = combined.bounds
+        cx = float((b[0][0] + b[1][0]) * 0.5)
+        cy = float((b[0][1] + b[1][1]) * 0.5)
+        min_z = float(b[0][2])
+        combined.apply_translation([-cx, -cy, -min_z])
+
+    target = out_dir / f"{safe_base}.{fmt_clean}"
+    exported = combined.export(file_type=fmt_clean)
+    data_bytes = exported if isinstance(exported, (bytes, bytearray)) else str(exported).encode("utf-8")
+    target.write_bytes(bytes(data_bytes))
+    return target
 
 
 def inject_support_blockers_into_3mf(
