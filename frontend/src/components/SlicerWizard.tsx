@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { GlobalProcessingOverlay, type ProcessingOverlayMode } from './GlobalProcessingOverlay';
 import { ProfileInspectorDrawer } from './ProfileInspectorDrawer';
-import { QuoteCalculatorModal } from './QuoteCalculatorModal';
+import {
+  PRINTER_WATTS,
+  QuoteCalculatorModal,
+  loadWorkshopPreset,
+  type WorkshopPreset,
+} from './QuoteCalculatorModal';
 import { useI18n } from '../i18n/I18nContext';
 import {
   AlertTriangle,
@@ -585,6 +590,8 @@ interface SlicerWizardProps {
   isSlicing: boolean;
   sliceResult: SliceResponse | null;
   slicedProfileSnapshot?: SlicedProfileSnapshot | null;
+  infillDensityOverride?: number | null;
+  onChangeInfillDensityOverride?: (val: number | null) => void;
   profileDrawerOpen?: boolean;
   onSetProfileDrawerOpen?: (open: boolean) => void;
   onApplyProfileAndReslice?: (overrides: Record<string, unknown>) => Promise<void> | void;
@@ -738,6 +745,8 @@ export function SlicerWizard({
   isSlicing,
   sliceResult,
   slicedProfileSnapshot,
+  infillDensityOverride = null,
+  onChangeInfillDensityOverride,
   profileDrawerOpen: controlledProfileOpen,
   onSetProfileDrawerOpen,
   onApplyProfileAndReslice,
@@ -800,9 +809,11 @@ export function SlicerWizard({
   >({});
   const [aiUserNotes, setAiUserNotes] = useState('');
   const [projectsModalOpen, setProjectsModalOpen] = useState(false);
+  const [projectsModalTab, setProjectsModalTab] = useState<'saved' | 'diagnostics'>('saved');
 
   useEffect(() => {
     if (externalProjectsOpen) {
+      setProjectsModalTab('saved');
       setProjectsModalOpen(true);
       onRefreshSavedProjects();
     }
@@ -920,16 +931,14 @@ export function SlicerWizard({
   const clampedInitialTemp = Math.min(sliderMax, Math.max(sliderMin, nozzleTempInitial));
   const clampedNormalTemp = Math.min(sliderMax, Math.max(sliderMin, nozzleTemp));
 
-  const estHours = sliceResult ? parseEstimatedHours(sliceResult.estimated_time) : 0;
-  const materialCost =
-    sliceResult && costs.spoolWeightGrams > 0
-      ? (sliceResult.filament_grams / costs.spoolWeightGrams) * costs.spoolCostPesos
-      : 0;
-  const energyCost = sliceResult ? estHours * costs.energyCostPerHour : 0;
-  const totalCost = materialCost + energyCost;
+  const [workshopPreset, setWorkshopPreset] = useState<WorkshopPreset>(() => loadWorkshopPreset());
 
-  const matMeta = MATERIAL_DEFAULTS[material];
-  const matKey = `${material}_master`;
+  useEffect(() => {
+    const onPresetUpdated = () => setWorkshopPreset(loadWorkshopPreset());
+    window.addEventListener('nikk:quote-preset-updated', onPresetUpdated);
+    return () => window.removeEventListener('nikk:quote-preset-updated', onPresetUpdated);
+  }, []);
+
   const selectedPrinter = printers.find((p) => p.printer_id === selectedPrinterId);
   const selectedProfileId: ProfileId =
     selectedPrinter?.profile_id ?? (selectedPrinterId as ProfileId);
@@ -938,6 +947,23 @@ export function SlicerWizard({
       (selectedPrinter?.extruder_slots ?? 1) > 1 ||
       selectedProfileId === 'creator5_pro',
   );
+
+  const estHours = sliceResult
+    ? sliceResult.estimated_time_seconds && sliceResult.estimated_time_seconds > 0
+      ? sliceResult.estimated_time_seconds / 3600
+      : parseEstimatedHours(sliceResult.estimated_time)
+    : 0;
+  const activePrinterWatts = PRINTER_WATTS[selectedProfileId]?.watts ?? 150;
+  const materialCost = sliceResult
+    ? (sliceResult.filament_grams / 1000) * workshopPreset.filamentPricePerKg
+    : 0;
+  const energyCost = sliceResult
+    ? (activePrinterWatts / 1000) * estHours * workshopPreset.energyRateKwh
+    : 0;
+  const totalCost = materialCost + energyCost;
+
+  const matMeta = MATERIAL_DEFAULTS[material];
+  const matKey = `${material}_master`;
 
   useEffect(() => {
     if (!sliceResult) {
@@ -3391,6 +3417,71 @@ export function SlicerWizard({
               className="h-3.5 w-3.5 accent-emerald-500 disabled:opacity-40"
             />
           </label>
+
+          {onChangeInfillDensityOverride && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="space-y-1.5 rounded-xl border border-slate-800 bg-slate-950/75 px-3 py-2 text-[11px]"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-slate-200">
+                  Relleno (Infill)
+                  <span className="ml-1 text-[10px] text-slate-400">
+                    ({infillDensityOverride !== null ? `${infillDensityOverride}%` : 'Auto perfil'})
+                  </span>
+                </span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={5}
+                    disabled={isSlicing}
+                    placeholder="Auto"
+                    value={infillDensityOverride ?? ''}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === '') {
+                        onChangeInfillDensityOverride(null);
+                        return;
+                      }
+                      const num = Math.max(0, Math.min(100, Math.round(Number(raw) || 0)));
+                      onChangeInfillDensityOverride(num);
+                    }}
+                    className="w-14 rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-right font-mono text-[11px] font-bold text-cyan-300 focus:border-cyan-500 focus:outline-none disabled:opacity-40"
+                  />
+                  <span className="font-mono text-[10px] text-slate-400">%</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-6 gap-1">
+                {[
+                  { label: 'Auto', val: null },
+                  { label: '12%', val: 12 },
+                  { label: '15%', val: 15 },
+                  { label: '25%', val: 25 },
+                  { label: '50%', val: 50 },
+                  { label: '100%', val: 100 },
+                ].map((opt) => {
+                  const active = infillDensityOverride === opt.val;
+                  return (
+                    <button
+                      key={opt.label}
+                      type="button"
+                      disabled={isSlicing}
+                      onClick={() => onChangeInfillDensityOverride(opt.val)}
+                      className={`rounded border py-0.5 font-mono text-[10px] font-semibold transition disabled:opacity-40 ${
+                        active
+                          ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
+                          : 'border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <button
@@ -3450,6 +3541,7 @@ export function SlicerWizard({
                 onRefreshSavedProjects();
                 setDefectTargetProj(null);
                 setDefectResult(null);
+                setProjectsModalTab('diagnostics');
                 setProjectsModalOpen(true);
               }}
               className="rounded-xl border border-slate-700 bg-slate-800/90 px-2.5 py-2 text-[11px] font-semibold text-slate-200 hover:border-cyan-500/50 hover:text-cyan-200"
@@ -3957,15 +4049,15 @@ export function SlicerWizard({
               </div>
             )}
 
-            {/* Desglose de costos en tiempo real */}
+            {/* Desglose de costos en tiempo real (sincronizado con Calculadora Comercial) */}
             <div className="rounded-lg border border-emerald-500/25 bg-slate-950/80 px-2.5 py-1.5 text-[11px]">
               <div className="flex items-center justify-between text-slate-400">
                 <span>Filamento: {formatPesos(materialCost)}</span>
-                <span>Energía: {formatPesos(energyCost)}</span>
+                <span>Energía ({activePrinterWatts}W): {formatPesos(energyCost)}</span>
               </div>
               <div className="mt-1 flex items-center justify-between border-t border-slate-800 pt-1">
                 <span className="font-semibold text-slate-200">
-                  Costo Total Estimado
+                  Solo Filamento y Energía
                 </span>
                 <span className="font-mono text-xs font-bold text-emerald-300">
                   {formatPesos(totalCost)}
@@ -4271,10 +4363,14 @@ export function SlicerWizard({
             <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
               <div>
                 <h3 className="text-sm font-bold text-white">
-                  Proyectos Guardados y Diagnóstico Post-Impresión
+                  {projectsModalTab === 'saved'
+                    ? 'Proyectos Guardados'
+                    : 'Diagnóstico Post-Impresión'}
                 </h3>
                 <p className="text-[11px] text-slate-400">
-                  Recarga parámetros exactos de laminados previos o corrige defectos físicos con DeepSeek IA.
+                  {projectsModalTab === 'saved'
+                    ? 'Abre un proyecto completo guardado con su modelo 3D, perfiles y parámetros.'
+                    : 'Recarga parámetros de laminados previos o corrige defectos físicos con DeepSeek IA.'}
                 </p>
               </div>
               <button
@@ -4289,13 +4385,38 @@ export function SlicerWizard({
               </button>
             </div>
 
+            <div className="flex gap-1.5 border-b border-slate-800/80 bg-slate-950/50 px-4 py-2">
+              <button
+                type="button"
+                onClick={() => setProjectsModalTab('saved')}
+                className={`rounded-lg border px-3 py-1 text-[11px] font-semibold transition ${
+                  projectsModalTab === 'saved'
+                    ? 'border-cyan-500/60 bg-cyan-500/15 text-cyan-200'
+                    : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Proyectos Guardados ({recentProjects.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setProjectsModalTab('diagnostics')}
+                className={`rounded-lg border px-3 py-1 text-[11px] font-semibold transition ${
+                  projectsModalTab === 'diagnostics'
+                    ? 'border-amber-500/60 bg-amber-500/15 text-amber-200'
+                    : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Diagnóstico Post-Impresión ({savedProjects.length})
+              </button>
+            </div>
+
             <div className="flex-1 space-y-3 overflow-y-auto p-4">
-              {/* 5 Proyectos Recientes con miniatura 3D y título corto en español */}
-              {recentProjects.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-cyan-300">
-                    Proyectos Recientes ({recentProjects.length})
+              {projectsModalTab === 'saved' ? (
+                recentProjects.length === 0 ? (
+                  <p className="py-8 text-center text-xs text-slate-400">
+                    Aún no tienes proyectos completos guardados. Al laminar o guardar un proyecto aparecerá aquí.
                   </p>
+                ) : (
                   <div className="space-y-2">
                     {recentProjects.map((rp) => (
                       <div
@@ -4371,17 +4492,15 @@ export function SlicerWizard({
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
-
-              {isLoadingProjects ? (
+                )
+              ) : isLoadingProjects ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-xs text-slate-400">
                   <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />
                   Cargando proyectos...
                 </div>
               ) : savedProjects.length === 0 ? (
                 <p className="py-8 text-center text-xs text-slate-400">
-                  Aún no hay proyectos laminados guardados en esta sesión.
+                  Aún no hay registros de laminado para diagnóstico en esta sesión.
                 </p>
               ) : (
                 savedProjects.map((proj) => (

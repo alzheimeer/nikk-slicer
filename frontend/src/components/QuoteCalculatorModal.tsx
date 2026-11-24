@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Calculator,
   Check,
@@ -29,17 +29,34 @@ export interface QuoteCalculatorModalProps {
   initialData?: QuoteInitialData | null;
 }
 
-interface WorkshopPreset {
+export interface VolumeDiscountTier {
+  id: string;
+  minQty: number;
+  maxQty: number | null;
+  label: string;
+  pct: number;
+}
+
+export const DEFAULT_DISCOUNT_TIERS: VolumeDiscountTier[] = [
+  { id: 't1', minQty: 1, maxQty: 9, label: '1–9', pct: 0 },
+  { id: 't2', minQty: 10, maxQty: 24, label: '10–24', pct: 10 },
+  { id: 't3', minQty: 25, maxQty: 49, label: '25–49', pct: 15 },
+  { id: 't4', minQty: 50, maxQty: 99, label: '50–99', pct: 20 },
+  { id: 't5', minQty: 100, maxQty: null, label: '100+', pct: 25 },
+];
+
+export interface WorkshopPreset {
   filamentPricePerKg: number;
   energyRateKwh: number;
   machineLifeHours: number;
   sparePartsFundCop: number;
   laborHourlyRate: number;
+  volumeDiscountTiers?: VolumeDiscountTier[];
 }
 
-const PRESET_STORAGE_KEY = 'nikk_slicer_quote_preset_v1';
+export const PRESET_STORAGE_KEY = 'nikk_slicer_quote_preset_v1';
 
-const DEFAULT_PRESET: WorkshopPreset = {
+export const DEFAULT_PRESET: WorkshopPreset = {
   filamentPricePerKg: 100000,
   energyRateKwh: 900,
   machineLifeHours: 4320,
@@ -47,7 +64,7 @@ const DEFAULT_PRESET: WorkshopPreset = {
   laborHourlyRate: 15000,
 };
 
-const PRINTER_WATTS: Record<ProfileId, { label: string; watts: number }> = {
+export const PRINTER_WATTS: Record<ProfileId, { label: string; watts: number }> = {
   flsun_t1_pro: { label: 'FLSUN T1 Pro (180W)', watts: 180 },
   flsun_v400: { label: 'FLSUN V400 (160W)', watts: 160 },
   creator5_pro: { label: 'FlashForge Creator 5 Pro (150W)', watts: 150 },
@@ -64,21 +81,41 @@ const MULTIPLIERS: Array<{ value: number; label: string; hint: string }> = [
   { value: 5, label: '×5', hint: 'Llaveros' },
 ];
 
-function loadWorkshopPreset(): WorkshopPreset {
+export function loadWorkshopPreset(): WorkshopPreset {
   try {
     const raw = localStorage.getItem(PRESET_STORAGE_KEY);
-    if (!raw) return DEFAULT_PRESET;
+    if (!raw) return { ...DEFAULT_PRESET, volumeDiscountTiers: DEFAULT_DISCOUNT_TIERS };
     const parsed = JSON.parse(raw) as Partial<WorkshopPreset>;
+    const tiers =
+      Array.isArray(parsed.volumeDiscountTiers) && parsed.volumeDiscountTiers.length === DEFAULT_DISCOUNT_TIERS.length
+        ? DEFAULT_DISCOUNT_TIERS.map((def, idx) => {
+          const saved = parsed.volumeDiscountTiers?.[idx];
+          const pct = Number(saved?.pct);
+          return {
+            ...def,
+            pct: Number.isFinite(pct) ? Math.min(50, Math.max(0, pct)) : def.pct,
+          };
+        })
+        : DEFAULT_DISCOUNT_TIERS;
     return {
       filamentPricePerKg: Number(parsed.filamentPricePerKg) || DEFAULT_PRESET.filamentPricePerKg,
       energyRateKwh: Number(parsed.energyRateKwh) || DEFAULT_PRESET.energyRateKwh,
       machineLifeHours: Number(parsed.machineLifeHours) || DEFAULT_PRESET.machineLifeHours,
       sparePartsFundCop: Number(parsed.sparePartsFundCop) || DEFAULT_PRESET.sparePartsFundCop,
       laborHourlyRate: Number(parsed.laborHourlyRate) || DEFAULT_PRESET.laborHourlyRate,
+      volumeDiscountTiers: tiers,
     };
   } catch {
-    return DEFAULT_PRESET;
+    return { ...DEFAULT_PRESET, volumeDiscountTiers: DEFAULT_DISCOUNT_TIERS };
   }
+}
+
+function getDiscountTierForQty(tiers: VolumeDiscountTier[], qty: number): VolumeDiscountTier {
+  const q = Math.max(1, Math.round(qty));
+  return (
+    tiers.find((t) => q >= t.minQty && (t.maxQty === null || q <= t.maxQty)) ??
+    tiers[0]
+  );
 }
 
 function formatCop(amount: number): string {
@@ -122,15 +159,35 @@ export function QuoteCalculatorModal({
   const [platformEnabled, setPlatformEnabled] = useState(false);
   const [platformPct, setPlatformPct] = useState(17.5);
 
-  // Multiplicador y cantidad
+  // Multiplicador, cantidad y descuento por volumen sobre ganancia neta (0-50%)
   const [multiplier, setMultiplier] = useState(3);
   const [quantity, setQuantity] = useState(1);
+  const [discountTiers, setDiscountTiers] = useState<VolumeDiscountTier[]>(
+    () => preset.volumeDiscountTiers ?? DEFAULT_DISCOUNT_TIERS,
+  );
+  const [profitDiscountPct, setProfitDiscountPct] = useState(0);
+
+  const activeTier = useMemo(
+    () => getDiscountTierForQty(discountTiers, quantity),
+    [discountTiers, quantity],
+  );
+
+  useEffect(() => {
+    setProfitDiscountPct(activeTier.pct);
+  }, [activeTier]);
 
   const [copiedMsg, setCopiedMsg] = useState(false);
   const [savedPresetMsg, setSavedPresetMsg] = useState(false);
 
+  const wasOpenRef = useRef(false);
+
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
     const saved = loadWorkshopPreset();
     setPreset(saved);
     setEnergyRateKwh(initialData?.energyRateKwh ?? saved.energyRateKwh);
@@ -138,6 +195,7 @@ export function QuoteCalculatorModal({
     setMachineLifeHours(saved.machineLifeHours);
     setSparePartsFundCop(saved.sparePartsFundCop);
     setLaborHourlyRate(saved.laborHourlyRate);
+    setDiscountTiers(saved.volumeDiscountTiers ?? DEFAULT_DISCOUNT_TIERS);
 
     if (initialData) {
       if (initialData.modelName) {
@@ -177,10 +235,17 @@ export function QuoteCalculatorModal({
       subBaseUnit + errorCostUnit + extraCostUnit + paintCostUnit;
 
     const qty = Math.max(1, Math.round(quantity));
-    const clientPriceUnit = realBreakEvenUnit * Math.max(1, multiplier);
+    const baseClientPriceUnit = realBreakEvenUnit * Math.max(1, multiplier);
+    const grossProfitUnit = Math.max(0, baseClientPriceUnit - realBreakEvenUnit);
+    const discountRatio = Math.min(50, Math.max(0, profitDiscountPct)) / 100;
+    const discountPerUnit = grossProfitUnit * discountRatio;
+    const netProfitUnit = grossProfitUnit - discountPerUnit;
+    const clientPriceUnit = realBreakEvenUnit + netProfitUnit;
     const clientPriceTotal = clientPriceUnit * qty;
     const breakEvenTotal = realBreakEvenUnit * qty;
-    const netProfitTotal = clientPriceTotal - breakEvenTotal;
+    const grossProfitTotal = grossProfitUnit * qty;
+    const discountTotal = discountPerUnit * qty;
+    const netProfitTotal = netProfitUnit * qty;
 
     const comm = Math.min(45, Math.max(0, platformPct)) / 100;
     const platformPriceTotal =
@@ -198,10 +263,14 @@ export function QuoteCalculatorModal({
       paintCostUnit,
       realBreakEvenUnit,
       breakEvenTotal,
+      clientPriceUnit,
       clientPriceTotal,
+      grossProfitTotal,
+      discountTotal,
       netProfitTotal,
       platformPriceTotal,
       qty,
+      discountPct: Math.min(50, Math.max(0, profitDiscountPct)),
     };
   }, [
     hours,
@@ -223,6 +292,7 @@ export function QuoteCalculatorModal({
     paintGlobalCost,
     multiplier,
     quantity,
+    profitDiscountPct,
     platformEnabled,
     platformPct,
   ]);
@@ -236,9 +306,11 @@ export function QuoteCalculatorModal({
       machineLifeHours,
       sparePartsFundCop,
       laborHourlyRate,
+      volumeDiscountTiers: discountTiers,
     };
     localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(next));
     setPreset(next);
+    window.dispatchEvent(new CustomEvent('nikk:quote-preset-updated'));
     setSavedPresetMsg(true);
     window.setTimeout(() => setSavedPresetMsg(false), 2200);
   };
@@ -250,12 +322,15 @@ export function QuoteCalculatorModal({
     const finishText = finishes.length > 0 ? finishes.join(' + ') : 'Acabado limpio de impresión 3D';
     const estHoursText = `${hours}h ${minutes}m`;
     const totalToShare = platformEnabled ? calc.platformPriceTotal : calc.clientPriceTotal;
+    const unitToShare = totalToShare / calc.qty;
 
     const msg = [
       `Hola, te comparto tu cotización de impresión 3D:`,
       `*Pieza:* ${pieceName || 'Modelo 3D'}`,
       `*Material:* ${material.toUpperCase()} (${grams} g)`,
       `*Cantidad:* ${calc.qty} unidad(es)`,
+      ...(calc.qty > 1 ? [`*Valor Unitario:* ${formatCop(unitToShare)}`] : []),
+      ...(calc.discountPct > 0 ? [`*Descuento por volumen aplicado:* ${calc.discountPct}% sobre margen`] : []),
       `*Acabados:* ${finishText}`,
       `*Tiempo estimado de fabricación:* ${estHoursText}`,
       `*Valor Total:* ${formatCop(totalToShare)}`,
@@ -613,22 +688,20 @@ export function QuoteCalculatorModal({
                     <button
                       type="button"
                       onClick={() => setPlatformPct(17.5)}
-                      className={`rounded border px-2 py-1 font-semibold ${
-                        platformPct === 17.5
-                          ? 'border-emerald-500 bg-emerald-500/20 text-emerald-200'
-                          : 'border-slate-700 bg-slate-950 text-slate-300'
-                      }`}
+                      className={`rounded border px-2 py-1 font-semibold ${platformPct === 17.5
+                        ? 'border-emerald-500 bg-emerald-500/20 text-emerald-200'
+                        : 'border-slate-700 bg-slate-950 text-slate-300'
+                        }`}
                     >
                       MercadoLibre (17.5%)
                     </button>
                     <button
                       type="button"
                       onClick={() => setPlatformPct(3.5)}
-                      className={`rounded border px-2 py-1 font-semibold ${
-                        platformPct === 3.5
-                          ? 'border-emerald-500 bg-emerald-500/20 text-emerald-200'
-                          : 'border-slate-700 bg-slate-950 text-slate-300'
-                      }`}
+                      className={`rounded border px-2 py-1 font-semibold ${platformPct === 3.5
+                        ? 'border-emerald-500 bg-emerald-500/20 text-emerald-200'
+                        : 'border-slate-700 bg-slate-950 text-slate-300'
+                        }`}
                     >
                       Datafono / Link (3.5%)
                     </button>
@@ -674,11 +747,10 @@ export function QuoteCalculatorModal({
                     key={m.value}
                     type="button"
                     onClick={() => setMultiplier(m.value)}
-                    className={`flex flex-col items-center rounded-lg border py-1.5 text-center transition ${
-                      multiplier === m.value
-                        ? 'border-cyan-500 bg-cyan-500/20 text-cyan-100'
-                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:border-slate-700'
-                    }`}
+                    className={`flex flex-col items-center rounded-lg border py-1.5 text-center transition ${multiplier === m.value
+                      ? 'border-cyan-500 bg-cyan-500/20 text-cyan-100'
+                      : 'border-slate-800 bg-slate-900 text-slate-300 hover:border-slate-700'
+                      }`}
                   >
                     <span className="font-mono text-xs font-bold">{m.label}</span>
                     <span className="text-[9px] text-slate-400">{m.hint}</span>
@@ -696,6 +768,82 @@ export function QuoteCalculatorModal({
                   onChange={(e) => setMultiplier(Math.max(1, Number(e.target.value) || 1))}
                   className="w-20 rounded border border-slate-700 bg-slate-950 px-2 py-0.5 text-right font-mono text-xs font-bold text-cyan-300"
                 />
+              </div>
+
+              {/* Descuento por cantidad de unidades (solo reduce la ganancia neta, 0-50%) */}
+              <div className="space-y-1.5 rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <span className="font-medium text-slate-200">
+                      Descuento por volumen (solo sobre ganancia)
+                    </span>
+                    <p className="text-[10px] text-slate-400">
+                      Tramo activo para {calc.qty} ud(s): <span className="font-semibold text-amber-300">{activeTier.label}</span> · editable 0%–50%
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={0}
+                      max={50}
+                      step={1}
+                      value={profitDiscountPct}
+                      onChange={(e) =>
+                        setProfitDiscountPct(Math.min(50, Math.max(0, Number(e.target.value) || 0)))
+                      }
+                      className="w-16 rounded border border-slate-700 bg-slate-950 px-2 py-0.5 text-right font-mono text-xs font-bold text-amber-300"
+                    />
+                    <span className="font-mono text-xs text-slate-400">%</span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-5 gap-1">
+                  {discountTiers.map((tier) => {
+                    const isInRange = tier.id === activeTier.id;
+                    return (
+                      <div
+                        key={tier.id}
+                        className={`flex flex-col items-center gap-1 rounded-md border px-1 py-1 text-center transition ${isInRange
+                          ? 'border-amber-500/70 bg-amber-500/15 text-amber-200'
+                          : 'border-slate-800/80 bg-slate-950/60 text-slate-500 opacity-60'
+                          }`}
+                        title={
+                          isInRange
+                            ? `Tramo activo para ${calc.qty} unidad(es)`
+                            : `Se activa automáticamente con ${tier.label} unidades`
+                        }
+                      >
+                        <button
+                          type="button"
+                          disabled={!isInRange}
+                          onClick={() => setProfitDiscountPct(tier.pct)}
+                          className="w-full text-[9px] font-semibold disabled:cursor-not-allowed"
+                        >
+                          {tier.label} uds
+                        </button>
+                        <div className="flex items-center justify-center gap-0.5">
+                          <input
+                            type="number"
+                            min={0}
+                            max={50}
+                            step={1}
+                            value={tier.pct}
+                            onChange={(e) => {
+                              const nextPct = Math.min(50, Math.max(0, Number(e.target.value) || 0));
+                              setDiscountTiers((prev) =>
+                                prev.map((x) => (x.id === tier.id ? { ...x, pct: nextPct } : x)),
+                              );
+                            }}
+                            className={`w-10 rounded border px-1 py-0.5 text-center font-mono text-[10px] font-bold focus:outline-none ${isInRange
+                              ? 'border-amber-500/60 bg-slate-950 text-amber-200'
+                              : 'border-slate-800 bg-slate-900 text-slate-400'
+                              }`}
+                          />
+                          <span className="text-[9px]">%</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Desglose en tiempo real */}
@@ -744,6 +892,18 @@ export function QuoteCalculatorModal({
                     {formatCop(calc.clientPriceTotal)}
                   </span>
                 </div>
+                {calc.qty > 1 && (
+                  <div className="flex items-center justify-between text-[11px] text-cyan-200">
+                    <span>Precio unitario ({calc.qty} uds):</span>
+                    <span className="font-mono font-semibold">{formatCop(calc.clientPriceUnit)}</span>
+                  </div>
+                )}
+                {calc.discountPct > 0 && (
+                  <div className="flex items-center justify-between text-[11px] text-amber-300">
+                    <span>Descuento aplicado ({calc.discountPct}% s/ ganancia):</span>
+                    <span className="font-mono font-semibold">-{formatCop(calc.discountTotal)}</span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-300">Ganancia Neta Estimada:</span>
                   <span className="font-mono font-bold text-emerald-300">

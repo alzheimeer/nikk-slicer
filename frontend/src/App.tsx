@@ -657,8 +657,23 @@ export function App() {
         if (typeof p.lithophaneMode === 'boolean') {
           setLithophaneMode(p.lithophaneMode);
         }
-        if (typeof p.spoolMinTemp === 'number') setSpoolMinTemp(p.spoolMinTemp);
-        if (typeof p.spoolMaxTemp === 'number') setSpoolMaxTemp(p.spoolMaxTemp);
+        const effMatForSpool: MaterialType =
+          p.material && ['pla', 'petg', 'abs', 'tpu'].includes(p.material)
+            ? p.material
+            : initMat;
+        const matBounds = MATERIAL_DEFAULTS[effMatForSpool];
+        const validSavedSpool =
+          typeof p.spoolMinTemp === 'number' &&
+          typeof p.spoolMaxTemp === 'number' &&
+          p.spoolMaxTemp >= matBounds.nozzleMin &&
+          p.spoolMinTemp <= matBounds.nozzleMax;
+        if (validSavedSpool) {
+          setSpoolMinTemp(p.spoolMinTemp as number);
+          setSpoolMaxTemp(p.spoolMaxTemp as number);
+        } else {
+          setSpoolMinTemp(matBounds.recMin);
+          setSpoolMaxTemp(matBounds.recMax);
+        }
         if (p.qualityPreset) setQualityPreset(p.qualityPreset);
         if (typeof p.autoLeveling === 'boolean') setAutoLeveling(p.autoLeveling);
         if (Array.isArray(p.extrudersConfig) && p.extrudersConfig.length === 4) {
@@ -827,6 +842,12 @@ export function App() {
 
     if (primarySlot && !lithophaneMode && effBodyMat !== material) {
       handleChangeMaterial(effBodyMat);
+    } else if (primarySlot && !lithophaneMode) {
+      const matMeta = MATERIAL_DEFAULTS[effBodyMat];
+      if (spoolMaxTemp < matMeta.nozzleMin || spoolMinTemp > matMeta.nozzleMax) {
+        setSpoolMinTemp(matMeta.recMin);
+        setSpoolMaxTemp(matMeta.recMax);
+      }
     }
 
     const supportSlot = extrudersConfig[supportExtruder];
@@ -859,11 +880,24 @@ export function App() {
 
   // Recalcular automáticamente las 3 temperaturas óptimas según perfil, material, rango y HS
   useEffect(() => {
+    const matMeta = MATERIAL_DEFAULTS[material];
+    const effMin =
+      spoolMaxTemp < matMeta.nozzleMin || spoolMinTemp > matMeta.nozzleMax
+        ? matMeta.recMin
+        : spoolMinTemp;
+    const effMax =
+      spoolMaxTemp < matMeta.nozzleMin || spoolMinTemp > matMeta.nozzleMax
+        ? matMeta.recMax
+        : spoolMaxTemp;
+    if (effMin !== spoolMinTemp || effMax !== spoolMaxTemp) {
+      setSpoolMinTemp(effMin);
+      setSpoolMaxTemp(effMax);
+    }
     const auto = computeAutoTemperatures(
       activeProfileId,
       material,
-      spoolMinTemp,
-      spoolMaxTemp,
+      effMin,
+      effMax,
       highSpeedFilament,
       nozzleDiameter,
     );
@@ -2927,7 +2961,10 @@ export function App() {
     spoolMaxTemp,
   ]);
 
-  const handleSlice = async (profileOverrides?: Record<string, unknown>) => {
+  const handleSlice = async (
+    profileOverrides?: Record<string, unknown>,
+    directOverrides?: Parameters<typeof runRealSlice>[0],
+  ) => {
     if (!stlFile && !meshId) return;
     sliceAbortRef.current?.abort();
     const ctrl = new AbortController();
@@ -2937,11 +2974,11 @@ export function App() {
     setSendPrintMsg(null);
 
     try {
-      const { res, rawGcode } = await runRealSlice(
+      const mergedOverrides =
         profileOverrides && Object.keys(profileOverrides).length > 0
-          ? { profileOverrides }
-          : undefined,
-      );
+          ? { ...(directOverrides ?? {}), profileOverrides }
+          : directOverrides;
+      const { res, rawGcode } = await runRealSlice(mergedOverrides);
       setSliceResult(res);
       if (res.sliced_profile_snapshot) {
         setSlicedProfileSnapshot(res.sliced_profile_snapshot);
@@ -3014,6 +3051,149 @@ export function App() {
 
   const handleSelectStlRef = useRef(handleSelectStl);
   handleSelectStlRef.current = handleSelectStl;
+
+  const handleSliceRef = useRef(handleSlice);
+  handleSliceRef.current = handleSlice;
+
+  // Sincronización en vivo del estado abierto hacia MCP (/api/live/state)
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void fetch('/api/live/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model_filename: stlFile?.name ?? null,
+          mesh_id: meshId,
+          job_id: sliceResult?.job_id ?? null,
+          printer_id: selectedPrinterId,
+          material,
+          quality_preset: qualityPreset,
+          layer_height_override: layerHeightOverride,
+          infill_density_override: infillDensityOverride,
+          outer_wall_speed_override: outerWallSpeedOverride,
+          flow_ratio_override: flowRatioOverride,
+          nozzle_temp: nozzleTemp,
+          bed_temp: bedTemp,
+          supports,
+          adhesion_type: adhesionType,
+          brim_width_mm: brimWidthMm,
+          part_extruder_map: partExtruderMap,
+          slice_metrics: sliceResult
+            ? {
+                estimated_time: sliceResult.estimated_time,
+                filament_grams: sliceResult.filament_grams,
+                filament_meters: sliceResult.filament_meters,
+              }
+            : null,
+          sliced_profile_snapshot: sliceResult?.sliced_profile_snapshot ?? slicedProfileSnapshot,
+          updated_at: new Date().toISOString(),
+        }),
+      }).catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [
+    stlFile?.name,
+    meshId,
+    sliceResult,
+    slicedProfileSnapshot,
+    selectedPrinterId,
+    material,
+    qualityPreset,
+    layerHeightOverride,
+    infillDensityOverride,
+    outerWallSpeedOverride,
+    flowRatioOverride,
+    nozzleTemp,
+    bedTemp,
+    supports,
+    adhesionType,
+    brimWidthMm,
+    partExtruderMap,
+  ]);
+
+  // Polling de comandos en vivo desde MCP (/api/live/commands/poll)
+  useEffect(() => {
+    const id = window.setInterval(async () => {
+      try {
+        const resp = await fetch('/api/live/commands/poll');
+        if (!resp.ok) return;
+        const data = (await resp.json()) as {
+          commands?: Array<{
+            id: string;
+            action: string;
+            params?: Record<string, unknown>;
+            reslice?: boolean;
+          }>;
+        };
+        const cmds = data.commands ?? [];
+        if (cmds.length === 0) return;
+
+        for (const cmd of cmds) {
+          if (cmd.action !== 'update_profile_and_reslice') continue;
+          const p = cmd.params ?? {};
+          const direct: Parameters<typeof runRealSlice>[0] = {};
+
+          if (typeof p.layer_height_mm === 'number') {
+            setLayerHeightOverride(p.layer_height_mm);
+            direct.layerHeightOverride = p.layer_height_mm;
+          }
+          if (typeof p.infill_density === 'number') {
+            setInfillDensityOverride(p.infill_density);
+            direct.infillDensityOverride = p.infill_density;
+          }
+          if (typeof p.outer_wall_speed === 'number') {
+            setOuterWallSpeedOverride(p.outer_wall_speed);
+            direct.outerWallSpeedOverride = p.outer_wall_speed;
+          }
+          if (typeof p.flow_ratio === 'number') {
+            setFlowRatioOverride(p.flow_ratio);
+            direct.flowRatioOverride = p.flow_ratio;
+          }
+          if (typeof p.nozzle_temp === 'number') {
+            setNozzleTemp(p.nozzle_temp);
+            direct.nozzleTempOverride = p.nozzle_temp;
+          }
+          if (typeof p.bed_temp === 'number') {
+            setBedTemp(p.bed_temp);
+            direct.bedTempOverride = p.bed_temp;
+          }
+          if (typeof p.supports === 'boolean') {
+            setSupports(p.supports);
+            direct.supportsOverride = p.supports;
+          }
+          if (p.adhesion_type === 'none' || p.adhesion_type === 'brim' || p.adhesion_type === 'raft') {
+            setAdhesionType(p.adhesion_type);
+            direct.adhesionOverride = p.adhesion_type;
+          }
+          if (typeof p.brim_width_mm === 'number') {
+            setBrimWidthMm(p.brim_width_mm);
+            direct.brimWidthOverride = p.brim_width_mm;
+          }
+          if (p.part_extruder_map && typeof p.part_extruder_map === 'object') {
+            setPartExtruderMap(p.part_extruder_map as Record<string, number>);
+          }
+
+          const profOv =
+            p.profile_overrides && typeof p.profile_overrides === 'object'
+              ? (p.profile_overrides as Record<string, unknown>)
+              : undefined;
+
+          showProjectToast(
+            cmd.reslice !== false
+              ? 'Perfil actualizado vía MCP — re-laminando en vivo...'
+              : 'Perfil actualizado vía MCP.',
+          );
+
+          if (cmd.reslice !== false) {
+            void handleSliceRef.current(profOv, direct);
+          }
+        }
+      } catch {
+        // Silencioso si backend reinicia
+      }
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     const hasFiles = (e: DragEvent) =>
@@ -3593,6 +3773,8 @@ export function App() {
             isSlicing={isSlicing}
             sliceResult={sliceResult}
             slicedProfileSnapshot={sliceResult?.sliced_profile_snapshot ?? slicedProfileSnapshot}
+            infillDensityOverride={infillDensityOverride}
+            onChangeInfillDensityOverride={setInfillDensityOverride}
             profileDrawerOpen={profileDrawerOpen}
             onSetProfileDrawerOpen={setProfileDrawerOpen}
             onApplyProfileAndReslice={(ov) => handleSlice(ov)}

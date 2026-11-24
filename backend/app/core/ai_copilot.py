@@ -1341,23 +1341,26 @@ def _build_contextual_fixed_options(
         ]
     elif category == "character_organic":
         specs = [
-            ("char_premium", "Personaje Premium + Soportes Orgánicos", "0.12 mm · Soportes árbol suaves y pared fina.", 0.12, 1.62, 0.75),
-            ("char_ultra", "Ultra Detalle Rostro / Miniatura", "0.08 mm · Máxima definición facial y líneas invisibles.", 0.08, 2.20, 0.70),
-            ("char_smooth", "Figura Suave Equilibrada", "0.16 mm · Gran definición con tiempo moderado.", 0.16, 1.25, 0.85),
-            ("fuzzy_skin", "Figura Mate / Piel Difusa", "0.20 mm · Textura orgánica mate exterior.", 0.20, 1.08, 0.75),
+            ("char_premium", "Personaje Premium + Soportes Orgánicos", "0.12 mm · Soportes árbol suaves y pared fina · Relleno 15%.", 0.12, 1.62, 0.75),
+            ("char_ultra", "Ultra Detalle Rostro / Miniatura", "0.08 mm · Máxima definición facial y líneas invisibles · Relleno 15%.", 0.08, 2.20, 0.70),
+            ("char_smooth", "Figura Suave Equilibrada", "0.16 mm · Gran definición con tiempo moderado · Relleno 15%.", 0.16, 1.25, 0.85),
+            ("solid_100", "Relleno Sólido 100% (Bloqueo Luz / Rigidez)", "0.16 mm · Relleno 100% sólido + Arachne · Ideal tarjetas finas, letreros y piezas macizas.", 0.16, 1.35, 0.80),
+            ("fuzzy_skin", "Figura Mate / Piel Difusa", "0.20 mm · Textura orgánica mate exterior · Relleno 15%.", 0.20, 1.08, 0.75),
         ]
     elif category == "large_enclosure":
         specs = [
-            ("turbo_shielded", "Turbo Blindado Pieza Grande (0.28 mm)", f"Ancho 0.48 mm, +6–8°C y velocidad <= 90% Q_max ({q_max:.0f} mm³/s).", 0.28, 0.73, 0.95),
-            ("fuzzy_fast", "Rápido con Piel Difusa (0.24 mm)", "Disimula capas gruesas con acabado texturizado.", 0.24, 0.86, 0.85),
-            ("balanced", "Estándar Limpio (0.20 mm)", "Acabado uniforme para cajas y organizadores.", 0.20, 1.00, 0.85),
+            ("turbo_shielded", "Turbo Blindado Pieza Grande (0.28 mm)", f"Ancho 0.48 mm, +6–8°C, Relleno 12% y velocidad <= 90% Q_max ({q_max:.0f} mm³/s).", 0.28, 0.73, 0.95),
+            ("fuzzy_fast", "Rápido con Piel Difusa (0.24 mm)", "Disimula capas gruesas con acabado texturizado · Relleno 15%.", 0.24, 0.86, 0.85),
+            ("balanced", "Estándar Limpio (0.20 mm)", "Acabado uniforme para cajas y organizadores · Relleno 15%.", 0.20, 1.00, 0.85),
+            ("solid_100", "Relleno Sólido 100% (Máxima Solidez)", "0.20 mm · Relleno 100% sólido para piezas macizas o placas.", 0.20, 1.45, 0.80),
         ]
     else:
         specs = [
             ("structural", "Estructural Reforzado (0.20 mm)", "4 paredes + Gyroid 25% para máxima rigidez.", 0.20, 1.08, 0.80),
-            ("anti_support_fast", "Rápido Funcional Anti-Soportes (0.24 mm)", "Orientación óptima y ahorro de material.", 0.24, 0.82, 0.90),
-            ("turbo_shielded", "Turbo Blindado Pieza Grande (0.28 mm)", f"Seguro anti-delaminación calibrado a Q_max ({q_max:.0f} mm³/s).", 0.28, 0.73, 0.95),
-            ("fuzzy_skin", "Acabado Limpio + Piel Difusa (0.20 mm)", "Textura mate antideslizante en paredes externas.", 0.20, 1.08, 0.75),
+            ("solid_100", "Relleno Sólido 100% (Bloqueo Luz / Pieza Maciza)", "0.16 mm · Relleno 100% sólido + Arachne para máxima resistencia o tarjetas de luz.", 0.16, 1.35, 0.80),
+            ("anti_support_fast", "Rápido Funcional Anti-Soportes (0.24 mm)", "Orientación óptima y ahorro de material · Relleno 15%.", 0.24, 0.82, 0.90),
+            ("turbo_shielded", "Turbo Blindado Pieza Grande (0.28 mm)", f"Seguro anti-delaminación calibrado a Q_max ({q_max:.0f} mm³/s) · Relleno 12%.", 0.28, 0.73, 0.95),
+            ("fuzzy_skin", "Acabado Limpio + Piel Difusa (0.20 mm)", "Textura mate antideslizante en paredes externas · Relleno 15%.", 0.20, 1.08, 0.75),
         ]
 
     out: list[AISubOption] = []
@@ -1739,6 +1742,13 @@ def optimize_slice_with_ai(
             layer_height = 0.24 if preset == "fuzzy_fast" else 0.20
         outer_speed = max(45, min(outer_range[1], int(round(outer_range[0] * 0.95))))
         explanation = f"Piel Difusa exterior en {layer_height:.2f} mm para disimular líneas de capa con textura uniforme."
+    elif preset == "solid_100":
+        if target_lh is None:
+            layer_height = 0.16
+        outer_speed = max(40, min(outer_range[1], int(round(outer_range[0] * 0.90))))
+        infill_density = 100
+        supports_req = req.overhang_ratio >= 0.10
+        explanation = f"Capa {layer_height:.2f} mm con relleno 100% sólido para bloqueo total de luz y máxima rigidez en trazos finos."
     elif preset in ("speed_opt", "safe_fast", "structural_fast", "structural", "turbo_shielded"):
         if target_lh is None:
             layer_height = 0.28 if preset == "turbo_shielded" else (0.20 if preset == "structural" else 0.24)
@@ -1810,7 +1820,7 @@ def optimize_slice_with_ai(
         "supports_required (bool), support_type ('tree(auto)'|'normal(auto)'), "
         "support_on_build_plate_only (bool), support_z_distance (float 0.12..0.35), "
         "layer_height (float 0.12..0.28), outer_wall_speed (int 35..260), "
-        "flow_ratio (float 0.90..1.05), nozzle_temp (int), infill_density (int 8..40), "
+        "flow_ratio (float 0.90..1.05), nozzle_temp (int), infill_density (int 8..100), "
         "fuzzy_skin (bool), fuzzy_skin_thickness (float 0.15..0.35), fuzzy_skin_point_distance (float 0.3..0.8).\n"
         f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
     )

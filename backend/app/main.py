@@ -2606,6 +2606,79 @@ def system_ai_test_endpoint() -> dict[str, Any]:
     }
 
 
+import threading
+import time as _time
+
+_LIVE_BRIDGE_LOCK = threading.Lock()
+_LIVE_BRIDGE_PATH = TEMP_DIR / "live_ui_bridge.json"
+
+
+def _read_live_bridge() -> dict[str, Any]:
+    if not _LIVE_BRIDGE_PATH.is_file():
+        return {"state": None, "commands": []}
+    try:
+        data = json.loads(_LIVE_BRIDGE_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {"state": data.get("state"), "commands": list(data.get("commands") or [])}
+    except Exception:
+        pass
+    return {"state": None, "commands": []}
+
+
+def _write_live_bridge(data: dict[str, Any]) -> None:
+    _LIVE_BRIDGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _LIVE_BRIDGE_PATH.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+@app.post("/api/live/state")
+def update_live_ui_state(payload: dict[str, Any]) -> dict[str, Any]:
+    """Sincroniza el estado actual del proyecto/perfil abierto en la UI."""
+    with _LIVE_BRIDGE_LOCK:
+        bridge = _read_live_bridge()
+        bridge["state"] = payload
+        _write_live_bridge(bridge)
+    return {"ok": True}
+
+
+@app.get("/api/live/state")
+def get_live_ui_state() -> dict[str, Any]:
+    """Devuelve el último estado reportado por la ventana abierta de Nikk Slicer."""
+    with _LIVE_BRIDGE_LOCK:
+        bridge = _read_live_bridge()
+    return {"state": bridge.get("state")}
+
+
+@app.post("/api/live/command")
+def enqueue_live_ui_command(payload: dict[str, Any]) -> dict[str, Any]:
+    """Encola una modificación en vivo de perfil/re-laminado para la UI abierta."""
+    cmd = {
+        "id": uuid.uuid4().hex[:10],
+        "action": str(payload.get("action") or "update_profile_and_reslice"),
+        "params": dict(payload.get("params") or {}),
+        "reslice": bool(payload.get("reslice", True)),
+        "created_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+    }
+    with _LIVE_BRIDGE_LOCK:
+        bridge = _read_live_bridge()
+        cmds = list(bridge.get("commands") or [])
+        cmds.append(cmd)
+        bridge["commands"] = cmds[-20:]
+        _write_live_bridge(bridge)
+    return {"ok": True, "command": cmd}
+
+
+@app.get("/api/live/commands/poll")
+def poll_live_ui_commands() -> dict[str, Any]:
+    """Entrega y limpia comandos pendientes para la ventana abierta."""
+    with _LIVE_BRIDGE_LOCK:
+        bridge = _read_live_bridge()
+        cmds = list(bridge.get("commands") or [])
+        if cmds:
+            bridge["commands"] = []
+            _write_live_bridge(bridge)
+    return {"commands": cmds}
+
+
 try:
     from app.mcp_server import get_mcp_asgi_app
 

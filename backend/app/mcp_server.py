@@ -272,7 +272,13 @@ async def nikk_slice_model(
     model_path: str | None = None,
     mesh_id: str | None = None,
     layer_height_mm: float = 0.20,
+    infill_density: int | None = None,
     supports: bool = False,
+    adhesion_type: Literal["none", "brim", "raft"] = "none",
+    brim_width_mm: float = 4.0,
+    nozzle_temp: int | None = None,
+    bed_temp: int | None = None,
+    outer_wall_speed: int | None = None,
     scale_percent: float = 100.0,
     rot_x: float = 0.0,
     rot_y: float = 0.0,
@@ -285,10 +291,14 @@ async def nikk_slice_model(
     req = SliceRequest(
         printer_id=printer_id,
         material=material,  # type: ignore[arg-type]
-        nozzle_temp=240 if material == "petg" else 210,
-        bed_temp=75 if material == "petg" else 60,
+        nozzle_temp=nozzle_temp if nozzle_temp is not None else (240 if material == "petg" else 210),
+        bed_temp=bed_temp if bed_temp is not None else (75 if material == "petg" else 60),
         supports=supports,
+        adhesion_type=adhesion_type,
+        brim_width_mm=brim_width_mm,
         layer_height_override=layer_height_mm,
+        infill_density_override=infill_density,
+        outer_wall_speed_override=outer_wall_speed,
         mesh_id=mid,
         model_filename=path.name,
         scale_percent=scale_percent,
@@ -563,6 +573,84 @@ def nikk_add_custom_printer(
         tool_count=tool_count,
     )
     return _json_str({"ok": True, "printer": record})
+
+
+# ==============================================================================
+# 8. SINCRONIZACIÓN EN VIVO CON LA VENTANA ABIERTA DE NIKK SLICER
+# ==============================================================================
+
+
+@mcp.tool()
+def nikk_get_live_state() -> str:
+    """Lee el estado en vivo del proyecto y perfil actualmente abiertos en la ventana de Nikk Slicer."""
+    import httpx
+
+    try:
+        r = httpx.get("http://127.0.0.1:8000/api/live/state", timeout=3.0)
+        if r.status_code == 200:
+            return r.text
+    except Exception:
+        pass
+    bridge_path = TEMP_DIR / "live_ui_bridge.json"
+    if bridge_path.is_file():
+        return _json_str({"state": json.loads(bridge_path.read_text(encoding="utf-8")).get("state")})
+    return _json_str({"state": None})
+
+
+@mcp.tool()
+def nikk_update_live_profile(
+    layer_height_mm: float | None = None,
+    infill_density: int | None = None,
+    outer_wall_speed: int | None = None,
+    flow_ratio: float | None = None,
+    nozzle_temp: int | None = None,
+    bed_temp: int | None = None,
+    supports: bool | None = None,
+    adhesion_type: Literal["none", "brim", "raft"] | None = None,
+    brim_width_mm: float | None = None,
+    part_extruder_map_json: str | None = None,
+    profile_overrides_json: str | None = None,
+    reslice: bool = True,
+) -> str:
+    """Modifica en vivo parámetros del perfil en la ventana abierta de Nikk Slicer y opcionalmente re-lamina."""
+    import httpx
+
+    params: dict[str, Any] = {}
+    if layer_height_mm is not None:
+        params["layer_height_mm"] = float(layer_height_mm)
+    if infill_density is not None:
+        params["infill_density"] = max(0, min(100, int(infill_density)))
+    if outer_wall_speed is not None:
+        params["outer_wall_speed"] = int(outer_wall_speed)
+    if flow_ratio is not None:
+        params["flow_ratio"] = float(flow_ratio)
+    if nozzle_temp is not None:
+        params["nozzle_temp"] = int(nozzle_temp)
+    if bed_temp is not None:
+        params["bed_temp"] = int(bed_temp)
+    if supports is not None:
+        params["supports"] = bool(supports)
+    if adhesion_type is not None:
+        params["adhesion_type"] = adhesion_type
+    if brim_width_mm is not None:
+        params["brim_width_mm"] = float(brim_width_mm)
+    if part_extruder_map_json:
+        params["part_extruder_map"] = json.loads(part_extruder_map_json)
+    if profile_overrides_json:
+        params["profile_overrides"] = json.loads(profile_overrides_json)
+
+    payload = {
+        "action": "update_profile_and_reslice",
+        "params": params,
+        "reslice": reslice,
+    }
+    try:
+        r = httpx.post("http://127.0.0.1:8000/api/live/command", json=payload, timeout=5.0)
+        if r.status_code == 200:
+            return r.text
+    except Exception:
+        pass
+    return _json_str({"ok": False, "error": "No se pudo conectar con la instancia abierta en 127.0.0.1:8000"})
 
 
 def get_mcp_asgi_app():
