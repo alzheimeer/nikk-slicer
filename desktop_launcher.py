@@ -640,6 +640,11 @@ def _install_macos_archivo_menu(logger: logging.Logger) -> None:
                     "window.dispatchEvent(new CustomEvent('nikk:menu-save-project-as'))"
                 )
 
+            def closeProject_(self, _sender):
+                _dispatch_js_async(
+                    "window.dispatchEvent(new CustomEvent('nikk:menu-close-project'))"
+                )
+
             def openRecentProject_(self, sender):
                 pid = str(sender.representedObject() or "")
                 if not pid:
@@ -713,6 +718,13 @@ def _install_macos_archivo_menu(logger: logging.Logger) -> None:
             )
             it_save_as.setTarget_(_MENU_TARGET)
             archivo_menu.addItem_(it_save_as)
+
+            it_close = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Cerrar proyecto", "closeProject:", "w"
+            )
+            it_close.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+            it_close.setTarget_(_MENU_TARGET)
+            archivo_menu.addItem_(it_close)
 
             archivo_menu.addItem_(NSMenuItem.separatorItem())
 
@@ -823,6 +835,7 @@ def _build_windows_menu(logger: logging.Logger) -> list[object]:
             MenuAction("Abrir proyecto... (Ctrl+O)", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-open-projects'))")),
             MenuAction("Guardar proyecto (Ctrl+S)", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-save-project'))")),
             MenuAction("Guardar proyecto como...", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-save-project-as'))")),
+            MenuAction("Cerrar proyecto (Ctrl+W)", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-close-project'))")),
             MenuSeparator(),
             Menu("Proyectos recientes", recent_items),
             MenuSeparator(),

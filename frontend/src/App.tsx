@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Globe, Plus, Redo2, Server, Settings, Sliders, Undo2 } from 'lucide-react';
+import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Globe, Plus, Redo2, Server, Settings, Sliders, Undo2, X } from 'lucide-react';
 import { useI18n } from './i18n/I18nContext';
 import { useSessionHistory } from './hooks/useSessionHistory';
 import { ErrorJournalModal } from './components/ErrorJournalModal';
@@ -557,6 +557,7 @@ export function App() {
     redoCount,
     undo: undoSession,
     redo: redoSession,
+    resetHistory: resetSessionHistory,
   } = useSessionHistory({
     currentSnapshot: sessionSnapshot,
     onApplySnapshot: applySessionSnapshot,
@@ -2004,6 +2005,71 @@ export function App() {
         void saveCurrentProject({ forceNew: true, customTitle: custom.trim() });
       }
     };
+    const onCloseProject = () => {
+      analyzeSeqRef.current += 1;
+      setStlFile(null);
+      setMeshId(null);
+      setAnalysis(null);
+      setIsAnalyzing(false);
+      setActiveProjectId(null);
+      setActiveProjectTitle(null);
+      setSceneObjects([]);
+      setSelectedObjectIds([]);
+      setTransform(DEFAULT_TRANSFORM);
+      setIsSlicing(false);
+      setSliceResult(null);
+      setSlicedProfileSnapshot(null);
+      setProfileDrawerOpen(false);
+      setGcodeText(null);
+      setInitialSliceSnapshot(null);
+      setSupportBlockers([]);
+      setLayerPauses([]);
+      setZColorRanges([]);
+      setPartExtruderMap({});
+      setAutoOrientMsg(null);
+      setIsAutoOrienting(false);
+      setIsAutoArranging(false);
+      setIsCuttingMesh(false);
+      setIsSplittingObjects(false);
+      setOrientationsData(null);
+      setSelectedOrientationId(null);
+      setIsOptimizingAI(false);
+      setAiReasoning(null);
+      setAiProvider(null);
+      setIsOptimizingSupportAI(false);
+      setAiSupportStatus(null);
+      setIsAnalyzingAI(false);
+      setAiAnalysisResult(null);
+      setAiQualityOverrides([]);
+      setIsOptimizingSliceAI(false);
+      setAiOptimizeComparison(null);
+      setLayerHeightOverride(null);
+      setOuterWallSpeedOverride(null);
+      setFlowRatioOverride(null);
+      setInfillDensityOverride(null);
+      setFuzzySkin(false);
+      setFuzzySkinThickness(0.25);
+      setFuzzySkinPointDistance(0.4);
+      setAiStrategyLabel(null);
+      setSupports(false);
+      setSupportType('tree(auto)');
+      setSupportStyle('default');
+      setSupportOnBuildPlateOnly(true);
+      setAdhesionType(lithophaneMode ? 'brim' : 'none');
+      setAdhesionLabel(null);
+      setPrimeTowerEnabled(false);
+      setPrimeTowerReason(null);
+      setErrorMsg(null);
+      setSendPrintMsg(null);
+      setUploadActionMode(null);
+      setProjectToast(null);
+      setExternalProjectsOpen(false);
+      setQuoteCalculatorOpen(false);
+      setPendingRestoreSession(null);
+      setActiveTab('wizard');
+      resetSessionHistory();
+      void clearLastSession().catch(() => {});
+    };
     const onOpenSpecific = (ev: Event) => {
       const detail = (ev as CustomEvent<{ projectId?: string }>).detail;
       if (detail?.projectId) {
@@ -2023,18 +2089,26 @@ export function App() {
       } else if (k === 'o') {
         ev.preventDefault();
         onOpenProjects();
+      } else if (
+        k === 'w' &&
+        Boolean((window as unknown as { pywebview?: unknown }).pywebview)
+      ) {
+        ev.preventDefault();
+        onCloseProject();
       }
     };
 
     window.addEventListener('nikk:menu-open-projects', onOpenProjects);
     window.addEventListener('nikk:menu-save-project', onSaveProject);
     window.addEventListener('nikk:menu-save-project-as', onSaveProjectAs);
+    window.addEventListener('nikk:menu-close-project', onCloseProject);
     window.addEventListener('nikk:open-project', onOpenSpecific);
     window.addEventListener('keydown', onKeyDown);
     return () => {
       window.removeEventListener('nikk:menu-open-projects', onOpenProjects);
       window.removeEventListener('nikk:menu-save-project', onSaveProject);
       window.removeEventListener('nikk:menu-save-project-as', onSaveProjectAs);
+      window.removeEventListener('nikk:menu-close-project', onCloseProject);
       window.removeEventListener('nikk:open-project', onOpenSpecific);
       window.removeEventListener('keydown', onKeyDown);
     };
@@ -3227,6 +3301,19 @@ export function App() {
               >
                 {activeProjectTitle || windowAccent.name}
               </span>
+              {(stlFile || meshId || activeProjectId) && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.dispatchEvent(new CustomEvent('nikk:menu-close-project'))
+                  }
+                  title={t.header.closeProjectTitle}
+                  className="flex items-center gap-1 rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-semibold text-rose-200 transition hover:border-rose-400 hover:bg-rose-500/20"
+                >
+                  <X className="h-3 w-3" />
+                  <span>{t.header.closeProject}</span>
+                </button>
+              )}
             </div>
             <p className="text-[11px] text-slate-400">
               Laminador Unificado · Granja FDM de {printers.length || 6} Impresoras
@@ -3591,6 +3678,7 @@ export function App() {
             isAnalyzing={isAnalyzing}
             onExportSelection={handleExportSelection}
             isExporting={isExportingSelection}
+            onOpenProjects={() => setExternalProjectsOpen(true)}
           />
         </main>
       ) : (

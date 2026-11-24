@@ -1180,6 +1180,7 @@ export function SlicerWizard({
   const handleFileInput = (e: ChangeEvent<HTMLInputElement>) => {
     const picked = e.target.files?.[0];
     if (picked) onSelectStl(picked);
+    e.target.value = '';
   };
 
   const isUsbOrSdPrinter =

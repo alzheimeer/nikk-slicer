@@ -92,10 +92,18 @@ export function useSessionHistory<T>({
   }, [future, serializedCurrent, maxSteps, applySerialized]);
 
   const resetHistory = useCallback(() => {
+    if (applyTimerRef.current !== null) {
+      window.clearTimeout(applyTimerRef.current);
+    }
+    isApplyingRef.current = true;
     setPast([]);
     setFuture([]);
     lastCommittedRef.current = serializedCurrent;
-  }, [serializedCurrent]);
+    applyTimerRef.current = window.setTimeout(() => {
+      isApplyingRef.current = false;
+      applyTimerRef.current = null;
+    }, debounceMs + 120);
+  }, [serializedCurrent, debounceMs]);
 
   return {
     canUndo: past.length > 0,

@@ -31,6 +31,8 @@ export interface TranslationSchema {
     languageTitle: string;
     newProjectTab: string;
     openInNewWindow: string;
+    closeProject: string;
+    closeProjectTitle: string;
   };
   startup: {
     title: string;
@@ -221,6 +223,8 @@ export const translations: Record<Language, TranslationSchema> = {
       languageTitle: 'Cambiar idioma (Español / English)',
       newProjectTab: 'Nuevo proyecto',
       openInNewWindow: 'Abrir nueva ventana de proyecto',
+      closeProject: 'Cerrar proyecto',
+      closeProjectTitle: 'Cerrar proyecto actual, limpiar todo y volver a la pantalla de inicio (Ctrl+W)',
     },
     startup: {
       title: '¿Continuar con el último proyecto?',
@@ -483,6 +487,8 @@ export const translations: Record<Language, TranslationSchema> = {
       languageTitle: 'Switch language (Español / English)',
       newProjectTab: 'New project',
       openInNewWindow: 'Open new project window',
+      closeProject: 'Close project',
+      closeProjectTitle: 'Close current project, clear workspace, and return to start screen (Ctrl+W)',
     },
     startup: {
       title: 'Continue with last project?',

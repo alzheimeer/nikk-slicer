@@ -25,6 +25,7 @@ import {
   Eye,
   EyeOff,
   FlipVertical2,
+  FolderOpen,
   Layers,
   LayoutGrid,
   Loader2,
@@ -129,6 +130,7 @@ interface Viewport3DProps {
     exportAllPlate: boolean;
   }) => Promise<void> | void;
   isExporting?: boolean;
+  onOpenProjects?: () => void;
 }
 
 function buildInitialInstances(t: ModelTransform): ModelInstanceTransform[] {
@@ -1802,6 +1804,7 @@ export function Viewport3D({
   onChangeSupportBlockers,
   onExportSelection,
   isExporting = false,
+  onOpenProjects,
 }: Viewport3DProps) {
   const { t } = useI18n();
   const [viewMode, setViewMode] = useState<'stl' | 'gcode'>('stl');
@@ -1948,6 +1951,9 @@ export function Viewport3D({
     if (!stlFile) {
       setLoadedModel(null);
       setIsParsingModel(false);
+      setActiveCadTool('select');
+      setExportMenuOpen(false);
+      setViewMode('stl');
       return;
     }
     let cancelled = false;
@@ -4958,10 +4964,10 @@ export function Viewport3D({
           </div>
         )}
 
-      {/* Placeholder con mascota Nikk Slider cuando aún no hay STL */}
+      {/* Placeholder de pantalla de inicio cuando aún no hay STL */}
       {!stlFile && (
         <div className="pointer-events-none absolute inset-x-0 bottom-5 flex justify-center px-4">
-          <div className="flex items-center gap-3 rounded-2xl border border-cyan-500/25 bg-slate-900/90 px-4 py-2 text-xs text-slate-300 shadow-xl backdrop-blur">
+          <div className="pointer-events-auto flex flex-wrap items-center gap-3 rounded-2xl border border-cyan-500/25 bg-slate-900/90 px-4 py-2.5 text-xs text-slate-300 shadow-xl backdrop-blur">
             <img
               src="/nikk-mascot.jpg"
               alt="Nikk Slider Mascot"
@@ -4974,6 +4980,16 @@ export function Viewport3D({
                 <span className="font-mono text-purple-300">.3mf</span> en el Paso 2 para previsualizarlo
               </p>
             </div>
+            {onOpenProjects && (
+              <button
+                type="button"
+                onClick={onOpenProjects}
+                className="ml-1 flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-1.5 text-[11px] font-semibold text-cyan-200 transition hover:bg-cyan-500/25"
+              >
+                <FolderOpen className="h-3.5 w-3.5 text-cyan-300" />
+                {t.startup.openProject}
+              </button>
+            )}
           </div>
         </div>
       )}
