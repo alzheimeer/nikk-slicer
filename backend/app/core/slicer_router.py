@@ -622,7 +622,7 @@ def run_slicer_cli(
         arrange_cmd, _ = _build_slicer_cli_cmd(
             printer, model_paths, patched, out_dir, filament_ids, arrange_mode="1"
         )
-        returncode, detail, gcodes = _run_once(arrange_cmd)
+        returncode, detail, gcodes = _run_with_timeout_retry(arrange_cmd)
 
     if returncode != 0 or not gcodes:
         err_msg = f"Error en laminado CLI ({printer.cli_binary.name}, exit={returncode}): {detail}"

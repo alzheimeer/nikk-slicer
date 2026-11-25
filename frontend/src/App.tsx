@@ -3161,6 +3161,9 @@ export function App() {
             setSupports(p.supports);
             direct.supportsOverride = p.supports;
           }
+          if (typeof p.lithophane_mode === 'boolean') {
+            setLithophaneMode(p.lithophane_mode);
+          }
           if (p.adhesion_type === 'none' || p.adhesion_type === 'brim' || p.adhesion_type === 'raft') {
             setAdhesionType(p.adhesion_type);
             direct.adhesionOverride = p.adhesion_type;

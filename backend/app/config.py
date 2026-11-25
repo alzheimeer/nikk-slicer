@@ -381,12 +381,12 @@ def get_optimal_chamber_config(
         p2_fan = 0
         p3_fan = 255
     else:
-        target_temp = 40
-        max_safe = 45
-        mode = "recirculation"
-        mode_label = "Recirculación PETG"
-        p2_fan = 0
-        p3_fan = 102
+        target_temp = 32
+        max_safe = 36
+        mode = "extraction"
+        mode_label = "Ventilación PETG"
+        p2_fan = 100
+        p3_fan = 128
 
     if override_temp is not None:
         target_temp = max(25, min(55, int(override_temp)))

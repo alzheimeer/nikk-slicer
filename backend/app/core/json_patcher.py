@@ -303,23 +303,38 @@ def _apply_first_layer_perfection(
             slot_petg = slot_mat == "petg"
             slot_abs = slot_mat == "abs"
 
-            f_data["z_hop"] = ["0.2"]
+            f_data["z_hop"] = ["0.5" if slot_petg else "0.2"]
             f_data["z_hop_types"] = ["Slope Lift"]
             f_data["wipe"] = ["1"]
             f_data["wipe_distance"] = ["1.5"]
             f_data["retract_before_wipe"] = ["70%"]
             f_data["close_fan_the_first_layers"] = ["3" if (slot_petg or slot_abs) else "1"]
             f_data["enable_pressure_advance"] = ["1"]
+            slot_cfg_ref = (
+                request.extruders_config[f_idx]
+                if (request.extruders_config and f_idx < len(request.extruders_config))
+                else None
+            )
             if slot_petg:
                 pa_val = "0.075" if is_bowden else "0.045"
                 if is_bowden:
                     f_data["filament_retraction_length"] = ["4.5"]
                     f_data["filament_retraction_speed"] = ["45"]
                 else:
-                    f_data["filament_retraction_length"] = ["1.2"]
-                    f_data["filament_retraction_speed"] = ["40"]
-                    f_data["filament_deretraction_speed"] = ["35"]
-                    f_data["retraction_length_when_changing_material"] = ["1.6"]
+                    eff_ret_len = (
+                        f"{slot_cfg_ref.retraction_length:.2f}"
+                        if (slot_cfg_ref and slot_cfg_ref.retraction_length is not None)
+                        else "0.7"
+                    )
+                    eff_ret_spd = (
+                        f"{slot_cfg_ref.retraction_speed:g}"
+                        if (slot_cfg_ref and slot_cfg_ref.retraction_speed is not None)
+                        else "30"
+                    )
+                    f_data["filament_retraction_length"] = [eff_ret_len]
+                    f_data["filament_retraction_speed"] = [eff_ret_spd]
+                    f_data["filament_deretraction_speed"] = ["28"]
+                    f_data["retraction_length_when_changing_material"] = ["1.4"]
             else:
                 pa_val = "0.055" if is_bowden else "0.025"
             f_data["pressure_advance"] = [pa_val]
@@ -577,7 +592,10 @@ def patch_profiles_for_job(
         )
 
         machine_data["extruder_colour"] = [s.color_hex for s in creator_slots]
-        machine_data["idle_temperature"] = ["170"] * 4
+        machine_data["idle_temperature"] = [
+            "195" if (s.material == "petg" and not request.lithophane_mode) else "170"
+            for s in creator_slots
+        ]
         _save_json(dst_machine, machine_data)
 
         for idx, slot_cfg in enumerate(creator_slots):
@@ -612,13 +630,29 @@ def patch_profiles_for_job(
                 "PLA" if (request.lithophane_mode or is_support_mat) else slot_cfg.material.upper()
             ]
             slot_data["filament_is_support"] = ["1" if is_support_mat else "0"]
-            slot_data["idle_temperature"] = ["170"]
+            slot_data["idle_temperature"] = ["195" if eff_slot_mat == "petg" else "170"]
             slot_data["activate_chamber_temp_control"] = ["1"]
             slot_data["chamber_temperature"] = [str(chamber_cfg["target_temp"])]
-            slot_data["overhang_fan_speed"] = ["100"]
             if request.lithophane_mode:
                 slot_data["fan_min_speed"] = ["85"]
                 slot_data["fan_max_speed"] = ["100"]
+                slot_data["overhang_fan_speed"] = ["100"]
+            elif eff_slot_mat == "petg":
+                slot_data["fan_min_speed"] = ["30"]
+                slot_data["fan_max_speed"] = ["55"]
+                slot_data["overhang_fan_speed"] = ["60"]
+            elif eff_slot_mat == "abs":
+                slot_data["fan_min_speed"] = ["15"]
+                slot_data["fan_max_speed"] = ["30"]
+                slot_data["overhang_fan_speed"] = ["40"]
+            elif eff_slot_mat == "tpu":
+                slot_data["fan_min_speed"] = ["40"]
+                slot_data["fan_max_speed"] = ["60"]
+                slot_data["overhang_fan_speed"] = ["70"]
+            else:
+                slot_data["fan_min_speed"] = ["70"]
+                slot_data["fan_max_speed"] = ["100"]
+                slot_data["overhang_fan_speed"] = ["100"]
             _apply_bed_temps(slot_data, eff_bed_temp)
 
             vol_lim = (
@@ -639,11 +673,15 @@ def patch_profiles_for_job(
 
             if slot_cfg.retraction_length is not None:
                 slot_data["filament_retraction_length"] = [f"{slot_cfg.retraction_length:.2f}"]
+            elif eff_slot_mat == "petg":
+                slot_data["filament_retraction_length"] = ["0.7"]
             elif eff_slot_mat == "tpu":
                 slot_data["filament_retraction_length"] = ["0.8"]
 
             if slot_cfg.retraction_speed is not None:
                 slot_data["filament_retraction_speed"] = [f"{slot_cfg.retraction_speed:g}"]
+            elif eff_slot_mat == "petg":
+                slot_data["filament_retraction_speed"] = ["30"]
             elif eff_slot_mat == "tpu":
                 slot_data["filament_retraction_speed"] = ["25"]
 
@@ -1080,8 +1118,10 @@ def _apply_profile_overrides(
                 "fan_min_speed": "fan_min_speed",
                 "fan_max_speed": "fan_max_speed",
                 "overhang_fan_speed": "overhang_fan_speed",
-                "retraction_length": "retraction_length",
-                "retraction_speed": "retraction_speed",
+                "retraction_length": "filament_retraction_length",
+                "retraction_speed": "filament_retraction_speed",
+                "z_hop": "z_hop",
+                "flow_ratio": "filament_flow_ratio",
                 "max_volumetric_flow": "filament_max_volumetric_speed",
                 "density_g_cm3": "filament_density",
             }
@@ -1093,7 +1133,7 @@ def _apply_profile_overrides(
                         if isinstance(fdata.get(dst_k), list):
                             fdata[dst_k] = [val_str]
                         else:
-                            fdata[dst_k] = [val_str] if dst_k in ("nozzle_temperature", "nozzle_temperature_initial_layer", "hot_plate_temp", "hot_plate_temp_initial_layer", "fan_min_speed", "fan_max_speed", "overhang_fan_speed", "filament_max_volumetric_speed", "filament_density") else val_str
+                            fdata[dst_k] = [val_str] if dst_k in ("nozzle_temperature", "nozzle_temperature_initial_layer", "hot_plate_temp", "hot_plate_temp_initial_layer", "fan_min_speed", "fan_max_speed", "overhang_fan_speed", "filament_retraction_length", "filament_retraction_speed", "z_hop", "filament_flow_ratio", "filament_max_volumetric_speed", "filament_density") else val_str
                         changed = True
                     except Exception:
                         continue
