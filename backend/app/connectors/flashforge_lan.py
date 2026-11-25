@@ -218,28 +218,34 @@ async def _resolve_flashforge_target(
         eff_sn = serial_number
         if not eff_sn:
             eff_sn = await asyncio.to_thread(_discover_flashforge_sn_sync, cand_ip) or ""
-        try:
-            resp = await client.post(
-                f"http://{cand_ip}:8898/detail",
-                json={"serialNumber": eff_sn, "checkCode": access_code},
-            )
-            if resp.status_code == 200:
-                body = resp.json()
-                msg_txt = str(body.get("message") or "")
-                if "sn is different" in msg_txt.lower():
-                    discovered = await asyncio.to_thread(_discover_flashforge_sn_sync, cand_ip)
-                    if discovered and discovered != eff_sn:
-                        eff_sn = discovered
-                        resp = await client.post(
-                            f"http://{cand_ip}:8898/detail",
-                            json={"serialNumber": eff_sn, "checkCode": access_code},
-                        )
-                        if resp.status_code == 200:
-                            body = resp.json()
-                detail = body.get("detail")
-                return cand_ip, eff_sn, access_code, detail if isinstance(detail, dict) else {}
-        except (httpx.HTTPError, ValueError):
-            continue
+        for attempt in range(2):
+            try:
+                resp = await client.post(
+                    f"http://{cand_ip}:8898/detail",
+                    json={"serialNumber": eff_sn, "checkCode": access_code},
+                )
+                if resp.status_code == 200:
+                    body = resp.json()
+                    msg_txt = str(body.get("message") or "")
+                    if "sn is different" in msg_txt.lower():
+                        discovered = await asyncio.to_thread(_discover_flashforge_sn_sync, cand_ip)
+                        if discovered and discovered != eff_sn:
+                            eff_sn = discovered
+                            resp = await client.post(
+                                f"http://{cand_ip}:8898/detail",
+                                json={"serialNumber": eff_sn, "checkCode": access_code},
+                            )
+                            if resp.status_code == 200:
+                                body = resp.json()
+                    detail = body.get("detail")
+                    if isinstance(detail, dict) and detail:
+                        return cand_ip, eff_sn, access_code, detail
+                    if attempt == 1:
+                        return cand_ip, eff_sn, access_code, detail if isinstance(detail, dict) else {}
+            except (httpx.HTTPError, ValueError):
+                pass
+            if attempt == 0:
+                await asyncio.sleep(0.15)
 
     return ips[0], serial_number, access_code, {}
 
@@ -573,6 +579,14 @@ def _build_material_mappings_from_gcode(
         for idx, col in enumerate(parts[:4]):
             colors[idx] = col
 
+    gcode_mats = ["PLA", "PLA", "PLA", "PLA"]
+    m_types = re.search(r";\s*filament_type\s*=\s*(.+)", text)
+    if m_types:
+        tparts = [p.strip().strip('"') for p in m_types.group(1).split(";") if p.strip()]
+        for idx, mt in enumerate(tparts[:4]):
+            if mt:
+                gcode_mats[idx] = mt
+
     matl_info = detail.get("matlStationInfo") if isinstance(detail, dict) else None
     slot_infos = (
         matl_info.get("slotInfos", [])
@@ -589,7 +603,7 @@ def _build_material_mappings_from_gcode(
     for t_id in used_tools:
         slot_id = t_id + 1
         slot = slots_by_id.get(slot_id, {})
-        mat_name = str(slot.get("materialName") or "PLA").strip() or "PLA"
+        mat_name = str(slot.get("materialName") or gcode_mats[t_id] or "PLA").strip() or "PLA"
         slot_color = str(slot.get("materialColor") or colors[t_id] or "#FFFFFF").strip()
         tool_color = colors[t_id] or slot_color
         mappings.append(
@@ -602,7 +616,8 @@ def _build_material_mappings_from_gcode(
             }
         )
 
-    use_station = bool(slot_infos) and (len(used_tools) > 1 or used_tools[0] > 0)
+    # No apagar la estación IFS si el G-code tiene múltiples herramientas (aunque /detail no traiga slotInfos)
+    use_station = len(used_tools) > 1 or used_tools[0] > 0
     if not use_station:
         return False, 0, []
     return True, len(mappings), mappings

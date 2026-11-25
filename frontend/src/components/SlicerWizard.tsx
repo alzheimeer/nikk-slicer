@@ -2536,7 +2536,6 @@ export function SlicerWizard({
                             <option value="petg">PETG</option>
                             <option value="abs">ABS</option>
                             <option value="tpu">TPU</option>
-                            <option value="soporte">Soporte</option>
                           </select>
 
                           <button

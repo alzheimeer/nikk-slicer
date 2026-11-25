@@ -94,9 +94,18 @@ const DEFAULT_TRANSFORM: ModelTransform = {
 const DEFAULT_EXTRUDERS: ExtruderSlotConfig[] = [
   { extruder_index: 0, material: 'pla', color_hex: '#22d3ee', high_speed: false, spool_min: 190, spool_max: 225, nozzle_temp: 213, nozzle_temp_initial_layer: 220, max_volumetric_speed: 32 },
   { extruder_index: 1, material: 'pla', color_hex: '#f97316', high_speed: false, spool_min: 190, spool_max: 225, nozzle_temp: 213, nozzle_temp_initial_layer: 220, max_volumetric_speed: 32 },
-  { extruder_index: 2, material: 'soporte', color_hex: '#22c55e', high_speed: false, spool_min: 190, spool_max: 220, nozzle_temp: 210, nozzle_temp_initial_layer: 216, max_volumetric_speed: 32 },
+  { extruder_index: 2, material: 'pla', color_hex: '#22c55e', high_speed: false, spool_min: 190, spool_max: 225, nozzle_temp: 213, nozzle_temp_initial_layer: 220, max_volumetric_speed: 32 },
   { extruder_index: 3, material: 'pla', color_hex: '#a855f7', high_speed: false, spool_min: 190, spool_max: 225, nozzle_temp: 213, nozzle_temp_initial_layer: 220, max_volumetric_speed: 32 },
 ];
+
+function normalizeExtruderSlots(slots: ExtruderSlotConfig[]): ExtruderSlotConfig[] {
+  return slots.map((s, idx) => ({
+    ...DEFAULT_EXTRUDERS[idx],
+    ...s,
+    material: s.material === 'soporte' ? 'pla' : s.material,
+    extruder_index: idx,
+  }));
+}
 
 const PREFS_STORAGE_KEY = 'nikk_slider_prefs_v1';
 
@@ -396,11 +405,7 @@ export function App() {
       Array.isArray(initialPrefs.extrudersConfig) &&
       initialPrefs.extrudersConfig.length === 4
     ) {
-      return initialPrefs.extrudersConfig.map((s, idx) => ({
-        ...DEFAULT_EXTRUDERS[idx],
-        ...s,
-        extruder_index: idx,
-      }));
+      return normalizeExtruderSlots(initialPrefs.extrudersConfig);
     }
     return DEFAULT_EXTRUDERS;
   });
@@ -677,13 +682,7 @@ export function App() {
         if (p.qualityPreset) setQualityPreset(p.qualityPreset);
         if (typeof p.autoLeveling === 'boolean') setAutoLeveling(p.autoLeveling);
         if (Array.isArray(p.extrudersConfig) && p.extrudersConfig.length === 4) {
-          setExtrudersConfig(
-            p.extrudersConfig.map((s, idx) => ({
-              ...DEFAULT_EXTRUDERS[idx],
-              ...s,
-              extruder_index: idx,
-            })),
-          );
+          setExtrudersConfig(normalizeExtruderSlots(p.extrudersConfig));
         }
         if (typeof p.modelExtruder === 'number' && p.modelExtruder >= 0 && p.modelExtruder <= 3) {
           setModelExtruder(p.modelExtruder);
@@ -961,10 +960,10 @@ export function App() {
             nextMap[p.part_id] = p.extruder;
           }
         }
-        const zoneCount = Math.max(
-          res.detected_extruder_count ?? 1,
-          res.detected_filament_colors?.length ?? 0,
-        );
+        const zoneCount =
+          res.detected_colors && res.detected_colors.length > 0
+            ? res.detected_colors.length
+            : (res.detected_extruder_count ?? 1);
         if (res.is_multicolor && zoneCount > 1) {
           for (let z = 0; z < Math.min(4, zoneCount); z += 1) {
             nextMap[`zone_${z}`] = z;

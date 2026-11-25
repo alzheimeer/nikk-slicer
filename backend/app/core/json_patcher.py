@@ -568,7 +568,8 @@ def patch_profiles_for_job(
         if multimaterial_3mf:
             if request.part_extruder_map:
                 active_slot_indices = {
-                    max(0, min(3, int(ext) - 1)) for ext in request.part_extruder_map.values()
+                    max(0, min(3, int(ext) if str(key).startswith("zone_") else int(ext) - 1))
+                    for key, ext in request.part_extruder_map.items()
                 }
             else:
                 active_slot_indices = {0, 1, 2, 3}
