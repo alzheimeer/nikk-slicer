@@ -13,3 +13,5 @@ shapely>=2.0.0
 mapbox-earcut>=1.0.0
 pywebview>=5.0.0
 mcp>=1.2.0
+rtree>=1.2.0
+pillow>=10.0.0

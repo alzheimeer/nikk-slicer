@@ -1241,11 +1241,213 @@ def open_desktop_window(
     subprocess.run(["open", "-a", "Safari", BASE_URL], check=False)
 
 
-def main() -> int:
-    splash = _SplashScreen(version="v1.0.0")
-    splash.start()
-    splash.set_progress(20, "loading_cfg")
+def _build_macos_splash_html(logo_path: Path | None, version: str, msgs: dict[str, str]) -> str:
+    import base64
 
+    logo_tag = (
+        '<div style="width:128px;height:128px;border-radius:16px;background:#0F172A;'
+        'display:flex;align-items:center;justify-content:center;font-weight:800;'
+        'font-size:32px;color:#22D3EE;border:1px solid #1E293B;">NK</div>'
+    )
+    if logo_path is not None and logo_path.is_file():
+        try:
+            b64 = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+            ext = logo_path.suffix.lower().lstrip(".") or "jpeg"
+            if ext == "jpg":
+                ext = "jpeg"
+            logo_tag = (
+                f'<img src="data:image/{ext};base64,{b64}" '
+                'style="width:140px;height:140px;object-fit:contain;border-radius:14px;" />'
+            )
+        except Exception:
+            pass
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; user-select: none; }}
+  html, body {{
+    width: 100%; height: 100%; background: #0B1120; color: #F8FAFC;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+    overflow: hidden;
+  }}
+  .card {{
+    width: 100%; height: 100%; display: flex; flex-direction: column;
+    border: 1px solid #1E293B; border-top: 3px solid #06B6D4; background: #0B1120;
+  }}
+  .hdr {{ padding: 24px 24px 10px; display: flex; justify-content: space-between; align-items: baseline; }}
+  .title {{ font-size: 20px; font-weight: 700; color: #F8FAFC; }}
+  .ver {{ font-size: 11px; color: #64748B; font-family: ui-monospace, monospace; }}
+  .sub {{ padding: 0 24px; font-size: 12px; color: #94A3B8; }}
+  .logo {{ flex: 1; display: flex; align-items: center; justify-content: center; }}
+  .footer {{ padding: 0 24px 26px; }}
+  .row {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }}
+  #status {{ font-size: 12px; color: #CBD5E1; }}
+  #pct {{ font-size: 12px; font-weight: 700; color: #22D3EE; font-family: ui-monospace, monospace; }}
+  .bar-bg {{ width: 100%; height: 8px; border-radius: 999px; background: #1E293B; overflow: hidden; }}
+  #bar-fill {{ width: 20%; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #06B6D4, #10B981); transition: width 0.25s ease; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="hdr">
+      <div class="title">Nikk Slicer</div>
+      <div class="ver">{version}</div>
+    </div>
+    <div class="sub">{msgs.get("subtitle", "")}</div>
+    <div class="logo">{logo_tag}</div>
+    <div class="footer">
+      <div class="row">
+        <div id="status">{msgs.get("loading_cfg", "Loading...")}</div>
+        <div id="pct">20%</div>
+      </div>
+      <div class="bar-bg"><div id="bar-fill"></div></div>
+    </div>
+  </div>
+  <script>
+    window.__setSplashProgress = function(p, txt) {{
+      var fill = document.getElementById('bar-fill');
+      var pct = document.getElementById('pct');
+      var st = document.getElementById('status');
+      if (fill) fill.style.width = p + '%';
+      if (pct) pct.textContent = p + '%';
+      if (st && txt) st.textContent = txt;
+    }};
+  </script>
+</body>
+</html>"""
+
+
+def _run_macos_with_splash(
+    logger: logging.Logger,
+    initial_project_id: str | None,
+    version: str = "v1.3.0",
+) -> int:
+    """Muestra splash instantáneo nativo con pywebview en el hilo principal de macOS mientras arranca uvicorn."""
+    _configure_macos_app_identity(logger)
+    _install_macos_open_file_handler(logger)
+    import webview  # type: ignore[import-not-found]
+
+    lang = _detect_splash_lang()
+    msgs = _SplashScreen._MESSAGES.get(lang, _SplashScreen._MESSAGES["es"])
+    logo_path = None
+    for cand in (PROJECT_ROOT / "frontend" / "public" / "nikk-logo.jpg", PROJECT_ROOT / "nikk-logo.jpg"):
+        if cand.is_file():
+            logo_path = cand
+            break
+
+    splash_win = webview.create_window(
+        "Nikk Slicer",
+        html=_build_macos_splash_html(logo_path, version, msgs),
+        width=420,
+        height=460,
+        resizable=False,
+        frameless=True,
+        on_top=True,
+        background_color="#0B1120",
+    )
+    _set_macos_dock_icon(logger)
+
+    state: dict[str, Any] = {"server": None, "server_thread": None, "exit_code": 0}
+
+    def _set_p(pct: int, key: str) -> None:
+        txt = msgs.get(key, key).replace("'", "\\'")
+        try:
+            if splash_win is not None:
+                splash_win.evaluate_js(f"window.__setSplashProgress && window.__setSplashProgress({pct}, '{txt}')")
+        except Exception:
+            pass
+
+    def _bootstrap(s_win=None):
+        try:
+            _set_p(25, "loading_cfg")
+            reused_existing = False
+            _set_p(50, "starting_engine")
+            if is_port_open(LOCAL_HOST, PORT):
+                if check_nikkslicer_health():
+                    logger.info("Instancia previa saludable de Nikk Slicer detectada en %s; reutilizando.", BASE_URL)
+                    reused_existing = True
+                else:
+                    cleanup_stale_port(PORT, logger)
+
+            if not reused_existing:
+                srv, srv_thr = start_embedded_uvicorn(logger)
+                state["server"] = srv
+                state["server_thread"] = srv_thr
+                if not wait_for_backend(timeout_sec=25.0):
+                    logger.error("Timeout esperando disponibilidad de %s", HEALTH_URL)
+                    state["exit_code"] = 1
+                    if s_win is not None:
+                        s_win.destroy()
+                    return
+
+            _set_p(85, "preparing_ws")
+            wsid, url = _build_window_url(initial_project_id)
+            main_win = webview.create_window(
+                "Nikk Slicer",
+                url,
+                width=1440,
+                height=920,
+                min_size=(1100, 720),
+                maximized=True,
+                background_color="#020617",
+                js_api=DesktopApi(),
+            )
+            if main_win is not None:
+                _register_window(wsid, main_win)
+
+            closed_splash = threading.Event()
+
+            def _close_splash() -> None:
+                if closed_splash.is_set():
+                    return
+                closed_splash.set()
+                _set_p(100, "ready")
+                time.sleep(0.18)
+                try:
+                    if main_win is not None:
+                        main_win.maximize()
+                except Exception:
+                    pass
+                try:
+                    if s_win is not None:
+                        s_win.destroy()
+                except Exception:
+                    pass
+                _install_macos_archivo_menu(logger)
+
+            if main_win is not None:
+                try:
+                    main_win.events.loaded += lambda: threading.Thread(target=_close_splash, daemon=True).start()
+                except Exception:
+                    pass
+            time.sleep(0.6)
+            if not closed_splash.is_set():
+                _close_splash()
+        except Exception as exc:
+            logger.exception("Error en arranque macOS con splash: %s", exc)
+            state["exit_code"] = 1
+            try:
+                if s_win is not None:
+                    s_win.destroy()
+            except Exception:
+                pass
+
+    webview.start(func=_bootstrap, args=(splash_win,))
+    srv = state.get("server")
+    srv_thr = state.get("server_thread")
+    if srv is not None and srv_thr is not None:
+        logger.info("Ventana cerrada: deteniendo uvicorn...")
+        srv.should_exit = True
+        srv_thr.join(timeout=1.2)
+        logger.info("Nikk Slicer detenido correctamente.")
+        os._exit(0)
+    return int(state.get("exit_code", 0))
+
+
+def main() -> int:
     logger = setup_logging()
     logger.info("=== Iniciando Nikk Slicer Desktop Launcher ===")
 
@@ -1255,6 +1457,13 @@ def main() -> int:
             initial_project_id = arg.split("=", 1)[1].strip() or None
         elif not arg.startswith("-"):
             _queue_open_file(arg, logger)
+
+    if IS_MACOS:
+        return _run_macos_with_splash(logger, initial_project_id=initial_project_id, version="v1.3.0")
+
+    splash = _SplashScreen(version="v1.3.0")
+    splash.start()
+    splash.set_progress(20, "loading_cfg")
 
     reused_existing = False
     server = None

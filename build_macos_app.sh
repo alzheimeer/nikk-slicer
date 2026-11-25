@@ -100,6 +100,8 @@ fi
   --hidden-import "trimesh" \
   --hidden-import "rtree" \
   --collect-all "rtree" \
+  --hidden-import "PIL" \
+  --collect-submodules "PIL" \
   --hidden-import "webview" \
   --hidden-import "mcp.server.mcpserver" \
   --collect-submodules "fastapi" \
