@@ -235,6 +235,10 @@ export function QuoteCalculatorModal({
       subBaseUnit + errorCostUnit + extraCostUnit + paintCostUnit;
 
     const qty = Math.max(1, Math.round(quantity));
+    const totalMinutesAll = Math.max(0, Math.round((hours * 60 + minutes) * qty));
+    const totalHoursAll = Math.floor(totalMinutesAll / 60);
+    const remMinutesAll = totalMinutesAll % 60;
+    const totalGramsAll = Number((grams * qty).toFixed(1));
     const baseClientPriceUnit = realBreakEvenUnit * Math.max(1, multiplier);
     const grossProfitUnit = Math.max(0, baseClientPriceUnit - realBreakEvenUnit);
     const discountRatio = Math.min(50, Math.max(0, profitDiscountPct)) / 100;
@@ -253,6 +257,9 @@ export function QuoteCalculatorModal({
 
     return {
       watts,
+      totalHoursAll,
+      remMinutesAll,
+      totalGramsAll,
       totalHours,
       wearPerHour,
       materialCostUnit,
@@ -320,14 +327,14 @@ export function QuoteCalculatorModal({
     if (extraEnabled && extraNote.trim()) finishes.push(extraNote.trim());
     if (paintEnabled) finishes.push('Pintura y acabado artesanal');
     const finishText = finishes.length > 0 ? finishes.join(' + ') : 'Acabado limpio de impresión 3D';
-    const estHoursText = `${hours}h ${minutes}m`;
+    const estHoursText = `${calc.totalHoursAll}h ${calc.remMinutesAll}m`;
     const totalToShare = platformEnabled ? calc.platformPriceTotal : calc.clientPriceTotal;
     const unitToShare = totalToShare / calc.qty;
 
     const msg = [
       `Hola, te comparto tu cotización de impresión 3D:`,
       `*Pieza:* ${pieceName || 'Modelo 3D'}`,
-      `*Material:* ${material.toUpperCase()} (${grams} g)`,
+      `*Material:* ${material.toUpperCase()} (${calc.totalGramsAll} g total)`,
       `*Cantidad:* ${calc.qty} unidad(es)`,
       ...(calc.qty > 1 ? [`*Valor Unitario:* ${formatCop(unitToShare)}`] : []),
       ...(calc.discountPct > 0 ? [`*Descuento por volumen aplicado:* ${calc.discountPct}% sobre margen`] : []),
@@ -848,8 +855,22 @@ export function QuoteCalculatorModal({
 
               {/* Desglose en tiempo real */}
               <div className="space-y-1.5 rounded-xl border border-slate-800 bg-slate-900/80 p-3 text-xs">
+                <div className="flex justify-between text-cyan-200">
+                  <span>Tiempo total ({calc.qty} {calc.qty === 1 ? 'ud' : 'uds'})</span>
+                  <span className="font-mono font-semibold">
+                    {calc.totalHoursAll}h {calc.remMinutesAll}m
+                  </span>
+                </div>
+                <div className="flex justify-between border-b border-slate-800 pb-1.5 text-cyan-200">
+                  <span>Filamento total ({calc.qty} {calc.qty === 1 ? 'ud' : 'uds'})</span>
+                  <span className="font-mono font-semibold">
+                    {calc.totalGramsAll >= 1000
+                      ? `${calc.totalGramsAll.toLocaleString('es-CO')} g (${(calc.totalGramsAll / 1000).toFixed(2)} kg)`
+                      : `${calc.totalGramsAll.toLocaleString('es-CO')} g`}
+                  </span>
+                </div>
                 <div className="flex justify-between text-slate-300">
-                  <span>Material (Filamento · {grams} g)</span>
+                  <span>Material (Filamento · {calc.totalGramsAll} g)</span>
                   <span className="font-mono">{formatCop(calc.materialCostUnit * calc.qty)}</span>
                 </div>
                 <div className="flex justify-between text-slate-300">

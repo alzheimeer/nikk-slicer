@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import json
+import locale
 import logging
 import os
+import queue
 import shutil
 import signal
 import socket
@@ -297,6 +299,237 @@ def _set_macos_dock_icon(logger: logging.Logger) -> None:
 _PENDING_OPEN_FILES: list[str] = [
     arg for arg in sys.argv[1:] if arg.lower().endswith((".stl", ".3mf")) and Path(arg).is_file()
 ]
+
+
+def _detect_splash_lang() -> str:
+    """Detecta idioma ES/EN desde configuración local o locale del sistema."""
+    try:
+        if IS_WINDOWS:
+            cfg_base = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")) / "NikkSlicer"
+        else:
+            cfg_base = Path.home() / ".nikk_slicer"
+        for cand in (cfg_base / "settings.json", cfg_base / "config.json"):
+            if cand.is_file():
+                raw = json.loads(cand.read_text(encoding="utf-8", errors="ignore"))
+                lang = str(raw.get("language") or raw.get("lang") or "").lower()
+                if lang.startswith("en"):
+                    return "en"
+                if lang.startswith("es"):
+                    return "es"
+    except Exception:
+        pass
+    try:
+        loc = (locale.getlocale()[0] or os.environ.get("LANG") or "").lower()
+        if loc.startswith("en"):
+            return "en"
+    except Exception:
+        pass
+    return "es"
+
+
+class _SplashScreen:
+    """Pantalla de bienvenida nativa ligera (Tkinter) sin barra de título."""
+
+    _MESSAGES = {
+        "es": {
+            "loading_cfg": "Cargando configuración...",
+            "starting_engine": "Iniciando motor de laminado...",
+            "preparing_ws": "Preparando espacio de trabajo 3D...",
+            "ready": "Listo",
+        },
+        "en": {
+            "loading_cfg": "Loading configuration...",
+            "starting_engine": "Starting slicing engine...",
+            "preparing_ws": "Preparing 3D workspace...",
+            "ready": "Ready",
+        },
+    }
+
+    def __init__(self, version: str = "v1.0.0") -> None:
+        self.version = version
+        self.lang = _detect_splash_lang()
+        self._msgs = self._MESSAGES.get(self.lang, self._MESSAGES["es"])
+        self._cmd_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._ready_evt = threading.Event()
+        self._closed = False
+        self._thread: threading.Thread | None = None
+
+    def msg(self, key: str) -> str:
+        return self._msgs.get(key, key)
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run_tk, name="nikkslicer-splash", daemon=True)
+        self._thread.start()
+        self._ready_evt.wait(timeout=1.5)
+
+    def set_progress(self, percent: int, status_key_or_text: str) -> None:
+        if self._closed:
+            return
+        text = self._msgs.get(status_key_or_text, status_key_or_text)
+        self._cmd_queue.put(("progress", (max(0, min(100, int(percent))), text)))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._cmd_queue.put(("close", None))
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+    def _find_logo_path(self) -> Path | None:
+        for cand in (
+            PROJECT_ROOT / "frontend" / "public" / "nikk-logo.jpg",
+            PROJECT_ROOT / "nikk-logo.jpg",
+        ):
+            if cand.is_file():
+                return cand
+        return None
+
+    def _run_tk(self) -> None:
+        try:
+            import tkinter as tk
+            from PIL import Image, ImageTk  # type: ignore[import-not-found]
+        except Exception:
+            self._ready_evt.set()
+            return
+
+        root = None
+        try:
+            root = tk.Tk()
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            width, height = 420, 460
+            sw = root.winfo_screenwidth()
+            sh = root.winfo_screenheight()
+            x = max(0, (sw - width) // 2)
+            y = max(0, (sh - height) // 2)
+            root.geometry(f"{width}x{height}+{x}+{y}")
+            root.configure(bg="#06B6D4")
+
+            # Contenedor interior oscuro con borde sutil cian
+            card = tk.Frame(root, bg="#0B1120", highlightthickness=1, highlightbackground="#1E293B")
+            card.pack(fill="both", expand=True, padx=1, pady=1)
+
+            # Barra de acento superior
+            accent = tk.Frame(card, bg="#06B6D4", height=3)
+            accent.pack(fill="x", side="top")
+
+            # Encabezado: Título + versión
+            hdr = tk.Frame(card, bg="#0B1120")
+            hdr.pack(fill="x", padx=24, pady=(22, 10))
+            tk.Label(
+                hdr,
+                text="Nikk Slicer",
+                fg="#F8FAFC",
+                bg="#0B1120",
+                font=("Segoe UI", 18, "bold"),
+            ).pack(side="left")
+            tk.Label(
+                hdr,
+                text=self.version,
+                fg="#06B6D4",
+                bg="#0B1120",
+                font=("Segoe UI", 10, "bold"),
+            ).pack(side="right", pady=(6, 0))
+
+            # Imagen central nikk-logo.jpg
+            logo_holder = tk.Frame(card, bg="#0B1120")
+            logo_holder.pack(expand=True, pady=(4, 8))
+            logo_ref = None
+            logo_path = self._find_logo_path()
+            if logo_path is not None:
+                try:
+                    img = Image.open(logo_path).convert("RGBA")
+                    img.thumbnail((236, 236), Image.Resampling.LANCZOS)
+                    logo_ref = ImageTk.PhotoImage(img)
+                    lbl_img = tk.Label(logo_holder, image=logo_ref, bg="#0B1120", bd=0)
+                    lbl_img.image = logo_ref  # type: ignore[attr-defined]
+                    lbl_img.pack()
+                except Exception:
+                    logo_ref = None
+            if logo_ref is None:
+                tk.Label(
+                    logo_holder,
+                    text="NIKK SLICER",
+                    fg="#06B6D4",
+                    bg="#0B1120",
+                    font=("Segoe UI", 22, "bold"),
+                ).pack()
+
+            # Pie: estado + barra de progreso
+            footer = tk.Frame(card, bg="#0B1120")
+            footer.pack(fill="x", side="bottom", padx=24, pady=(0, 24))
+
+            status_row = tk.Frame(footer, bg="#0B1120")
+            status_row.pack(fill="x", pady=(0, 8))
+            status_var = tk.StringVar(value=self.msg("loading_cfg"))
+            pct_var = tk.StringVar(value="20%")
+            tk.Label(
+                status_row,
+                textvariable=status_var,
+                fg="#CBD5E1",
+                bg="#0B1120",
+                font=("Segoe UI", 9),
+                anchor="w",
+            ).pack(side="left")
+            tk.Label(
+                status_row,
+                textvariable=pct_var,
+                fg="#10B981",
+                bg="#0B1120",
+                font=("Segoe UI", 9, "bold"),
+                anchor="e",
+            ).pack(side="right")
+
+            bar_w = width - 50
+            bar_h = 8
+            canvas = tk.Canvas(
+                footer,
+                width=bar_w,
+                height=bar_h,
+                bg="#1E293B",
+                highlightthickness=0,
+                bd=0,
+            )
+            canvas.pack(fill="x")
+            fill_rect = canvas.create_rectangle(0, 0, int(bar_w * 0.20), bar_h, fill="#06B6D4", width=0)
+
+            def _poll_queue() -> None:
+                try:
+                    while True:
+                        cmd, payload = self._cmd_queue.get_nowait()
+                        if cmd == "progress":
+                            pct, text = payload  # type: ignore[misc]
+                            status_var.set(str(text))
+                            pct_var.set(f"{pct}%")
+                            fill_color = "#10B981" if pct >= 100 else "#06B6D4"
+                            canvas.coords(fill_rect, 0, 0, max(4, int(bar_w * (pct / 100.0))), bar_h)
+                            canvas.itemconfig(fill_rect, fill=fill_color)
+                        elif cmd == "close":
+                            root.quit()
+                            root.destroy()
+                            return
+                except queue.Empty:
+                    pass
+                root.after(45, _poll_queue)
+
+            root.update_idletasks()
+            root.update()
+            self._ready_evt.set()
+            root.after(45, _poll_queue)
+            root.mainloop()
+            # Liberar referencias Tk en el mismo hilo donde se crearon
+            del status_var, pct_var, logo_ref, canvas, fill_rect
+            root = None
+            import gc
+            gc.collect()
+        except Exception:
+            self._ready_evt.set()
+            if root is not None:
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
 
 
 def _queue_open_file(path_str: str, logger: logging.Logger) -> bool:
@@ -861,7 +1094,11 @@ def _build_windows_menu(logger: logging.Logger) -> list[object]:
         return []
 
 
-def open_desktop_window(logger: logging.Logger, initial_project_id: str | None = None) -> None:
+def open_desktop_window(
+    logger: logging.Logger,
+    initial_project_id: str | None = None,
+    splash: _SplashScreen | None = None,
+) -> None:
     try:
         if IS_MACOS:
             _configure_macos_app_identity(logger)
@@ -886,6 +1123,31 @@ def open_desktop_window(logger: logging.Logger, initial_project_id: str | None =
         if IS_MACOS:
             _set_macos_dock_icon(logger)
 
+        splash_done = threading.Event()
+
+        def _finish_splash() -> None:
+            if splash_done.is_set():
+                return
+            splash_done.set()
+            if splash is not None:
+                splash.set_progress(100, "ready")
+                time.sleep(0.18)
+                splash.close()
+
+        def _on_loaded() -> None:
+            try:
+                if main_win is not None:
+                    main_win.maximize()
+            except Exception:
+                pass
+            threading.Thread(target=_finish_splash, daemon=True).start()
+
+        if main_win is not None:
+            try:
+                main_win.events.loaded += _on_loaded
+            except Exception:
+                pass
+
         def _on_webview_ready(win=None):
             time.sleep(0.35)
             try:
@@ -895,6 +1157,12 @@ def open_desktop_window(logger: logging.Logger, initial_project_id: str | None =
                 pass
             if IS_MACOS:
                 _install_macos_archivo_menu(logger)
+            # Respaldo por si el evento `loaded` no dispara en algún entorno
+            def _fallback_close() -> None:
+                if not splash_done.wait(timeout=3.0):
+                    _finish_splash()
+
+            threading.Thread(target=_fallback_close, daemon=True).start()
 
         start_kwargs: dict[str, object] = {
             "func": _on_webview_ready,
@@ -952,6 +1220,9 @@ def open_desktop_window(logger: logging.Logger, initial_project_id: str | None =
             stderr=subprocess.DEVNULL,
             **_win_no_window_kwargs(),
         )
+        if splash is not None:
+            splash.set_progress(100, "ready")
+            splash.close()
         proc.wait()
         elapsed = time.time() - started
         if elapsed < 2.0:
@@ -971,6 +1242,10 @@ def open_desktop_window(logger: logging.Logger, initial_project_id: str | None =
 
 
 def main() -> int:
+    splash = _SplashScreen(version="v1.0.0")
+    splash.start()
+    splash.set_progress(20, "loading_cfg")
+
     logger = setup_logging()
     logger.info("=== Iniciando Nikk Slicer Desktop Launcher ===")
 
@@ -985,6 +1260,7 @@ def main() -> int:
     server = None
     server_thread = None
 
+    splash.set_progress(50, "starting_engine")
     if is_port_open(LOCAL_HOST, PORT):
         if check_nikkslicer_health():
             logger.info("Instancia previa saludable de Nikk Slicer detectada en %s; reutilizando.", BASE_URL)
@@ -997,13 +1273,16 @@ def main() -> int:
         server, server_thread = start_embedded_uvicorn(logger)
         if not wait_for_backend(timeout_sec=25.0):
             logger.error("Timeout esperando disponibilidad de %s", HEALTH_URL)
+            splash.close()
             if server is not None:
                 server.should_exit = True
             return 1
 
+    splash.set_progress(80, "preparing_ws")
     try:
-        open_desktop_window(logger, initial_project_id=initial_project_id)
+        open_desktop_window(logger, initial_project_id=initial_project_id, splash=splash)
     finally:
+        splash.close()
         if server is not None and server_thread is not None:
             logger.info("Ventana cerrada: deteniendo uvicorn...")
             server.should_exit = True

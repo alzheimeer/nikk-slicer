@@ -28,6 +28,7 @@ pyinstaller `
   --icon "nikk_slicer.ico" `
   --distpath "dist_win" `
   --add-data "frontend/dist;frontend/dist" `
+  --add-data "frontend/public/nikk-logo.jpg;frontend/public" `
   --add-data "backend;backend" `
   --add-data "nikk_slicer.ico;." `
   --paths "backend" `

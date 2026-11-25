@@ -9,6 +9,7 @@ import {
   API_BASE_URL,
   analyzeMesh,
   applyLayerPauses,
+  armLocalTimelapse,
   autoArrangeModels,
   clearLastSession,
   cutMeshByPlane,
@@ -411,15 +412,15 @@ export function App() {
   });
   const [modelExtruder, setModelExtruder] = useState<number>(() =>
     typeof initialPrefs.modelExtruder === 'number' &&
-    initialPrefs.modelExtruder >= 0 &&
-    initialPrefs.modelExtruder <= 3
+      initialPrefs.modelExtruder >= 0 &&
+      initialPrefs.modelExtruder <= 3
       ? initialPrefs.modelExtruder
       : 0,
   );
   const [supportExtruder, setSupportExtruder] = useState<number>(() =>
     typeof initialPrefs.supportExtruder === 'number' &&
-    initialPrefs.supportExtruder >= 0 &&
-    initialPrefs.supportExtruder <= 3
+      initialPrefs.supportExtruder >= 0 &&
+      initialPrefs.supportExtruder <= 3
       ? initialPrefs.supportExtruder
       : 0,
   );
@@ -732,7 +733,7 @@ export function App() {
     }
     if (!prefsLoadedRef.current) return;
     const timer = window.setTimeout(() => {
-      void saveUserPrefs(payload).catch(() => {});
+      void saveUserPrefs(payload).catch(() => { });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [
@@ -774,7 +775,7 @@ export function App() {
           support_blockers: supportBlockers,
           saved_at: new Date().toISOString(),
         },
-      }).catch(() => {});
+      }).catch(() => { });
     }, 450);
     return () => window.clearTimeout(timer);
   }, [
@@ -1041,17 +1042,17 @@ export function App() {
     dropToBed: true,
     ...(prev.instances && prev.instances.length > 0
       ? {
-          instances: prev.instances.map((inst) => ({
-            ...inst,
-            rot_x: rx,
-            rot_y: ry,
-            rot_z: rz,
-            offset_x: 0,
-            offset_y: 0,
-            offset_z: 0,
-            drop_to_bed: true,
-          })),
-        }
+        instances: prev.instances.map((inst) => ({
+          ...inst,
+          rot_x: rx,
+          rot_y: ry,
+          rot_z: rz,
+          offset_x: 0,
+          offset_y: 0,
+          offset_z: 0,
+          drop_to_bed: true,
+        })),
+      }
       : {}),
   });
 
@@ -1065,13 +1066,13 @@ export function App() {
           prev.map((obj) =>
             obj.object_id === targetObjectId
               ? {
-                  ...obj,
-                  rot_x: opt.rotation.rx,
-                  rot_y: opt.rotation.ry,
-                  rot_z: opt.rotation.rz,
-                  offset_z: 0,
-                  drop_to_bed: true,
-                }
+                ...obj,
+                rot_x: opt.rotation.rx,
+                rot_y: opt.rotation.ry,
+                rot_z: opt.rotation.rz,
+                offset_z: 0,
+                drop_to_bed: true,
+              }
               : obj,
           ),
         );
@@ -1093,10 +1094,10 @@ export function App() {
         });
         return rotated.length > 1
           ? arrangeSceneObjectsOnBed(
-              rotated,
-              new Set(rotated.map((o) => o.object_id)),
-              activePrinter,
-            )
+            rotated,
+            new Set(rotated.map((o) => o.object_id)),
+            activePrinter,
+          )
           : rotated;
       });
       return;
@@ -1494,11 +1495,11 @@ export function App() {
       ...(aiQualityOverrides.length > 0 ? { quality_overrides: aiQualityOverrides } : {}),
       ...(primeTowerEnabled && primeTowerBrimOverride !== null
         ? {
-            profile_overrides: {
-              prime_tower_brim_width: primeTowerBrimOverride,
-              ...(overrides?.profileOverrides ?? {}),
-            },
-          }
+          profile_overrides: {
+            prime_tower_brim_width: primeTowerBrimOverride,
+            ...(overrides?.profileOverrides ?? {}),
+          },
+        }
         : overrides?.profileOverrides && Object.keys(overrides.profileOverrides).length > 0
           ? { profile_overrides: overrides.profileOverrides }
           : {}),
@@ -1635,37 +1636,37 @@ export function App() {
           brim_width_mm: brimWidthMm,
           instances: (sceneObjects.length > 0
             ? sceneObjects.map((o, idx) => ({
-                id: o.object_id,
-                name: o.name,
-                sourceSubmeshIndex: idx,
-                position: [o.offset_x, o.offset_y, o.offset_z],
-                rotation: [o.rot_x, o.rot_y, o.rot_z],
-                scale: [
-                  o.scale_x ?? o.scale_percent,
-                  o.scale_y ?? o.scale_percent,
-                  o.scale_z ?? o.scale_percent,
-                ],
-                drop_to_bed: o.drop_to_bed,
-                overrides: o.overrides,
-                assignedExtruder: o.extruder,
-                supportPaintMap: o.support_paint_map,
-                supportPaintMode: o.support_paint_mode,
-              }))
+              id: o.object_id,
+              name: o.name,
+              sourceSubmeshIndex: idx,
+              position: [o.offset_x, o.offset_y, o.offset_z],
+              rotation: [o.rot_x, o.rot_y, o.rot_z],
+              scale: [
+                o.scale_x ?? o.scale_percent,
+                o.scale_y ?? o.scale_percent,
+                o.scale_z ?? o.scale_percent,
+              ],
+              drop_to_bed: o.drop_to_bed,
+              overrides: o.overrides,
+              assignedExtruder: o.extruder,
+              supportPaintMap: o.support_paint_map,
+              supportPaintMode: o.support_paint_mode,
+            }))
             : (transform.instances ?? []).map((it, idx) => ({
-                id: it.instance_id,
-                name: `Pieza #${idx + 1}`,
-                position: [it.offset_x, it.offset_y, it.offset_z],
-                rotation: [it.rot_x, it.rot_y, it.rot_z],
-                scale: [
-                  it.scale_x ?? it.scale_percent,
-                  it.scale_y ?? it.scale_percent,
-                  it.scale_z ?? it.scale_percent,
-                ],
-                drop_to_bed: it.drop_to_bed,
-                overrides: it.overrides,
-                supportPaintMap: it.support_paint_map,
-                supportPaintMode: it.support_paint_mode,
-              }))),
+              id: it.instance_id,
+              name: `Pieza #${idx + 1}`,
+              position: [it.offset_x, it.offset_y, it.offset_z],
+              rotation: [it.rot_x, it.rot_y, it.rot_z],
+              scale: [
+                it.scale_x ?? it.scale_percent,
+                it.scale_y ?? it.scale_percent,
+                it.scale_z ?? it.scale_percent,
+              ],
+              drop_to_bed: it.drop_to_bed,
+              overrides: it.overrides,
+              supportPaintMap: it.support_paint_map,
+              supportPaintMode: it.support_paint_mode,
+            }))),
           quality_preset: qualityPreset,
           ai_analysis_result: effAi ?? null,
           layer_pauses: layerPauses,
@@ -1675,10 +1676,10 @@ export function App() {
             effSlice?.sliced_profile_snapshot ?? slicedProfileSnapshot ?? null,
           slice_metrics: effSlice
             ? {
-                estimated_time: effSlice.estimated_time,
-                filament_grams: effSlice.filament_grams,
-                filament_meters: effSlice.filament_meters,
-              }
+              estimated_time: effSlice.estimated_time,
+              filament_grams: effSlice.filament_grams,
+              filament_meters: effSlice.filament_meters,
+            }
             : {},
         },
       });
@@ -2019,14 +2020,14 @@ export function App() {
     }
     void fetchRecentProjects(5)
       .then((list) => setRecentProjects(list))
-      .catch(() => {});
+      .catch(() => { });
     void fetchSystemEnvironment()
       .then((env) => {
         if (!env.has_primary_slicer) {
           setSystemSetupOpen(true);
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   useEffect(() => {
@@ -2110,7 +2111,7 @@ export function App() {
       setPendingRestoreSession(null);
       setActiveTab('wizard');
       resetSessionHistory();
-      void clearLastSession().catch(() => {});
+      void clearLastSession().catch(() => { });
     };
     const onOpenSpecific = (ev: Event) => {
       const detail = (ev as CustomEvent<{ projectId?: string }>).detail;
@@ -2373,11 +2374,11 @@ export function App() {
 
       const nextTransform: ModelTransform = opt.apply_rotation
         ? {
-            ...transform,
-            rotX: opt.rot_x,
-            rotY: opt.rot_y,
-            rotZ: opt.rot_z,
-          }
+          ...transform,
+          rotX: opt.rot_x,
+          rotY: opt.rot_y,
+          rotZ: opt.rot_z,
+        }
         : { ...transform };
 
       const effSup = lithophaneMode ? false : opt.supports_required;
@@ -3079,15 +3080,15 @@ export function App() {
           part_extruder_map: partExtruderMap,
           slice_metrics: sliceResult
             ? {
-                estimated_time: sliceResult.estimated_time,
-                filament_grams: sliceResult.filament_grams,
-                filament_meters: sliceResult.filament_meters,
-              }
+              estimated_time: sliceResult.estimated_time,
+              filament_grams: sliceResult.filament_grams,
+              filament_meters: sliceResult.filament_meters,
+            }
             : null,
           sliced_profile_snapshot: sliceResult?.sliced_profile_snapshot ?? slicedProfileSnapshot,
           updated_at: new Date().toISOString(),
         }),
-      }).catch(() => {});
+      }).catch(() => { });
     }, 400);
     return () => window.clearTimeout(timer);
   }, [
@@ -3343,23 +3344,23 @@ export function App() {
       const effInstances =
         effSceneObjs.length === 0
           ? (transform.instances && transform.instances.length > 0
-              ? transform.instances
-              : [
-                  {
-                    instance_id: 'inst_1',
-                    offset_x: transform.offsetX ?? 0,
-                    offset_y: transform.offsetY ?? 0,
-                    offset_z: transform.offsetZ ?? 0,
-                    scale_percent: transform.scalePercent ?? 100,
-                    scale_x: transform.scaleX ?? null,
-                    scale_y: transform.scaleY ?? null,
-                    scale_z: transform.scaleZ ?? null,
-                    rot_x: transform.rotX ?? 0,
-                    rot_y: transform.rotY ?? 0,
-                    rot_z: transform.rotZ ?? 0,
-                    drop_to_bed: transform.dropToBed ?? true,
-                  },
-                ])
+            ? transform.instances
+            : [
+              {
+                instance_id: 'inst_1',
+                offset_x: transform.offsetX ?? 0,
+                offset_y: transform.offsetY ?? 0,
+                offset_z: transform.offsetZ ?? 0,
+                scale_percent: transform.scalePercent ?? 100,
+                scale_x: transform.scaleX ?? null,
+                scale_y: transform.scaleY ?? null,
+                scale_z: transform.scaleZ ?? null,
+                rot_x: transform.rotX ?? 0,
+                rot_y: transform.rotY ?? 0,
+                rot_z: transform.rotZ ?? 0,
+                drop_to_bed: transform.dropToBed ?? true,
+              },
+            ])
           : [];
       const exportPayload = {
         mesh_id: meshId,
@@ -3536,11 +3537,10 @@ export function App() {
                     }
                   }}
                   title={isCurrent ? 'Ventana actual' : `Cambiar a: ${winInfo.title}`}
-                  className={`flex max-w-[160px] items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium transition ${
-                    isCurrent
-                      ? 'bg-slate-800 text-white shadow-sm'
-                      : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
-                  }`}
+                  className={`flex max-w-[160px] items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium transition ${isCurrent
+                    ? 'bg-slate-800 text-white shadow-sm'
+                    : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                    }`}
                 >
                   <span
                     className="h-2 w-2 shrink-0 rounded-full"
@@ -3784,7 +3784,16 @@ export function App() {
             detectedVolumes={printersConfig?.detected_volumes ?? []}
             configuredSdVolume={configuredSdVolume}
             enableTimelapse={enableTimelapse}
-            onToggleEnableTimelapse={setEnableTimelapse}
+            onToggleEnableTimelapse={(nextVal) => {
+              setEnableTimelapse(nextVal);
+              const curPrinter = printersConfig?.printers?.[selectedPrinterId];
+              if (
+                curPrinter?.protocol === 'flashforge_lan' ||
+                selectedPrinterId.startsWith('creator5_pro')
+              ) {
+                void armLocalTimelapse(selectedPrinterId, nextVal).catch(() => { });
+              }
+            }}
             autoLeveling={autoLeveling}
             onToggleAutoLeveling={setAutoLeveling}
             onSendToPrinter={handleSendToPrinter}
@@ -3858,13 +3867,13 @@ export function App() {
             extruderColors={
               activeProfileId === 'creator5_pro'
                 ? [0, 1, 2, 3].map((zoneIdx) => {
-                    const mappedSlot = partExtruderMap[`zone_${zoneIdx}`] ?? zoneIdx;
-                    return (
-                      extrudersConfig[mappedSlot]?.color_hex ??
-                      extrudersConfig[zoneIdx]?.color_hex ??
-                      '#ffffff'
-                    );
-                  })
+                  const mappedSlot = partExtruderMap[`zone_${zoneIdx}`] ?? zoneIdx;
+                  return (
+                    extrudersConfig[mappedSlot]?.color_hex ??
+                    extrudersConfig[zoneIdx]?.color_hex ??
+                    '#ffffff'
+                  );
+                })
                 : undefined
             }
             multimaterialParts={analysis?.multimaterial_parts}
@@ -3951,14 +3960,14 @@ export function App() {
           material,
           ...(sliceResult
             ? (() => {
-                const hMatch = /(\d+)\s*h/i.exec(sliceResult.estimated_time || '');
-                const mMatch = /(\d+)\s*m/i.exec(sliceResult.estimated_time || '');
-                return {
-                  hours: hMatch ? Number(hMatch[1]) : 0,
-                  minutes: mMatch ? Number(mMatch[1]) : 0,
-                  grams: sliceResult.filament_grams,
-                };
-              })()
+              const hMatch = /(\d+)\s*h/i.exec(sliceResult.estimated_time || '');
+              const mMatch = /(\d+)\s*m/i.exec(sliceResult.estimated_time || '');
+              return {
+                hours: hMatch ? Number(hMatch[1]) : 0,
+                minutes: mMatch ? Number(mMatch[1]) : 0,
+                grams: sliceResult.filament_grams,
+              };
+            })()
             : {}),
         }}
       />
@@ -3991,7 +4000,7 @@ export function App() {
                 disabled={isRestoringSession}
                 onClick={() => {
                   setPendingRestoreSession(null);
-                  void clearLastSession().catch(() => {});
+                  void clearLastSession().catch(() => { });
                   setExternalProjectsOpen(true);
                 }}
                 className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-cyan-200 hover:border-cyan-500/60 hover:bg-slate-800 disabled:opacity-40"
@@ -4004,7 +4013,7 @@ export function App() {
                 disabled={isRestoringSession}
                 onClick={() => {
                   setPendingRestoreSession(null);
-                  void clearLastSession().catch(() => {});
+                  void clearLastSession().catch(() => { });
                 }}
                 className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-40"
               >

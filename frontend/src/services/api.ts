@@ -1900,6 +1900,20 @@ export async function fetchPrinterFiles(
   return res.json() as Promise<PrinterFilesResponse>;
 }
 
+export async function armLocalTimelapse(
+  printerId: PrinterId,
+  armed: boolean,
+): Promise<{ printer_id: string; armed: boolean; armed_printers: string[] }> {
+  const res = await fetch(
+    `${API_BASE_URL}/timelapses/arm/${encodeURIComponent(printerId)}?armed=${armed ? 'true' : 'false'}`,
+    { method: 'POST' },
+  );
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<{ printer_id: string; armed: boolean; armed_printers: string[] }>;
+}
+
 export async function printStoredFile(
   printerId: PrinterId,
   filename: string,
@@ -1926,6 +1940,13 @@ export function getPrinterStoredFileDownloadUrl(
   filename: string,
 ): string {
   return `${API_BASE_URL}/printers/${printerId}/files/download?filename=${encodeURIComponent(filename)}`;
+}
+
+export function getPrinterStoredFileThumbUrl(
+  printerId: PrinterId,
+  filename: string,
+): string {
+  return `${API_BASE_URL}/printers/${printerId}/files/thumb?filename=${encodeURIComponent(filename)}`;
 }
 
 export async function deleteStoredFile(

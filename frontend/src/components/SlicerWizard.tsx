@@ -28,6 +28,7 @@ import {
   Pause,
   Play,
   Plus,
+  RefreshCw,
   Ruler,
   Send,
   ShieldCheck,
@@ -1194,7 +1195,7 @@ export function SlicerWizard({
     window.setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
   };
 
-  const handleDrop = (e: DragEvent<HTMLLabelElement>) => {
+  const handleDrop = (e: DragEvent<HTMLElement>) => {
     e.preventDefault();
     setIsDragging(false);
     const dropped = e.dataTransfer.files?.[0];
@@ -1205,6 +1206,41 @@ export function SlicerWizard({
     ) {
       onSelectStl(dropped);
     }
+  };
+
+  const modelFileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastModelFileHandleRef = useRef<{ getFile: () => Promise<File> } | null>(null);
+
+  const handlePickModelFile = async () => {
+    const win = window as unknown as {
+      showOpenFilePicker?: (opts?: Record<string, unknown>) => Promise<Array<{ getFile: () => Promise<File> }>>;
+    };
+    if (typeof win.showOpenFilePicker === 'function') {
+      try {
+        const [handle] = await win.showOpenFilePicker({
+          id: 'nikk-slicer-model-import',
+          multiple: false,
+          startIn: lastModelFileHandleRef.current ?? 'downloads',
+          types: [
+            {
+              description: 'Modelos 3D (.stl, .3mf)',
+              accept: {
+                'application/octet-stream': ['.stl', '.3mf'],
+              },
+            },
+          ],
+        });
+        if (handle) {
+          lastModelFileHandleRef.current = handle;
+          const picked = await handle.getFile();
+          onSelectStl(picked);
+        }
+        return;
+      } catch (err) {
+        if ((err as { name?: string })?.name === 'AbortError') return;
+      }
+    }
+    modelFileInputRef.current?.click();
   };
 
   const handleFileInput = (e: ChangeEvent<HTMLInputElement>) => {
@@ -1349,10 +1385,45 @@ export function SlicerWizard({
                   caché: {analysis.mesh_id}
                 </span>
               )}
+              {(stlFile || analysis?.mesh_id) && (
+                <button
+                  type="button"
+                  disabled={isAnalyzing}
+                  onClick={() => {
+                    if (lastModelFileHandleRef.current) {
+                      void lastModelFileHandleRef.current
+                        .getFile()
+                        .then((freshFile) => onSelectStl(freshFile))
+                        .catch(() => {
+                          if (stlFile) onSelectStl(stlFile);
+                          else void handlePickModelFile();
+                        });
+                    } else if (stlFile) {
+                      onSelectStl(stlFile);
+                    } else {
+                      void handlePickModelFile();
+                    }
+                  }}
+                  title="Recargar y re-analizar el modelo actual (si el archivo cambió en disco, vuelve a seleccionarlo)"
+                  className="inline-flex items-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-medium text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-40"
+                >
+                  <RefreshCw className={`h-3 w-3 ${isAnalyzing ? 'animate-spin' : ''}`} />
+                  Recargar
+                </button>
+              )}
             </div>
           </div>
 
-          <label
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => void handlePickModelFile()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                void handlePickModelFile();
+              }
+            }}
             onDragOver={(e) => {
               e.preventDefault();
               setIsDragging(true);
@@ -1374,13 +1445,14 @@ export function SlicerWizard({
                 ? `${formatFileSize(stlFile.size)} · Análisis Trimesh`
                 : 'Validación instantánea y extracción de partes multicolor'}
             </span>
-            <input
-              type="file"
-              accept=".stl,.3mf"
-              onChange={handleFileInput}
-              className="hidden"
-            />
-          </label>
+          </div>
+          <input
+            ref={modelFileInputRef}
+            type="file"
+            accept=".stl,.3mf"
+            onChange={handleFileInput}
+            className="hidden"
+          />
 
           {isAnalyzing && (
             <div className="mt-2.5 flex items-center gap-2 text-xs text-cyan-300">
@@ -3376,7 +3448,7 @@ export function SlicerWizard({
                 <Video className="h-3.5 w-3.5 text-cyan-400" />
                 Grabar Timelapse
                 <span className="text-[10px] text-slate-400">
-                  ({selectedProfileId === 'creator5_pro' ? 'timeLapseVideo' : 'Klipper por capa'})
+                  ({selectedProfileId === 'creator5_pro' ? 'Timelapse local + impresora' : 'Klipper por capa'})
                 </span>
               </span>
               <input

@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -50,6 +50,8 @@ from app.connectors import (
     delete_flashforge_file,
     delete_moonraker_file,
     download_moonraker_file,
+    get_flashforge_file_thumbnail,
+    get_moonraker_file_thumbnail,
     list_flashforge_files,
     list_moonraker_files,
     list_moonraker_timelapses,
@@ -107,7 +109,9 @@ from app.core.error_journal import (
     read_error_journal,
     record_error,
 )
+from app.core.flashforge_3mf_exporter import export_flashforge_gcode_3mf
 from app.core.gcode_3mf_packager import package_gcode_as_3mf, prepare_flashforge_gcode
+from app.core.local_timelapse_recorder import local_timelapse_recorder
 from app.core.gcode_postprocessor import apply_layer_pauses_to_file
 from app.core.json_patcher import (
     build_sliced_profile_snapshot,
@@ -201,12 +205,16 @@ async def _poll_enabled_for_recorder() -> list[PrinterLiveStatus]:
     ]
     if not tasks:
         return []
-    return list(await asyncio.gather(*tasks))
+    results = list(await asyncio.gather(*tasks))
+    for st in results:
+        local_timelapse_recorder.ingest_status(st, st.camera_url)
+    return results
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     telemetry_recorder.load_persisted_state()
+    local_timelapse_recorder.load_persisted_state()
     worker_task = asyncio.create_task(
         telemetry_recorder_worker(_poll_enabled_for_recorder, interval_sec=10.0)
     )
@@ -1837,6 +1845,7 @@ async def get_printers_status_endpoint() -> list[PrinterLiveStatus]:
     results = list(await asyncio.gather(*tasks))
     for st in results:
         telemetry_recorder.ingest_status(st)
+        local_timelapse_recorder.ingest_status(st, st.camera_url)
     return results
 
 
@@ -1994,17 +2003,31 @@ async def _dispatch_job_to_printer(
             )
 
         if protocol == "flashforge_lan":
-            ff_upload_path = out_dir / "model.flashforge.gcode"
-            if not ff_upload_path.is_file():
-                prepare_flashforge_gcode(gcode_path, None, ff_upload_path)
-            policy = _extract_chamber_policy_from_gcode(ff_upload_path)
+            ff_gcode_path = out_dir / "model.flashforge.gcode"
+            if not ff_gcode_path.is_file():
+                prepare_flashforge_gcode(gcode_path, None, ff_gcode_path)
+            policy = _extract_chamber_policy_from_gcode(ff_gcode_path)
             if policy is not None:
                 _CHAMBER_POLICY_BY_PRINTER[resolved_pid] = policy
-            base_name = filename[:-10] if filename.lower().endswith(".gcode.3mf") else filename
-            ff_filename = (
-                base_name
-                if base_name.lower().endswith(".gcode")
-                else f"{Path(base_name).stem}.gcode"
+
+            clean_stem = filename
+            lower_name = clean_stem.lower()
+            if lower_name.endswith(".gcode.3mf"):
+                clean_stem = clean_stem[:-10]
+            elif lower_name.endswith(".gcode"):
+                clean_stem = clean_stem[:-6]
+            elif lower_name.endswith(".3mf"):
+                clean_stem = clean_stem[:-4]
+            clean_stem = clean_stem.strip(" ._-") or f"nikk_{job_id[:8]}"
+            ff_filename = f"{clean_stem}.3mf"
+            ff_upload_path = out_dir / ff_filename
+
+            await asyncio.to_thread(
+                export_flashforge_gcode_3mf,
+                ff_gcode_path,
+                ff_upload_path,
+                object_name=clean_stem,
+                timelapse_type=1 if enable_timelapse else 0,
             )
             msg = await upload_and_start_flashforge(
                 cfg,
@@ -2014,6 +2037,8 @@ async def _dispatch_job_to_printer(
                 enable_timelapse=enable_timelapse,
                 auto_leveling=auto_leveling,
             )
+            if start_immediately:
+                local_timelapse_recorder.arm_printer(resolved_pid, bool(enable_timelapse))
             return SendPrintResponse(
                 status="printing" if start_immediately else "uploaded",
                 printer_id=resolved_pid,
@@ -2196,6 +2221,7 @@ async def print_stored_file_endpoint(
                 enable_timelapse=req.enable_timelapse,
                 auto_leveling=req.auto_leveling,
             )
+            local_timelapse_recorder.arm_printer(resolved_pid, bool(req.enable_timelapse))
         else:
             raise HTTPException(
                 status_code=400,
@@ -2337,6 +2363,34 @@ async def download_stored_file_endpoint(
         raise HTTPException(status_code=500, detail=err_detail) from exc
 
 
+@app.get("/api/printers/{printer_id}/files/thumb")
+async def get_stored_file_thumb_endpoint(
+    printer_id: PrinterId,
+    filename: str,
+) -> Response:
+    """Devuelve la miniatura PNG de un archivo en memoria de `printer_id`."""
+    try:
+        _, cfg = get_printer_instance(printer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    protocol = str(cfg.get("protocol", ""))
+    if protocol == "flashforge_lan":
+        png_bytes = await get_flashforge_file_thumbnail(cfg, filename)
+    elif protocol == "moonraker":
+        png_bytes = await get_moonraker_file_thumbnail(cfg, filename)
+    else:
+        raise HTTPException(status_code=404, detail="Miniatura no disponible para este protocolo.")
+
+    if not png_bytes:
+        raise HTTPException(status_code=404, detail="Miniatura no encontrada.")
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/printers/{printer_id}/timelapses", response_model=PrinterTimelapsesResponse)
 async def list_printer_timelapses_endpoint(
     printer_id: PrinterId,
@@ -2383,7 +2437,95 @@ async def diagnose_printer_telemetry_endpoint(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     live_status = await _query_single_printer(resolved_pid, cfg, timeout=2.5)
     telemetry_recorder.ingest_status(live_status)
+    local_timelapse_recorder.ingest_status(live_status, live_status.camera_url)
     return await asyncio.to_thread(diagnose_live_telemetry, live_status)
+
+
+@app.post("/api/export/{job_id}/flashforge-3mf")
+async def export_flashforge_3mf_endpoint(
+    job_id: str,
+    object_name: str | None = Query(default=None),
+) -> FileResponse:
+    """Exporta un `.gcode.3mf` fiel a Orca-Flashforge usando el módulo independiente."""
+    if not job_id.isalnum():
+        raise HTTPException(status_code=400, detail="job_id inválido.")
+    out_dir = TEMP_DIR / job_id / "output"
+    gcodes = sorted(out_dir.glob("*.gcode")) if out_dir.exists() else []
+    if not gcodes:
+        raise HTTPException(status_code=404, detail="G-code no encontrado para este job_id.")
+    src_gcode = out_dir / "model.flashforge.gcode"
+    if not src_gcode.is_file():
+        src_gcode = gcodes[0]
+    mesh_cand = next((TEMP_DIR / job_id).glob("input.*"), None)
+    out_3mf = out_dir / f"{(object_name or job_id)}.gcode.3mf"
+    await asyncio.to_thread(
+        export_flashforge_gcode_3mf,
+        src_gcode,
+        out_3mf,
+        mesh_path=mesh_cand,
+        object_name=object_name or job_id,
+    )
+    return FileResponse(
+        path=str(out_3mf),
+        media_type="application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
+        filename=out_3mf.name,
+    )
+
+
+@app.get("/api/timelapses")
+async def list_local_timelapses_endpoint(
+    printer_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Lista sesiones activas y completadas de timelapse local por impresora."""
+    return local_timelapse_recorder.list_timelapses(printer_id)
+
+
+@app.post("/api/timelapses/arm/{printer_id}")
+async def arm_local_timelapse_endpoint(
+    printer_id: PrinterId,
+    armed: bool = Query(default=True),
+) -> dict[str, Any]:
+    """Activa o desactiva la captura local de timelapse en este PC para una impresora."""
+    try:
+        resolved_pid, _cfg = get_printer_instance(printer_id)
+    except ValueError:
+        resolved_pid = printer_id
+    return {
+        "printer_id": resolved_pid,
+        "armed": armed,
+        "armed_printers": local_timelapse_recorder.arm_printer(resolved_pid, armed),
+    }
+
+
+@app.get("/api/timelapses/{session_id}/media")
+async def get_local_timelapse_media_endpoint(
+    session_id: str,
+    fmt: str = Query(default="webp"),
+) -> FileResponse:
+    """Sirve el timelapse local (`webp` para reproducir en app, `avi`/`mp4` para descargar, `thumb` miniatura)."""
+    media_path = local_timelapse_recorder.get_media_path(session_id, fmt=fmt)
+    if media_path is None:
+        raise HTTPException(status_code=404, detail="Archivo de timelapse no encontrado.")
+    mime_map = {
+        "webp": "image/webp",
+        "avi": "video/x-msvideo",
+        "mp4": "video/mp4",
+        "thumb": "image/jpeg",
+    }
+    return FileResponse(
+        path=str(media_path),
+        media_type=mime_map.get(fmt.lower(), "application/octet-stream"),
+        filename=f"{session_id}.{fmt.lower() if fmt.lower() != 'thumb' else 'jpg'}",
+    )
+
+
+@app.delete("/api/timelapses/{session_id}")
+async def delete_local_timelapse_endpoint(session_id: str) -> dict[str, Any]:
+    """Elimina un timelapse local del disco."""
+    deleted = local_timelapse_recorder.delete_timelapse(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Timelapse no encontrado.")
+    return {"deleted": True, "session_id": session_id}
 
 
 @app.get(

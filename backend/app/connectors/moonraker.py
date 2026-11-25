@@ -363,6 +363,59 @@ async def list_moonraker_files(cfg: dict[str, Any]) -> list[PrinterStoredFile]:
     return files
 
 
+async def get_moonraker_file_thumbnail(
+    cfg: dict[str, Any],
+    filename: str,
+) -> bytes | None:
+    """Obtiene la miniatura PNG de un G-code en Moonraker (T1 Pro / V400)."""
+    clean_name = filename.strip()
+    if not clean_name:
+        return None
+    _ip, base = await _resolve_live_base_url(cfg)
+    async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
+        try:
+            meta_resp = await client.get(
+                f"{base}/server/files/metadata",
+                params={"filename": clean_name},
+            )
+            if meta_resp.status_code == 200:
+                thumbs = (meta_resp.json().get("result") or {}).get("thumbnails") or []
+                valid_thumbs = [t for t in thumbs if isinstance(t, dict) and t.get("relative_path")]
+                if valid_thumbs:
+                    best = max(
+                        valid_thumbs,
+                        key=lambda t: int(t.get("width") or 0) * int(t.get("height") or 0),
+                    )
+                    rel = str(best["relative_path"]).lstrip("/")
+                    img_resp = await client.get(f"{base}/server/files/gcodes/{quote(rel, safe='/')}")
+                    if img_resp.status_code == 200 and img_resp.content:
+                        return img_resp.content
+        except (httpx.HTTPError, ValueError):
+            pass
+
+        # Respaldo: leer bloque `; thumbnail begin` de la cabecera del G-code
+        try:
+            head_resp = await client.get(
+                f"{base}/server/files/gcodes/{quote(clean_name, safe='/')}",
+                headers={"Range": "bytes=0-131071"},
+            )
+            if head_resp.status_code in (200, 206):
+                m = re.search(
+                    r";\s*thumbnail\s+begin\s+\S+\s+\d+\s*\r?\n(.*?);\s*thumbnail\s+end",
+                    head_resp.text,
+                    re.S | re.I,
+                )
+                if m:
+                    import base64
+
+                    b64 = "".join(ln.lstrip("; ").strip() for ln in m.group(1).splitlines())
+                    if b64:
+                        return base64.b64decode(b64)
+        except (httpx.HTTPError, ValueError):
+            pass
+    return None
+
+
 async def print_moonraker_file(
     cfg: dict[str, Any],
     filename: str,

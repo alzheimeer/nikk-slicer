@@ -41,6 +41,7 @@ import {
   fetchPrintersStatus,
   generatePrinterCompendium,
   getPrinterStoredFileDownloadUrl,
+  getPrinterStoredFileThumbUrl,
   printStoredFile,
   requestAITelemetryDiagnosis,
   togglePrinterLight,
@@ -272,6 +273,7 @@ export function FarmDashboard() {
   // Archivos en memoria por máquina
   const [filesOpenById, setFilesOpenById] = useState<Record<string, boolean>>({});
   const [filesById, setFilesById] = useState<Record<string, PrinterStoredFile[]>>({});
+  const [filesNonceById, setFilesNonceById] = useState<Record<string, number>>({});
   const [confirmDeleteById, setConfirmDeleteById] = useState<Record<string, string | null>>({});
   const [confirmDeleteAllById, setConfirmDeleteAllById] = useState<Record<string, boolean>>({});
   const [confirmPrintById, setConfirmPrintById] = useState<Record<string, string | null>>({});
@@ -432,6 +434,7 @@ export function FarmDashboard() {
     try {
       const res = await fetchPrinterFiles(printerId);
       setFilesById((prev) => ({ ...prev, [printerId]: res.files }));
+      setFilesNonceById((prev) => ({ ...prev, [printerId]: Date.now() }));
     } catch (err: unknown) {
       setPrinterFeedback(
         printerId,
@@ -1291,7 +1294,21 @@ export function FarmDashboard() {
                                     key={f.filename}
                                     className="space-y-1 rounded-lg border border-slate-800 bg-slate-900/90 px-2 py-1 text-[10px]"
                                   >
-                                    <div className="flex items-center justify-between gap-1.5">
+                                    <div className="flex items-center justify-between gap-2">
+                                      {(st.protocol === 'flashforge_lan' || st.protocol === 'moonraker') && (
+                                        <div className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700/80 bg-slate-950">
+                                          <FileText className="h-4 w-4 text-slate-600" />
+                                          <img
+                                            src={`${getPrinterStoredFileThumbUrl(pid, f.filename)}&v=${filesNonceById[pid] ?? 0}`}
+                                            alt={f.filename}
+                                            loading="lazy"
+                                            onError={(e) => {
+                                              e.currentTarget.style.display = 'none';
+                                            }}
+                                            className="relative z-10 h-full w-full bg-slate-950 object-contain"
+                                          />
+                                        </div>
+                                      )}
                                       <div className="min-w-0 flex-1">
                                         <p
                                           className="truncate font-medium text-slate-200"

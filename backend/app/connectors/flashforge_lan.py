@@ -761,6 +761,36 @@ async def list_flashforge_files(cfg: dict[str, Any]) -> list[PrinterStoredFile]:
         return []
 
 
+async def get_flashforge_file_thumbnail(
+    cfg: dict[str, Any],
+    filename: str,
+) -> bytes | None:
+    """Obtiene la miniatura PNG de un archivo en Creator 5 Pro (`:8898/gcodeThumb`)."""
+    clean_name = filename.strip()
+    if not clean_name:
+        return None
+    async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
+        ip, eff_sn, access_code, _ = await _resolve_flashforge_target(cfg, client)
+        try:
+            resp = await client.post(
+                f"http://{ip}:8898/gcodeThumb",
+                json={
+                    "serialNumber": eff_sn,
+                    "checkCode": access_code,
+                    "fileName": clean_name,
+                },
+            )
+            if resp.status_code != 200:
+                return None
+            body = resp.json()
+            img_b64 = body.get("imageData") if isinstance(body, dict) else None
+            if not isinstance(img_b64, str) or not img_b64.strip():
+                return None
+            return base64.b64decode(img_b64)
+        except (httpx.HTTPError, ValueError):
+            return None
+
+
 async def print_flashforge_file(
     cfg: dict[str, Any],
     filename: str,
