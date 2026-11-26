@@ -811,6 +811,13 @@ export function SlicerWizard({
   const [aiUserNotes, setAiUserNotes] = useState('');
   const [projectsModalOpen, setProjectsModalOpen] = useState(false);
   const [projectsModalTab, setProjectsModalTab] = useState<'saved' | 'diagnostics'>('saved');
+  const [visibleRecentLimit, setVisibleRecentLimit] = useState(10);
+
+  useEffect(() => {
+    if (projectsModalOpen) {
+      setVisibleRecentLimit(10);
+    }
+  }, [projectsModalOpen]);
 
   useEffect(() => {
     if (externalProjectsOpen) {
@@ -4489,7 +4496,7 @@ export function SlicerWizard({
                   </p>
                 ) : (
                   <div className="space-y-2">
-                    {recentProjects.map((rp) => (
+                    {recentProjects.slice(0, visibleRecentLimit).map((rp) => (
                       <div
                         key={rp.project_id}
                         className="flex items-center gap-3 rounded-xl border border-cyan-500/25 bg-slate-950/85 p-2.5 text-xs"
@@ -4562,6 +4569,42 @@ export function SlicerWizard({
                         </div>
                       </div>
                     ))}
+                    {(recentProjects.length > visibleRecentLimit || (visibleRecentLimit > 10 && recentProjects.length > 10)) && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+                        <span className="text-[11px] text-slate-400">
+                          Mostrando {Math.min(visibleRecentLimit, recentProjects.length)} de {recentProjects.length} proyectos
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {visibleRecentLimit < recentProjects.length && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setVisibleRecentLimit((prev) => prev + 10)}
+                                className="rounded-lg border border-cyan-500/45 bg-cyan-500/15 px-3 py-1 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/25"
+                              >
+                                Ver {Math.min(10, recentProjects.length - visibleRecentLimit)} más
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setVisibleRecentLimit(recentProjects.length)}
+                                className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-700"
+                              >
+                                Ver todos ({recentProjects.length})
+                              </button>
+                            </>
+                          )}
+                          {visibleRecentLimit > 10 && recentProjects.length > 10 && (
+                            <button
+                              type="button"
+                              onClick={() => setVisibleRecentLimit(10)}
+                              className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1 text-[11px] font-semibold text-slate-300 hover:bg-slate-800"
+                            >
+                              Mostrar últimos 10
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )
               ) : isLoadingProjects ? (

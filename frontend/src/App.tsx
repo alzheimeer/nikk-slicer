@@ -1561,7 +1561,7 @@ export function App() {
     try {
       const [list, recents] = await Promise.all([
         fetchSavedProjects(),
-        fetchRecentProjects(5).catch(() => []),
+        fetchRecentProjects(0).catch(() => []),
       ]);
       setSavedProjects(list);
       setRecentProjects(recents);
@@ -1685,7 +1685,7 @@ export function App() {
       });
       setActiveProjectId(saved.project_id);
       setActiveProjectTitle(saved.title);
-      const recents = await fetchRecentProjects(5).catch(() => []);
+      const recents = await fetchRecentProjects(0).catch(() => []);
       setRecentProjects(recents);
       showProjectToast(
         targetProjectId
@@ -2018,7 +2018,7 @@ export function App() {
       suppressRestorePromptRef.current = true;
       void handleLoadFullProject(pid);
     }
-    void fetchRecentProjects(5)
+    void fetchRecentProjects(0)
       .then((list) => setRecentProjects(list))
       .catch(() => { });
     void fetchSystemEnvironment()

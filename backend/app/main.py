@@ -2619,9 +2619,10 @@ async def save_project_endpoint(req: SaveProjectRequest) -> dict[str, Any]:
 
 
 @app.get("/api/projects/recent")
-async def list_recent_projects_endpoint(limit: int = 5) -> dict[str, Any]:
-    """Devuelve los proyectos más recientes con miniatura y título corto en español."""
-    return {"projects": list_recent_projects(limit=max(1, min(20, limit)))}
+async def list_recent_projects_endpoint(limit: int = 10) -> dict[str, Any]:
+    """Devuelve los proyectos más recientes con miniatura y título corto en español (0 = todos)."""
+    eff_limit = 0 if limit <= 0 else min(500, limit)
+    return {"projects": list_recent_projects(limit=eff_limit)}
 
 
 @app.get("/api/projects")

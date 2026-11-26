@@ -692,8 +692,20 @@ async def upload_and_start_flashforge(
         except httpx.ConnectError:
             pass
         except httpx.HTTPError as exc:
+            err_detail = str(exc).strip() or type(exc).__name__
+            printer_status = (
+                str(detail.get("status") or "").strip().lower()
+                if isinstance(detail, dict)
+                else ""
+            )
+            if printer_status in {"completed", "printing", "paused", "busy"}:
+                raise RuntimeError(
+                    f"Error transfiriendo '{filename}' a FlashForge LAN ({ip}:8898): "
+                    f"la impresora está en estado '{printer_status}' (ocupada o con aviso pendiente en pantalla; "
+                    f"confirma o cierra el diálogo en la pantalla táctil e intenta de nuevo). [{err_detail}]"
+                ) from exc
             raise RuntimeError(
-                f"Error transfiriendo '{filename}' a FlashForge LAN ({ip}:8898): {exc}"
+                f"Error transfiriendo '{filename}' a FlashForge LAN ({ip}:8898): {err_detail}"
             ) from exc
 
     return await asyncio.to_thread(

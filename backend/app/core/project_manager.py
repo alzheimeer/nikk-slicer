@@ -172,8 +172,8 @@ def _format_summary(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def list_recent_projects(limit: int = 5) -> list[dict[str, Any]]:
-    """Devuelve los `limit` proyectos más recientes ordenados por `updated_at` descendente."""
+def list_recent_projects(limit: int = 10) -> list[dict[str, Any]]:
+    """Devuelve los `limit` proyectos más recientes ordenados por `updated_at` descendente (si `limit <= 0`, todos)."""
     if not PROJECTS_HOME_DIR.is_dir():
         return []
     records: list[dict[str, Any]] = []
@@ -190,7 +190,8 @@ def list_recent_projects(limit: int = 5) -> list[dict[str, Any]]:
         except Exception:
             continue
     records.sort(key=lambda r: str(r.get("updated_at") or r.get("created_at") or ""), reverse=True)
-    return [_format_summary(r) for r in records[: max(1, limit)]]
+    selected = records if limit <= 0 else records[:limit]
+    return [_format_summary(r) for r in selected]
 
 
 def get_full_project(project_id: str) -> dict[str, Any] | None:

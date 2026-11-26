@@ -537,6 +537,7 @@ def run_slicer_cli(
             "capture_output": True,
             "text": True,
             "timeout": run_timeout,
+            "cwd": str(patched.job_dir),
         }
         if sys.platform.startswith("win") and hasattr(subprocess, "CREATE_NO_WINDOW"):
             run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW

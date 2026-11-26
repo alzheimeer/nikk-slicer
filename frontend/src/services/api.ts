@@ -1374,7 +1374,7 @@ export async function saveFullProject(payload: {
   return data.project;
 }
 
-export async function fetchRecentProjects(limit = 5): Promise<FullProjectSummary[]> {
+export async function fetchRecentProjects(limit = 10): Promise<FullProjectSummary[]> {
   const res = await fetch(`${API_BASE_URL}/projects/recent?limit=${limit}`);
   if (!res.ok) {
     throw new Error(await parseError(res));
