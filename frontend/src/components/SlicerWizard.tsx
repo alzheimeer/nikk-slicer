@@ -109,7 +109,7 @@ export const MATERIAL_DEFAULTS: Record<MaterialType, MaterialDefaults> = {
     label: 'PETG',
     nozzleInitial: 250,
     nozzle: 242,
-    bed: 75,
+    bed: 80,
     recMin: 230,
     recMax: 255,
     nozzleMin: 225,
@@ -2830,9 +2830,36 @@ export function SlicerWizard({
                 return (
                   <div className="space-y-1.5 rounded-lg border border-cyan-500/25 bg-cyan-950/20 p-2 text-[10px]">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-semibold text-cyan-200">
-                        Cama negociada: <strong className="font-mono text-white">{summary.negotiatedBedTemp}°C</strong>
-                      </span>
+                      <label className="flex items-center gap-1.5 font-semibold text-cyan-200">
+                        <span>Cama:</span>
+                        <input
+                          type="number"
+                          min={40}
+                          max={115}
+                          step={1}
+                          value={bedTemp}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            if (Number.isFinite(val)) {
+                              onChangeBedTemp(Math.max(40, Math.min(115, Math.round(val))));
+                            }
+                          }}
+                          className="w-12 rounded border border-cyan-500/40 bg-slate-900 px-1.5 py-0.5 text-center font-mono text-[11px] font-bold text-white outline-none focus:border-cyan-400"
+                        />
+                        <span className="font-mono text-white">°C</span>
+                        {bedTemp !== summary.negotiatedBedTemp ? (
+                          <button
+                            type="button"
+                            onClick={() => onChangeBedTemp(summary.negotiatedBedTemp)}
+                            className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[9px] text-cyan-300 hover:bg-slate-700"
+                            title="Restaurar temperatura negociada automática"
+                          >
+                            Auto ({summary.negotiatedBedTemp}°C)
+                          </button>
+                        ) : (
+                          <span className="text-[9px] font-normal text-cyan-300/75">(Auto)</span>
+                        )}
+                      </label>
                       <span className="font-mono text-slate-300">
                         Vel. máx. conjunto: <strong className="text-amber-300">{summary.maxLinearSpeed} mm/s</strong> (T{summary.bottleneckSlotIdx}: {summary.minFlow} mm³/s)
                       </span>

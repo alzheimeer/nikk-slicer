@@ -347,7 +347,7 @@ def negotiate_multimaterial_bed_temp(materials: list[str]) -> int:
         return 60
     if len(body_mats) == 1:
         only = next(iter(body_mats))
-        return {"pla": 60, "petg": 75, "abs": 100, "tpu": 50}[only]
+        return {"pla": 60, "petg": 80, "abs": 100, "tpu": 50}[only]
     if "abs" in body_mats:
         return 90 if ("pla" in body_mats or "tpu" in body_mats) else 95
     if "petg" in body_mats and "pla" in body_mats:

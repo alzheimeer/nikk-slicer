@@ -168,7 +168,7 @@
       "recommended_max": 255,
       "default_initial": 250,
       "default_normal": 242,
-      "default_bed": 75
+      "default_bed": 80
     },
     "abs": {
       "recommended_min": 240,
