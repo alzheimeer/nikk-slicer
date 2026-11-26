@@ -18,7 +18,7 @@ import httpx
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
@@ -2513,6 +2513,42 @@ async def export_flashforge_3mf_endpoint(
         media_type="application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
         filename=out_3mf.name,
     )
+
+
+@app.get("/api/printers/{printer_id}/camera/stream")
+async def proxy_printer_camera_stream(
+    printer_id: PrinterId,
+) -> StreamingResponse:
+    """Relay MJPEG de conexión única por impresora para evitar saturar :8080 en Creator 5 Pro."""
+    try:
+        _resolved_pid, cfg = get_printer_instance(printer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    cam_url = str(cfg.get("camera_url") or "").strip()
+    if not cam_url:
+        raise HTTPException(status_code=404, detail="Impresora sin URL de cámara configurada.")
+    from app.core.camera_hub import camera_hub
+
+    return StreamingResponse(
+        camera_hub.stream_mjpeg(cam_url),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+@app.post("/api/printers/{printer_id}/camera/reconnect")
+async def reconnect_printer_camera(printer_id: PrinterId) -> dict[str, Any]:
+    """Cierra forzadamente el socket upstream de cámara y prepara reconexión limpia."""
+    try:
+        _resolved_pid, cfg = get_printer_instance(printer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    cam_url = str(cfg.get("camera_url") or "").strip()
+    if cam_url:
+        from app.core.camera_hub import camera_hub
+
+        await camera_hub.force_reconnect(cam_url)
+    return {"reconnected": True, "printer_id": printer_id}
 
 
 @app.get("/api/timelapses")

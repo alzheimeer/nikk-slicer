@@ -52,9 +52,17 @@ def _slugify(name: str | None) -> str:
 
 
 async def grab_single_jpeg_from_camera(camera_url: str, timeout: float = 4.0) -> bytes | None:
-    """Captura exactamente 1 frame JPEG desde un stream MJPEG (`?action=stream`) o snapshot y cierra al instante."""
+    """Captura exactamente 1 frame JPEG desde el hub compartido en RAM o stream MJPEG `:8080`."""
     if not camera_url:
         return None
+    try:
+        from app.core.camera_hub import camera_hub
+
+        cached = camera_hub.get_recent_frame(camera_url, max_age_sec=6.0)
+        if cached:
+            return cached
+    except Exception:
+        pass
     buf = bytearray()
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:

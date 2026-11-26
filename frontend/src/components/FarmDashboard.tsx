@@ -32,6 +32,7 @@ import {
   X,
 } from 'lucide-react';
 import {
+  API_BASE_URL,
   controlPrinter,
   deleteAllStoredFiles,
   deleteStoredFile,
@@ -101,11 +102,13 @@ function withStreamNonce(url: string, nonce: number): string {
 function CameraStreamBox({
   url,
   name,
+  printerId,
   onExpand,
   pausedExternal = false,
 }: {
   url: string;
   name: string;
+  printerId?: string;
   onExpand?: () => void;
   pausedExternal?: boolean;
 }) {
@@ -113,6 +116,10 @@ function CameraStreamBox({
   const [isPlaying, setIsPlaying] = useState(true);
   const [streamNonce, setStreamNonce] = useState(0);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const effectiveUrl =
+    url && printerId
+      ? `${API_BASE_URL}/printers/${encodeURIComponent(printerId)}/camera/stream`
+      : url;
 
   const releaseSocket = useCallback(() => {
     if (imgRef.current) {
@@ -151,8 +158,14 @@ function CameraStreamBox({
     return () => window.clearTimeout(retryTimer);
   }, [url, failed, isPlaying, pausedExternal]);
 
-  const handleResume = () => {
+  const handleResume = async () => {
     releaseSocket();
+    if (printerId && url) {
+      await fetch(
+        `${API_BASE_URL}/printers/${encodeURIComponent(printerId)}/camera/reconnect`,
+        { method: 'POST' },
+      ).catch(() => { });
+    }
     setFailed(false);
     setStreamNonce(Date.now());
     setIsPlaying(true);
@@ -179,7 +192,7 @@ function CameraStreamBox({
         {url && (
           <button
             type="button"
-            onClick={handleResume}
+            onClick={() => void handleResume()}
             className="flex items-center gap-1 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/25"
           >
             <Play className="h-3 w-3 fill-current" />
@@ -217,7 +230,7 @@ function CameraStreamBox({
     <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl border border-slate-800 bg-black">
       <img
         ref={imgRef}
-        src={withStreamNonce(url, streamNonce)}
+        src={withStreamNonce(effectiveUrl, streamNonce)}
         alt={`Cámara ${name}`}
         onError={() => {
           releaseSocket();
@@ -262,9 +275,11 @@ export function FarmDashboard() {
   const [statuses, setStatuses] = useState<PrinterLiveStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [globalError, setGlobalError] = useState<string | null>(null);
-  const [expandedCamera, setExpandedCamera] = useState<{ url: string; name: string } | null>(
-    null,
-  );
+  const [expandedCamera, setExpandedCamera] = useState<{
+    url: string;
+    name: string;
+    printerId?: string;
+  } | null>(null);
 
   // Estado aislado ESTRICTAMENTE por instancia `printer_id`
   const [actionLoadingById, setActionLoadingById] = useState<Record<string, string | null>>({});
@@ -756,11 +771,16 @@ export function FarmDashboard() {
                   <CameraStreamBox
                     url={st.camera_url}
                     name={st.display_name}
+                    printerId={pid}
                     pausedExternal={
                       Boolean(expandedCamera) && expandedCamera?.name === st.display_name
                     }
                     onExpand={() =>
-                      setExpandedCamera({ url: st.camera_url, name: st.display_name })
+                      setExpandedCamera({
+                        url: st.camera_url,
+                        name: st.display_name,
+                        printerId: pid,
+                      })
                     }
                   />
 
@@ -1619,6 +1639,7 @@ export function FarmDashboard() {
               <CameraStreamBox
                 url={expandedCamera.url}
                 name={expandedCamera.name}
+                printerId={expandedCamera.printerId}
               />
             </div>
           </div>
