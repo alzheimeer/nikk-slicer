@@ -131,6 +131,8 @@ interface Viewport3DProps {
   }) => Promise<void> | void;
   isExporting?: boolean;
   onOpenProjects?: () => void;
+  onImportModels?: () => void;
+  isImportingModels?: boolean;
 }
 
 function buildInitialInstances(t: ModelTransform): ModelInstanceTransform[] {
@@ -891,6 +893,107 @@ export function arrangeSceneObjectsOnBed(
       ...o,
       offset_x: nextPos.offset_x,
       offset_y: nextPos.offset_y,
+      offset_z: 0,
+      drop_to_bed: true,
+    };
+  });
+}
+
+export function placeNewSceneObjectsWithoutCollision(
+  existingObjects: SceneObjectTransform[],
+  newObjects: SceneObjectTransform[],
+  printer: PrinterInfo | null,
+): SceneObjectTransform[] {
+  if (newObjects.length === 0) return [];
+  const spacing = 6;
+  const isDelta = printer?.kinematics === 'delta';
+  const radius = isDelta ? Math.max(60, (printer?.diameter_mm ?? 260) / 2 - 8) : 0;
+  const halfW = isDelta ? radius : Math.max(60, (printer?.bed_mm?.[0] ?? 256) / 2 - 8);
+  const halfH = isDelta ? radius : Math.max(60, (printer?.bed_mm?.[1] ?? 256) / 2 - 8);
+
+  const getDims = (o: SceneObjectTransform) => ({
+    w: Math.max(8, (o.dimensions_mm?.[0] || 30) * ((o.scale_x ?? o.scale_percent) / 100)),
+    h: Math.max(8, (o.dimensions_mm?.[1] || 30) * ((o.scale_y ?? o.scale_percent) / 100)),
+  });
+
+  const occupied: Array<{ minX: number; maxX: number; minY: number; maxY: number }> =
+    existingObjects.map((o) => {
+      const { w, h } = getDims(o);
+      return {
+        minX: o.offset_x - w / 2 - spacing / 2,
+        maxX: o.offset_x + w / 2 + spacing / 2,
+        minY: o.offset_y - h / 2 - spacing / 2,
+        maxY: o.offset_y + h / 2 + spacing / 2,
+      };
+    });
+
+  const collides = (cx: number, cy: number, w: number, h: number): boolean => {
+    const aMinX = cx - w / 2 - spacing / 2;
+    const aMaxX = cx + w / 2 + spacing / 2;
+    const aMinY = cy - h / 2 - spacing / 2;
+    const aMaxY = cy + h / 2 + spacing / 2;
+    for (const b of occupied) {
+      if (aMinX < b.maxX && aMaxX > b.minX && aMinY < b.maxY && aMaxY > b.minY) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const fitsBed = (cx: number, cy: number, w: number, h: number): boolean => {
+    if (isDelta) {
+      const corners = [
+        [cx - w / 2, cy - h / 2],
+        [cx + w / 2, cy - h / 2],
+        [cx - w / 2, cy + h / 2],
+        [cx + w / 2, cy + h / 2],
+      ];
+      return corners.every(([x, y]) => Math.hypot(x, y) <= radius);
+    }
+    return Math.abs(cx) + w / 2 <= halfW && Math.abs(cy) + h / 2 <= halfH;
+  };
+
+  return newObjects.map((obj) => {
+    const { w, h } = getDims(obj);
+    let chosenX: number | null = null;
+    let chosenY: number | null = null;
+
+    // Búsqueda espiral/anillo desde el centro hacia afuera
+    const step = 10;
+    const maxRing = Math.ceil(Math.max(halfW, halfH) / step) + 2;
+    outer: for (let ring = 0; ring <= maxRing; ring += 1) {
+      for (let gx = -ring; gx <= ring; gx += 1) {
+        for (let gy = -ring; gy <= ring; gy += 1) {
+          if (Math.abs(gx) !== ring && Math.abs(gy) !== ring) continue;
+          const cx = gx * step;
+          const cy = gy * step;
+          if (!fitsBed(cx, cy, w, h)) continue;
+          if (!collides(cx, cy, w, h)) {
+            chosenX = cx;
+            chosenY = cy;
+            break outer;
+          }
+        }
+      }
+    }
+
+    if (chosenX === null || chosenY === null) {
+      const rightEdge = occupied.length > 0 ? Math.max(...occupied.map((b) => b.maxX)) : 0;
+      chosenX = Math.round((rightEdge + w / 2 + spacing) * 10) / 10;
+      chosenY = 0;
+    }
+
+    occupied.push({
+      minX: chosenX - w / 2 - spacing / 2,
+      maxX: chosenX + w / 2 + spacing / 2,
+      minY: chosenY - h / 2 - spacing / 2,
+      maxY: chosenY + h / 2 + spacing / 2,
+    });
+
+    return {
+      ...obj,
+      offset_x: Math.round(chosenX * 10) / 10,
+      offset_y: Math.round(chosenY * 10) / 10,
       offset_z: 0,
       drop_to_bed: true,
     };
@@ -1805,8 +1908,11 @@ export function Viewport3D({
   onExportSelection,
   isExporting = false,
   onOpenProjects,
+  onImportModels,
+  isImportingModels = false,
 }: Viewport3DProps) {
   const { t } = useI18n();
+  const [bedContextMenu, setBedContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [viewMode, setViewMode] = useState<'stl' | 'gcode'>('stl');
   const [pauseNoteDraft, setPauseNoteDraft] = useState<string>('');
   const [showPauseInput, setShowPauseInput] = useState<boolean>(false);
@@ -2696,7 +2802,19 @@ export function Viewport3D({
   return (
     <div
       ref={containerRef}
+      onContextMenu={(e) => {
+        if (viewMode !== 'stl' || activeCadTool === 'support_blocker' || !onImportModels) return;
+        if (!(e.target instanceof HTMLCanvasElement)) return;
+        e.preventDefault();
+        const rect = containerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        setBedContextMenu({
+          x: Math.max(8, Math.min(rect.width - 180, e.clientX - rect.left)),
+          y: Math.max(8, Math.min(rect.height - 60, e.clientY - rect.top)),
+        });
+      }}
       onPointerDown={(e) => {
+        if (bedContextMenu) setBedContextMenu(null);
         if (e.button !== 0 || viewMode !== 'stl' || sceneObjects.length === 0) return;
         if (e.shiftKey && e.target instanceof HTMLCanvasElement) {
           const rect = containerRef.current?.getBoundingClientRect();
@@ -2748,6 +2866,25 @@ export function Viewport3D({
           }}
           className="pointer-events-none absolute z-30 border border-dashed border-cyan-400 bg-cyan-400/15"
         />
+      )}
+      {bedContextMenu && onImportModels && (
+        <div
+          style={{ left: bedContextMenu.x, top: bedContextMenu.y }}
+          className="absolute z-50 w-44 rounded-xl border border-slate-700 bg-slate-900/95 p-1.5 text-xs shadow-2xl backdrop-blur"
+          onMouseLeave={() => setBedContextMenu(null)}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setBedContextMenu(null);
+              onImportModels();
+            }}
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/20"
+          >
+            <Plus className="h-3.5 w-3.5 text-cyan-400" />
+            <span>Agregar modelo...</span>
+          </button>
+        </div>
       )}
       {/* Contenedor superior HUD + Submenú CAD (flujo vertical para evitar solapamientos) */}
       <div className="pointer-events-none absolute inset-x-4 top-4 z-20 flex flex-col items-start gap-2.5">
@@ -2823,6 +2960,23 @@ export function Viewport3D({
               <ArrowDownToLine className="h-3.5 w-3.5" />
               <span>Z=0 {isAllDropToBed ? 'ON' : 'OFF'}</span>
             </button>
+
+            {onImportModels && (
+              <button
+                type="button"
+                disabled={isImportingModels}
+                onClick={onImportModels}
+                title="Importar / agregar pieza(s) al plato actual (Cmd+I / Ctrl+I)"
+                className="flex items-center gap-1 rounded-lg border border-cyan-500/45 bg-cyan-500/15 px-2 py-1 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-50"
+              >
+                {isImportingModels ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Plus className="h-3.5 w-3.5" />
+                )}
+                <span>Importar</span>
+              </button>
+            )}
 
             {sceneObjects.length > 0 && onMergeObjects ? (
               <button

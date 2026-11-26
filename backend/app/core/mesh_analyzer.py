@@ -3386,6 +3386,267 @@ def split_mesh_into_scene_objects(
     return _export_scene_objects_to_cache(mesh_id, parts_list_stl)
 
 
+SUPPORTED_IMPORT_EXTENSIONS = {".stl", ".3mf", ".obj", ".amf", ".step", ".stp", ".zip"}
+
+
+def _load_meshes_from_file(
+    model_path: Path,
+    display_name: str | None = None,
+) -> tuple[list[tuple[MultimaterialPartInfo, trimesh.Trimesh]], dict[str, list[str | None]], list[str]]:
+    """Carga un archivo `.stl`, `.3mf`, `.obj`, `.amf`, `.step`/`.stp` o `.zip` devolviendo sus mallas individuales."""
+    import tempfile
+    import zipfile
+
+    ext = model_path.suffix.lower()
+    stem = Path(display_name or model_path.name).stem or "Pieza"
+    paint_map: dict[str, list[str | None]] = {}
+    palette: list[str] = []
+
+    if ext == ".zip":
+        all_parts: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
+        with tempfile.TemporaryDirectory(prefix="nikk_zip_") as tmp_dir:
+            with zipfile.ZipFile(model_path, "r") as zf:
+                zf.extractall(tmp_dir)
+            tmp_root = Path(tmp_dir)
+            candidates = sorted(
+                p
+                for p in tmp_root.rglob("*")
+                if p.is_file()
+                and not p.name.startswith(".")
+                and "__MACOSX" not in p.parts
+                and p.suffix.lower() in (SUPPORTED_IMPORT_EXTENSIONS - {".zip"})
+            )
+            if not candidates:
+                raise ValueError(f"El archivo '{model_path.name}' no contiene modelos 3D compatibles (.stl, .3mf, .obj, .amf, .step).")
+            for idx, cand in enumerate(candidates):
+                sub_parts, sub_paint, sub_pal = _load_meshes_from_file(cand, cand.name)
+                for p_info, m in sub_parts:
+                    uid = f"{p_info.part_id}_{idx}"
+                    if p_info.part_id in sub_paint:
+                        paint_map[uid] = sub_paint[p_info.part_id]
+                    p_copy = p_info.model_copy(update={"part_id": uid})
+                    all_parts.append((p_copy, m))
+                if sub_pal and not palette:
+                    palette = sub_pal
+        return all_parts, paint_map, palette
+
+    if ext == ".3mf":
+        raw_parts, palette = _extract_raw_3mf_parts_with_paint(model_path)
+        if raw_parts:
+            extracted = extract_3mf_parts_and_meshes(model_path)
+            parts_meshes: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
+            for idx, (pid_str, pname, verts, tri_rows) in enumerate(raw_parts):
+                faces = np.array([(r[0], r[1], r[2]) for r in tri_rows], dtype=np.int64)
+                m = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+                if len(m.faces) == 0:
+                    continue
+                clean_name = pname if pname and not pname.startswith("object_") else (
+                    f"{stem}_{idx + 1}" if len(raw_parts) > 1 else stem
+                )
+                p_info = (
+                    extracted[idx][0].model_copy(update={"name": clean_name})
+                    if idx < len(extracted)
+                    else MultimaterialPartInfo(
+                        part_id=pid_str,
+                        name=clean_name,
+                        extruder=1,
+                        triangle_count=len(tri_rows),
+                    )
+                )
+                paint_map[p_info.part_id] = [r[3] for r in tri_rows]
+                parts_meshes.append((p_info, m))
+            if parts_meshes:
+                return parts_meshes, paint_map, palette
+        extracted = extract_3mf_parts_and_meshes(model_path)
+        return [
+            (
+                p.model_copy(update={"name": f"{stem}_{i + 1}" if len(extracted) > 1 else stem}),
+                m,
+            )
+            for i, (p, m) in enumerate(extracted)
+            if len(m.faces) > 0
+        ], paint_map, palette
+
+    if ext in (".step", ".stp"):
+        try:
+            loaded = trimesh.load(str(model_path), force="scene")
+        except Exception as exc:
+            raise ValueError(
+                f"No se pudo teselar el archivo CAD '{model_path.name}' ({ext.upper()}). "
+                "En este equipo falta la dependencia de importación STEP ('cascadio'). "
+                "Instala 'cascadio' en el entorno Python o exporta el modelo a .STL / .3MF / .OBJ."
+            ) from exc
+    else:
+        try:
+            loaded = trimesh.load(str(model_path), force="scene")
+        except Exception:
+            loaded = trimesh.load(str(model_path), force="mesh")
+
+    parts_out: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
+    if isinstance(loaded, trimesh.Scene):
+        dumped = loaded.dump(concatenate=False)
+        valid_meshes = [m for m in dumped if isinstance(m, trimesh.Trimesh) and len(m.faces) > 0]
+        if len(valid_meshes) == 0:
+            raise ValueError(f"El archivo '{model_path.name}' no contiene mallas triangulares válidas.")
+        for idx, m in enumerate(valid_meshes):
+            part_name = f"{stem}_{idx + 1}" if len(valid_meshes) > 1 else stem
+            parts_out.append(
+                (
+                    MultimaterialPartInfo(
+                        part_id=f"part_{idx + 1}",
+                        name=part_name,
+                        extruder=1,
+                        triangle_count=int(len(m.faces)),
+                    ),
+                    m,
+                )
+            )
+        return parts_out, paint_map, palette
+
+    if not isinstance(loaded, trimesh.Trimesh) or len(loaded.faces) == 0:
+        raise ValueError(f"El archivo '{model_path.name}' no contiene una malla triangular válida.")
+
+    return [
+        (
+            MultimaterialPartInfo(
+                part_id="part_1",
+                name=stem,
+                extruder=1,
+                triangle_count=int(len(loaded.faces)),
+            ),
+            loaded,
+        )
+    ], paint_map, palette
+
+
+def import_models_to_plate(
+    files_with_names: list[tuple[Path, str]],
+    *,
+    base_mesh_id: str | None = None,
+    has_existing_scene_objects: bool = False,
+    base_extruder: int = 1,
+    base_name: str = "Pieza 1",
+) -> tuple[str, list[SceneObjectInfo], list[SceneObjectInfo]]:
+    """Importa uno o más archivos 3D/CAD al plato actual preservando objetos existentes."""
+    resolved_id = (base_mesh_id or "").strip() or uuid.uuid4().hex[:12]
+    obj_dir = _scene_objects_dir(resolved_id)
+    obj_dir.mkdir(parents=True, exist_ok=True)
+
+    base_objects: list[SceneObjectInfo] = []
+    if base_mesh_id and not has_existing_scene_objects:
+        # Materializar el modelo único actual como primer objeto independiente en caché
+        cached_candidate: Path | None = None
+        for ext in (".3mf", ".stl", ".obj", ".amf"):
+            cand = MESH_CACHE_DIR / f"{resolved_id}{ext}"
+            if cand.is_file():
+                cached_candidate = cand
+                break
+        if cached_candidate is not None:
+            if cached_candidate.suffix.lower() == ".3mf":
+                b_parts, b_paint, b_pal = _load_meshes_from_file(cached_candidate, base_name)
+            else:
+                b_mesh = load_raw_mesh(cached_candidate)
+                b_parts = [
+                    (
+                        MultimaterialPartInfo(
+                            part_id="orig_1",
+                            name=Path(base_name).stem or "Pieza 1",
+                            extruder=max(1, min(4, int(base_extruder))),
+                            triangle_count=int(len(b_mesh.faces)),
+                        ),
+                        b_mesh,
+                    )
+                ]
+                b_paint, b_pal = {}, []
+            if b_parts:
+                # Re-etiquetar con prefijo orig_ para evitar colisiones con importados
+                renamed_base: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
+                renamed_paint: dict[str, list[str | None]] = {}
+                for b_idx, (bp, bm) in enumerate(b_parts):
+                    new_pid = f"orig_{b_idx + 1}"
+                    if bp.part_id in b_paint:
+                        renamed_paint[new_pid] = b_paint[bp.part_id]
+                    renamed_base.append(
+                        (
+                            bp.model_copy(
+                                update={
+                                    "part_id": new_pid,
+                                    "extruder": max(1, min(4, int(base_extruder))) if len(b_parts) == 1 else bp.extruder,
+                                }
+                            ),
+                            bm,
+                        )
+                    )
+                base_objects = _export_scene_objects_to_cache(
+                    resolved_id,
+                    renamed_base,
+                    paint_colors_by_id=renamed_paint or None,
+                    palette=b_pal or None,
+                )
+
+    imported_objects: list[SceneObjectInfo] = []
+    batch_tag = uuid.uuid4().hex[:6]
+    seq_idx = 0
+    first_mesh_for_cache: trimesh.Trimesh | None = None
+
+    for file_path, orig_name in files_with_names:
+        parts, paint_map, palette = _load_meshes_from_file(file_path, orig_name)
+        for p_info, p_mesh in parts:
+            if len(p_mesh.faces) == 0:
+                continue
+            seq_idx += 1
+            if first_mesh_for_cache is None:
+                first_mesh_for_cache = p_mesh
+            obj_id = f"imp_{batch_tag}_{seq_idx}"
+            b = p_mesh.bounds
+            lcx = float((b[0][0] + b[1][0]) / 2.0)
+            lcy = float((b[0][1] + b[1][1]) / 2.0)
+            lz0 = float(b[0][2])
+
+            local_mesh = p_mesh.copy()
+            local_mesh.apply_translation([-lcx, -lcy, -lz0])
+
+            stl_path = obj_dir / f"{obj_id}.stl"
+            exported = local_mesh.export(file_type="stl")
+            stl_bytes = exported if isinstance(exported, (bytes, bytearray)) else str(exported).encode("utf-8")
+            stl_path.write_bytes(bytes(stl_bytes))
+
+            if p_info.part_id in paint_map:
+                pc_list = paint_map[p_info.part_id]
+                if any(pc_list):
+                    paint_path = obj_dir / f"{obj_id}.paint.json"
+                    paint_path.write_text(
+                        json.dumps({"paint_colors": pc_list, "palette": palette}, separators=(",", ":")),
+                        encoding="utf-8",
+                    )
+
+            ext = local_mesh.extents
+            imported_objects.append(
+                SceneObjectInfo(
+                    object_id=obj_id,
+                    name=p_info.name or f"Pieza {seq_idx}",
+                    extruder=max(1, min(4, int(p_info.extruder))),
+                    color_hex=p_info.color_hex,
+                    mesh_url=f"/api/models/{resolved_id}/objects/{obj_id}.stl",
+                    position=[round(lcx, 2), round(lcy, 2), 0.0],
+                    rotation=[0.0, 0.0, 0.0],
+                    scale=[100.0, 100.0, 100.0],
+                    dimensions_mm=[round(float(ext[0]), 2), round(float(ext[1]), 2), round(float(ext[2]), 2)],
+                )
+            )
+
+    if not base_mesh_id and first_mesh_for_cache is not None:
+        cache_stl = MESH_CACHE_DIR / f"{resolved_id}.stl"
+        if not cache_stl.exists():
+            exp = first_mesh_for_cache.export(file_type="stl")
+            cache_stl.write_bytes(bytes(exp) if isinstance(exp, (bytes, bytearray)) else str(exp).encode("utf-8"))
+
+    if not imported_objects:
+        raise ValueError("No se encontraron mallas 3D válidas en los archivos seleccionados.")
+
+    return resolved_id, base_objects, imported_objects
+
+
 def _encode_custom_supports_attr(state: Any) -> str:
     """Codifica el estado de TriangleSelector (1=Enforcer -> '4', 2=Blocker -> '8')."""
     try:

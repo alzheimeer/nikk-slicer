@@ -81,6 +81,14 @@ class SplitObjectsResponse(BaseModel):
     scene_objects: list[SceneObjectInfo] = Field(default_factory=list)
 
 
+class ImportToPlateResponse(BaseModel):
+    """Respuesta de `POST /api/models/import-to-plate`."""
+
+    mesh_id: str
+    base_objects: list[SceneObjectInfo] = Field(default_factory=list)
+    imported_objects: list[SceneObjectInfo] = Field(default_factory=list)
+
+
 class MeshAnalysisResponse(BaseModel):
     """Resultado del análisis geométrico del STL/3MF con Trimesh."""
 

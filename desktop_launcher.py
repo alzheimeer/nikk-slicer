@@ -873,6 +873,11 @@ def _install_macos_archivo_menu(logger: logging.Logger) -> None:
                     "window.dispatchEvent(new CustomEvent('nikk:menu-open-projects'))"
                 )
 
+            def importModels_(self, _sender):
+                _dispatch_js_async(
+                    "window.dispatchEvent(new CustomEvent('nikk:menu-import-models'))"
+                )
+
             def saveProject_(self, _sender):
                 _dispatch_js_async(
                     "window.dispatchEvent(new CustomEvent('nikk:menu-save-project'))"
@@ -945,6 +950,13 @@ def _install_macos_archivo_menu(logger: logging.Logger) -> None:
             it_open.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
             it_open.setTarget_(_MENU_TARGET)
             archivo_menu.addItem_(it_open)
+
+            it_import = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Importar pieza(s)...", "importModels:", "i"
+            )
+            it_import.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand)
+            it_import.setTarget_(_MENU_TARGET)
+            archivo_menu.addItem_(it_import)
 
             it_save = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "Guardar proyecto", "saveProject:", "s"
@@ -1076,6 +1088,7 @@ def _build_windows_menu(logger: logging.Logger) -> list[object]:
         archivo_items: list[object] = [
             MenuAction("Nuevo proyecto (Ctrl+N)", lambda: threading.Thread(target=open_new_project_window, daemon=True).start()),
             MenuAction("Abrir proyecto... (Ctrl+O)", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-open-projects'))")),
+            MenuAction("Importar pieza(s)... (Ctrl+I)", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-import-models'))")),
             MenuAction("Guardar proyecto (Ctrl+S)", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-save-project'))")),
             MenuAction("Guardar proyecto como...", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-save-project-as'))")),
             MenuAction("Cerrar proyecto (Ctrl+W)", lambda: _dispatch("window.dispatchEvent(new CustomEvent('nikk:menu-close-project'))")),

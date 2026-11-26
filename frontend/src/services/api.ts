@@ -836,7 +836,8 @@ export async function analyzeMesh({
   file,
   meshId,
   transform,
-}: AnalyzeMeshParams): Promise<MeshAnalysisResponse> {
+  sceneObjects,
+}: AnalyzeMeshParams & { sceneObjects?: SceneObjectTransform[] }): Promise<MeshAnalysisResponse> {
   const form = new FormData();
   form.append('printer_id', printerId);
   if (meshId) {
@@ -860,6 +861,9 @@ export async function analyzeMesh({
       form.append('instances_json', JSON.stringify(transform.instances));
     }
   }
+  if (sceneObjects && sceneObjects.length > 0) {
+    form.append('scene_objects_json', JSON.stringify(sceneObjects));
+  }
 
   const res = await fetch(`${API_BASE_URL}/analyze-mesh`, {
     method: 'POST',
@@ -869,6 +873,39 @@ export async function analyzeMesh({
     throw new Error(await parseError(res));
   }
   return res.json() as Promise<MeshAnalysisResponse>;
+}
+
+export interface ImportToPlateResponse {
+  mesh_id: string;
+  base_objects: SceneObjectInfo[];
+  imported_objects: SceneObjectInfo[];
+}
+
+export async function importModelsToPlate(params: {
+  printerId: PrinterId;
+  meshId?: string | null;
+  hasExistingSceneObjects?: boolean;
+  baseExtruder?: number;
+  baseName?: string;
+  files: File[];
+}): Promise<ImportToPlateResponse> {
+  const form = new FormData();
+  form.append('printer_id', params.printerId);
+  if (params.meshId) form.append('mesh_id', params.meshId);
+  form.append('has_existing_scene_objects', String(Boolean(params.hasExistingSceneObjects)));
+  form.append('base_extruder', String(params.baseExtruder ?? 1));
+  form.append('base_name', params.baseName ?? 'Pieza 1');
+  for (const f of params.files) {
+    form.append('files', f);
+  }
+  const res = await fetch(`${API_BASE_URL}/models/import-to-plate`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<ImportToPlateResponse>;
 }
 
 export async function autoArrangeModels(payload: {

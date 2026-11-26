@@ -136,6 +136,7 @@ from app.core.mesh_analyzer import (
     evaluate_plate_orientation_candidates,
     find_optimal_anti_support_orientation,
     get_scene_object_stl_path,
+    import_models_to_plate,
     inject_support_blockers_into_3mf,
     load_and_transform_mesh,
     prepare_painted_3mf_for_slicer,
@@ -165,6 +166,7 @@ from app.models.schemas import (
     CutMeshResponse,
     ExportSelectionRequest,
     ExtruderSlotConfig,
+    ImportToPlateResponse,
     LayerPauseItem,
     LayOnFaceResponse,
     MachineMaterialLearningsResponse,
@@ -736,6 +738,46 @@ async def split_objects_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return SplitObjectsResponse(mesh_id=resolved_id, scene_objects=objs)
+
+
+@app.post("/api/models/import-to-plate", response_model=ImportToPlateResponse)
+async def import_to_plate_endpoint(
+    printer_id: PrinterId = Form(...),
+    mesh_id: str | None = Form(None),
+    has_existing_scene_objects: bool = Form(False),
+    base_extruder: int = Form(1),
+    base_name: str = Form("Pieza 1"),
+    files: list[UploadFile] = File(...),
+) -> ImportToPlateResponse:
+    """Importa archivos `.3mf`, `.stl`, `.obj`, `.amf`, `.step`/`.stp` o `.zip` al plato activo."""
+    _resolve_printer_or_400(printer_id)
+    if not files:
+        raise HTTPException(status_code=400, detail="Debes adjuntar al menos un archivo 3D compatible.")
+    tmp_dir = TEMP_DIR / f"import_{uuid.uuid4().hex[:10]}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    saved_inputs: list[tuple[Path, str]] = []
+    try:
+        for idx, up in enumerate(files):
+            orig_name = Path(up.filename or f"modelo_{idx + 1}.stl").name
+            target = tmp_dir / f"{idx}_{orig_name}"
+            _save_upload(up, target)
+            saved_inputs.append((target, orig_name))
+        resolved_id, base_objs, imported_objs = import_models_to_plate(
+            saved_inputs,
+            base_mesh_id=mesh_id,
+            has_existing_scene_objects=has_existing_scene_objects,
+            base_extruder=base_extruder,
+            base_name=base_name,
+        )
+        return ImportToPlateResponse(
+            mesh_id=resolved_id,
+            base_objects=base_objs,
+            imported_objects=imported_objs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @app.post("/api/auto-orient", response_model=AutoOrientResponse)

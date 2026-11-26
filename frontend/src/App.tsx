@@ -27,6 +27,7 @@ import {
   fetchSystemEnvironment,
   fetchUserPrefs,
   getProjectModelFileUrl,
+  importModelsToPlate,
   requestAIAnalyzeModel,
   requestAIOrientations,
   requestAIOptimizeSlice,
@@ -77,7 +78,11 @@ import {
   computeSlotThermalConfig,
   negotiateMultiMaterialBedTemp,
 } from './components/SlicerWizard';
-import { Viewport3D, arrangeSceneObjectsOnBed } from './components/Viewport3D';
+import {
+  Viewport3D,
+  arrangeSceneObjectsOnBed,
+  placeNewSceneObjectsWithoutCollision,
+} from './components/Viewport3D';
 import { GlobalProcessingOverlay } from './components/GlobalProcessingOverlay';
 
 const DEFAULT_TRANSFORM: ModelTransform = {
@@ -916,7 +921,12 @@ export function App() {
   const runAnalysis = async (
     printerId: PrinterId,
     nextTransform: ModelTransform,
-    options: { file?: File; cachedMeshId?: string; preserveUserSettings?: boolean },
+    options: {
+      file?: File;
+      cachedMeshId?: string;
+      preserveUserSettings?: boolean;
+      sceneObjectsOverride?: SceneObjectTransform[];
+    },
   ) => {
     const seq = ++analyzeSeqRef.current;
     setIsAnalyzing(true);
@@ -924,6 +934,7 @@ export function App() {
     setSliceResult(null);
     setSendPrintMsg(null);
     setGcodeText(null);
+    const effSceneObjs = options.sceneObjectsOverride ?? sceneObjects;
     try {
       let res: MeshAnalysisResponse;
       try {
@@ -932,6 +943,7 @@ export function App() {
           file: options.cachedMeshId ? undefined : options.file,
           meshId: options.cachedMeshId,
           transform: nextTransform,
+          sceneObjects: effSceneObjs.length > 0 ? effSceneObjs : undefined,
         });
       } catch (cachedErr) {
         if (options.cachedMeshId && stlFile) {
@@ -939,6 +951,7 @@ export function App() {
             printerId,
             file: stlFile,
             transform: nextTransform,
+            sceneObjects: effSceneObjs.length > 0 ? effSceneObjs : undefined,
           });
         } else {
           throw cachedErr;
@@ -1209,6 +1222,132 @@ export function App() {
       setIsSplittingObjects(false);
     }
   };
+
+  const [isImportingModels, setIsImportingModels] = useState(false);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const handleImportFilesRef = useRef<(files: File[]) => Promise<void>>(async () => { });
+
+  const triggerImportModelsPicker = useCallback(() => {
+    setActiveTab('wizard');
+    importInputRef.current?.click();
+  }, []);
+
+  const handleImportFilesToPlate = async (files: File[]) => {
+    const validFiles = files.filter((f) =>
+      /\.(stl|3mf|obj|amf|step|stp|zip)$/i.test(f.name),
+    );
+    if (validFiles.length === 0) {
+      setErrorMsg(
+        'Formato no compatible. Admite .3MF, .STL, .OBJ, .AMF, .STEP/.STP y .ZIP.',
+      );
+      return;
+    }
+
+    if (!meshId && !stlFile && validFiles.length === 1 && /\.(stl|3mf)$/i.test(validFiles[0].name)) {
+      setActiveTab('wizard');
+      handleSelectStl(validFiles[0]);
+      return;
+    }
+
+    setActiveTab('wizard');
+    setIsImportingModels(true);
+    setErrorMsg(null);
+    setSliceResult(null);
+    setSendPrintMsg(null);
+    setGcodeText(null);
+    try {
+      const res = await importModelsToPlate({
+        printerId: selectedPrinterId,
+        meshId,
+        hasExistingSceneObjects: sceneObjects.length > 0,
+        baseExtruder: modelExtruder,
+        baseName: stlFile?.name || 'Pieza 1',
+        files: validFiles,
+      });
+
+      let existingObjs: SceneObjectTransform[] = sceneObjects;
+      if (existingObjs.length === 0 && res.base_objects.length > 0) {
+        const sx = Math.max(0.01, (transform.scaleX ?? transform.scalePercent) / 100);
+        const sy = Math.max(0.01, (transform.scaleY ?? transform.scalePercent) / 100);
+        const sz = Math.max(0.01, (transform.scaleZ ?? transform.scalePercent) / 100);
+        existingObjs = res.base_objects.map((o) => ({
+          object_id: o.object_id,
+          name: o.name,
+          extruder: o.extruder,
+          color_hex: o.color_hex,
+          mesh_url: o.mesh_url,
+          offset_x: Math.round(((transform.offsetX ?? 0) + (o.position?.[0] ?? 0) * sx) * 100) / 100,
+          offset_y: Math.round(((transform.offsetY ?? 0) + (o.position?.[1] ?? 0) * sy) * 100) / 100,
+          offset_z: Math.round(((o.position?.[2] ?? 0) * sz) * 100) / 100,
+          rot_x: transform.rotX,
+          rot_y: transform.rotY,
+          rot_z: transform.rotZ,
+          scale_percent: transform.scalePercent,
+          scale_x: transform.scaleX ?? null,
+          scale_y: transform.scaleY ?? null,
+          scale_z: transform.scaleZ ?? null,
+          drop_to_bed: transform.dropToBed ?? true,
+          dimensions_mm: [
+            Math.round(((o.dimensions_mm?.[0] ?? 0) * sx) * 100) / 100,
+            Math.round(((o.dimensions_mm?.[1] ?? 0) * sy) * 100) / 100,
+            Math.round(((o.dimensions_mm?.[2] ?? 0) * sz) * 100) / 100,
+          ],
+        }));
+      }
+
+      const rawNewObjs: SceneObjectTransform[] = res.imported_objects.map((o) => ({
+        object_id: o.object_id,
+        name: o.name,
+        extruder: o.extruder,
+        color_hex: o.color_hex,
+        mesh_url: o.mesh_url,
+        offset_x: 0,
+        offset_y: 0,
+        offset_z: 0,
+        rot_x: 0,
+        rot_y: 0,
+        rot_z: 0,
+        scale_percent: 100,
+        scale_x: null,
+        scale_y: null,
+        scale_z: null,
+        drop_to_bed: true,
+        dimensions_mm: o.dimensions_mm,
+      }));
+
+      const placedNewObjs = placeNewSceneObjectsWithoutCollision(
+        existingObjs,
+        rawNewObjs,
+        activePrinter,
+      );
+      const nextSceneObjs = [...existingObjs, ...placedNewObjs];
+
+      if (!stlFile) {
+        setStlFile(validFiles[0]);
+      }
+      setMeshId(res.mesh_id);
+      setSceneObjects(nextSceneObjs);
+      setSelectedObjectIds(placedNewObjs.map((o) => o.object_id));
+
+      await runAnalysis(selectedPrinterId, transform, {
+        cachedMeshId: res.mesh_id,
+        preserveUserSettings: true,
+        sceneObjectsOverride: nextSceneObjs,
+      });
+      showProjectToast(
+        placedNewObjs.length === 1
+          ? `Pieza agregada al plato: ${placedNewObjs[0].name}`
+          : `${placedNewObjs.length} piezas agregadas al plato`,
+      );
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Error importando el modelo al plato.',
+      );
+    } finally {
+      setIsImportingModels(false);
+    }
+  };
+  handleImportFilesRef.current = handleImportFilesToPlate;
 
   const handleMergeObjects = () => {
     setSceneObjects([]);
@@ -2132,6 +2271,9 @@ export function App() {
       } else if (k === 'o') {
         ev.preventDefault();
         onOpenProjects();
+      } else if (k === 'i') {
+        ev.preventDefault();
+        triggerImportModelsPicker();
       } else if (
         k === 'w' &&
         Boolean((window as unknown as { pywebview?: unknown }).pywebview)
@@ -2141,7 +2283,12 @@ export function App() {
       }
     };
 
+    const onMenuImportModels = () => {
+      triggerImportModelsPicker();
+    };
+
     window.addEventListener('nikk:menu-open-projects', onOpenProjects);
+    window.addEventListener('nikk:menu-import-models', onMenuImportModels);
     window.addEventListener('nikk:menu-save-project', onSaveProject);
     window.addEventListener('nikk:menu-save-project-as', onSaveProjectAs);
     window.addEventListener('nikk:menu-close-project', onCloseProject);
@@ -2149,6 +2296,7 @@ export function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => {
       window.removeEventListener('nikk:menu-open-projects', onOpenProjects);
+      window.removeEventListener('nikk:menu-import-models', onMenuImportModels);
       window.removeEventListener('nikk:menu-save-project', onSaveProject);
       window.removeEventListener('nikk:menu-save-project-as', onSaveProjectAs);
       window.removeEventListener('nikk:menu-close-project', onCloseProject);
@@ -3234,14 +3382,18 @@ export function App() {
       const files = Array.from(e.dataTransfer?.files ?? []);
       if (files.length === 0) return;
 
-      const valid = files.find((f) => /\.(stl|3mf)$/i.test(f.name));
-      if (!valid) {
-        setErrorMsg('Formato no compatible: solo se admiten archivos .STL y .3MF.');
+      const validFiles = files.filter((f) =>
+        /\.(stl|3mf|obj|amf|step|stp|zip)$/i.test(f.name),
+      );
+      if (validFiles.length === 0) {
+        setErrorMsg(
+          'Formato no compatible: se admiten .3MF, .STL, .OBJ, .AMF, .STEP/.STP y .ZIP.',
+        );
         return;
       }
 
       setActiveTab('wizard');
-      handleSelectStlRef.current(valid);
+      void handleImportFilesRef.current(validFiles);
     };
 
     window.addEventListener('dragenter', onDragEnter);
@@ -3456,13 +3608,31 @@ export function App() {
         <div className="pointer-events-none fixed inset-4 z-[9990] flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-cyan-400 bg-slate-950/75 backdrop-blur-sm">
           <Box className="mb-3 h-12 w-12 text-cyan-400" />
           <p className="text-base font-bold text-white">
-            Suelta tu modelo .STL o .3MF para abrirlo en Nikk Slicer
+            {stlFile || meshId || sceneObjects.length > 0
+              ? 'Soltar para agregar al plato actual'
+              : 'Suelta tu modelo (.3MF, .STL, .OBJ, .AMF, .STEP, .ZIP) para abrirlo'}
           </p>
           <p className="mt-1 text-xs text-cyan-200/80">
-            Se cargará automáticamente en el Laminador
+            {stlFile || meshId || sceneObjects.length > 0
+              ? 'Se posicionará automáticamente sin colisionar con las piezas existentes'
+              : 'Se cargará automáticamente en el Laminador'}
           </p>
         </div>
       )}
+      <input
+        ref={importInputRef}
+        type="file"
+        multiple
+        accept=".3mf,.stl,.obj,.amf,.step,.stp,.zip"
+        className="hidden"
+        onChange={(e) => {
+          const picked = Array.from(e.target.files ?? []);
+          e.target.value = '';
+          if (picked.length > 0) {
+            void handleImportFilesToPlate(picked);
+          }
+        }}
+      />
       {/* Cabecera con acento de color por ventana, pestañas de proyectos abiertos y navegación */}
       <header
         style={{
@@ -3864,6 +4034,8 @@ export function App() {
             onSplitObjects={handleSplitObjects}
             onMergeObjects={handleMergeObjects}
             isSplittingObjects={isSplittingObjects}
+            onImportModels={triggerImportModelsPicker}
+            isImportingModels={isImportingModels}
             extruderColors={
               activeProfileId === 'creator5_pro'
                 ? [0, 1, 2, 3].map((zoneIdx) => {
