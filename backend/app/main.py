@@ -2483,6 +2483,7 @@ async def diagnose_printer_telemetry_endpoint(
     return await asyncio.to_thread(diagnose_live_telemetry, live_status)
 
 
+@app.get("/api/export/{job_id}/flashforge-3mf")
 @app.post("/api/export/{job_id}/flashforge-3mf")
 async def export_flashforge_3mf_endpoint(
     job_id: str,

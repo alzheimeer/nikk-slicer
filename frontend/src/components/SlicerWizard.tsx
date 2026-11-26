@@ -802,6 +802,7 @@ export function SlicerWizard({
   const [pendingOutputAction, setPendingOutputAction] = useState<
     'download' | 'upload_only' | 'upload_and_print' | null
   >(null);
+  const [downloadFormat, setDownloadFormat] = useState<'gcode.3mf' | 'gcode'>('gcode.3mf');
   const [customBaseName, setCustomBaseName] = useState<string>('');
   const [learnings, setLearnings] = useState<MachineMaterialLearningsResponse | null>(null);
   const [learningsOpen, setLearningsOpen] = useState(false);
@@ -2468,8 +2469,8 @@ export function SlicerWizard({
                   <div className="min-w-0">
                     <div className="text-[11px] font-semibold text-slate-200">
                       {primeTowerEnabled
-                        ? 'Activada (≥45 mm) + Purga en Relleno'
-                        : 'Torre de Purga: Desactivada (Ahorro 4 cabezales)'}
+                        ? 'Torre de Purga: Activada (≥45 mm + Brim 15 mm)'
+                        : 'Torre de Purga: Desactivada manualmente'}
                     </div>
                     {primeTowerReason && (
                       <p className="truncate text-[10px] text-purple-300/80">
@@ -4300,7 +4301,9 @@ export function SlicerWizard({
                   className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-emerald-500/35 bg-emerald-500/10 py-1.5 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/20"
                 >
                   <Download className="h-3.5 w-3.5" />
-                  Descargar G-code (.gcode)
+                  {selectedProfileId === 'creator5_pro'
+                    ? 'Descargar G-code (.gcode / .gcode.3mf)'
+                    : 'Descargar G-code (.gcode)'}
                 </button>
 
                 {pendingOutputAction && (
@@ -4322,10 +4325,41 @@ export function SlicerWizard({
                           className="min-w-0 flex-1 bg-transparent px-2 py-1 font-mono text-[11px] text-slate-100 outline-none"
                         />
                         <span className="border-l border-slate-700 bg-slate-800 px-2 py-1 font-mono text-[11px] font-semibold text-cyan-300">
-                          .gcode
+                          {pendingOutputAction === 'download' &&
+                          selectedProfileId === 'creator5_pro' &&
+                          downloadFormat === 'gcode.3mf'
+                            ? '.gcode.3mf'
+                            : '.gcode'}
                         </span>
                       </div>
                     </div>
+
+                    {pendingOutputAction === 'download' && selectedProfileId === 'creator5_pro' && (
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setDownloadFormat('gcode.3mf')}
+                          className={`rounded-lg border px-2 py-1 font-semibold transition ${
+                            downloadFormat === 'gcode.3mf'
+                              ? 'border-emerald-500/70 bg-emerald-500/20 text-emerald-200'
+                              : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          .gcode.3mf (Flash Studio)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDownloadFormat('gcode')}
+                          className={`rounded-lg border px-2 py-1 font-semibold transition ${
+                            downloadFormat === 'gcode'
+                              ? 'border-cyan-500/70 bg-cyan-500/20 text-cyan-200'
+                              : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          .gcode estándar
+                        </button>
+                      </div>
+                    )}
 
                     {pendingOutputAction === 'upload_and_print' ? (
                       <div className="space-y-1.5">
@@ -4405,12 +4439,16 @@ export function SlicerWizard({
                               customBaseName.replace(/^_+|_+$/g, '') ||
                               `slicerhub_${sliceResult.job_id}`;
                             const isC5P = selectedProfileId === 'creator5_pro';
+                            setPendingOutputAction(null);
+                            if (isC5P && downloadFormat === 'gcode.3mf') {
+                              const ffUrl = `/api/export/${encodeURIComponent(sliceResult.job_id)}/flashforge-3mf?object_name=${encodeURIComponent(cleanName)}`;
+                              void triggerFileDownload(ffUrl, `${cleanName}.gcode.3mf`);
+                              return;
+                            }
                             const baseUrl = getGcodeUrl(sliceResult.gcode_url, cleanName);
                             const sep = baseUrl.includes('?') ? '&' : '?';
                             const dlUrl = isC5P ? `${baseUrl}${sep}format=flashforge` : baseUrl;
-                            const ext = '.gcode';
-                            setPendingOutputAction(null);
-                            void triggerFileDownload(dlUrl, `${cleanName}${ext}`);
+                            void triggerFileDownload(dlUrl, `${cleanName}.gcode`);
                           }}
                           className="rounded-lg border border-emerald-500/60 bg-emerald-500/25 px-3 py-1 font-semibold text-emerald-100 hover:bg-emerald-500/35"
                         >

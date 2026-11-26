@@ -287,8 +287,10 @@ export function App() {
   const [adhesionLabel, setAdhesionLabel] = useState<string | null>(
     initLithophane ? 'Brim Exterior 8 mm · Gap 0.12 mm (Litofanía)' : null,
   );
-  const [primeTowerEnabled, setPrimeTowerEnabled] = useState<boolean>(false);
-  const [primeTowerReason, setPrimeTowerReason] = useState<string | null>(null);
+  const [primeTowerEnabled, setPrimeTowerEnabled] = useState<boolean>(true);
+  const [primeTowerReason, setPrimeTowerReason] = useState<string | null>(
+    'Torre de Purga activa por defecto en Creator 5 Pro (puedes desactivarla si deseas)',
+  );
   const [primeTowerBrimOverride, setPrimeTowerBrimOverride] = useState<number | null>(null);
   const [enableTimelapse, setEnableTimelapse] = useState<boolean>(false);
   const [autoLeveling, setAutoLeveling] = useState<boolean>(
@@ -805,6 +807,8 @@ export function App() {
   // Recalcular temperaturas/caudal de T0..T3 si cambia boquilla o perfil y negociar cama en Creator 5 Pro
   useEffect(() => {
     if (activeProfileId !== 'creator5_pro') return;
+    setPrimeTowerEnabled(true);
+    setPrimeTowerReason('Torre de Purga activa por defecto en Creator 5 Pro (puedes desactivarla si deseas)');
     setExtrudersConfig((prev) =>
       prev.map((slot) => {
         const calc = computeSlotThermalConfig(
