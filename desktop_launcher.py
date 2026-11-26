@@ -332,12 +332,14 @@ class _SplashScreen:
 
     _MESSAGES = {
         "es": {
+            "subtitle": "Laminador Inteligente FDM · Granja Multi-Impresora",
             "loading_cfg": "Cargando configuración...",
             "starting_engine": "Iniciando motor de laminado...",
             "preparing_ws": "Preparando espacio de trabajo 3D...",
             "ready": "Listo",
         },
         "en": {
+            "subtitle": "Smart FDM Slicer · Multi-Printer Farm",
             "loading_cfg": "Loading configuration...",
             "starting_engine": "Starting slicing engine...",
             "preparing_ws": "Preparing 3D workspace...",
@@ -537,14 +539,22 @@ def _queue_open_file(path_str: str, logger: logging.Logger) -> bool:
     if p.suffix.lower() not in (".stl", ".3mf") or not p.is_file():
         return False
     _PENDING_OPEN_FILES.append(str(p))
-    try:
-        import webview  # type: ignore[import-not-found]
 
-        win = webview.active_window()
-        if win is not None:
-            win.evaluate_js("window.dispatchEvent(new CustomEvent('nikk-open-pending-file'));")
-    except Exception as exc:
-        logger.debug("No se pudo notificar archivo pendiente al WebView: %s", exc)
+    # Nunca ejecutar evaluate_js de forma síncrona en el hilo principal de Cocoa ni sobre el splash:
+    # si ya existe una ventana principal registrada, notificarla en un hilo daemon.
+    main_wins = list(_WINDOW_BY_ID.values())
+    if not main_wins:
+        return True
+
+    def _notify_windows() -> None:
+        for win in main_wins:
+            try:
+                win.evaluate_js("window.dispatchEvent(new CustomEvent('nikk-open-pending-file'));")  # type: ignore[attr-defined]
+                break
+            except Exception as exc:
+                logger.debug("No se pudo notificar archivo pendiente al WebView: %s", exc)
+
+    threading.Thread(target=_notify_windows, name="nikkslicer-open-notify", daemon=True).start()
     return True
 
 
@@ -1350,9 +1360,25 @@ def _run_macos_with_splash(
     )
     _set_macos_dock_icon(logger)
 
+    splash_t0 = time.monotonic()
+    splash_loaded = threading.Event()
+
+    def _on_splash_loaded() -> None:
+        if not splash_loaded.is_set():
+            splash_loaded.set()
+            logger.info("Splash cargado en %.2fs", time.monotonic() - splash_t0)
+
+    if splash_win is not None:
+        try:
+            splash_win.events.loaded += _on_splash_loaded
+        except Exception:
+            pass
+
     state: dict[str, Any] = {"server": None, "server_thread": None, "exit_code": 0}
 
     def _set_p(pct: int, key: str) -> None:
+        if not splash_loaded.is_set():
+            return
         txt = msgs.get(key, key).replace("'", "\\'")
         try:
             if splash_win is not None:
@@ -1362,6 +1388,8 @@ def _run_macos_with_splash(
 
     def _bootstrap(s_win=None):
         try:
+            # Permitir que WKWebView pinte el logo y texto inicial antes de ocupar el GIL con imports pesados
+            splash_loaded.wait(timeout=0.8)
             _set_p(25, "loading_cfg")
             reused_existing = False
             _set_p(50, "starting_engine")
