@@ -102,13 +102,13 @@
     "1"
   ],
   "retraction_length": [
-    "1.2"
+    "0.8"
   ],
   "retract_length_toolchange": [
     "1"
   ],
   "z_hop": [
-    "0.2"
+    "0.4"
   ],
   "retract_restart_extra": [
     "0"
@@ -117,7 +117,7 @@
     "0"
   ],
   "retraction_speed": [
-    "40"
+    "30"
   ],
   "deretraction_speed": [
     "40"

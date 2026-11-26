@@ -1036,7 +1036,7 @@ def generate_post_print_compendium(
 
     if overall.nozzle_avg is not None and overall.nozzle_min is not None and overall.nozzle_max is not None:
         spread = overall.nozzle_max - overall.nozzle_min
-        if spread >= 6.0:
+        if spread >= 6.0 and overall.nozzle_min >= 150.0:
             improvements.append(
                 f"Estabiliza PID o sube +4°C la boquilla en cuerpo medio (osciló entre {overall.nozzle_min:.1f}°C y {overall.nozzle_max:.1f}°C)."
             )

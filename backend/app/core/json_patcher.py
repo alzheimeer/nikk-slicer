@@ -181,7 +181,7 @@ def _apply_ai_quality_overrides(
 
     if "high_contrast_purge" in raw:
         process_data["avoid_crossing_perimeters"] = "1"
-        process_data["flush_multiplier"] = "1.35"
+        process_data["flush_multiplier"] = "1.8"
 
 
 def _validate_and_normalize_process_data(process_data: dict[str, Any]) -> None:
@@ -359,7 +359,11 @@ def _apply_anti_stringing_and_tower_positioning(
     if is_multicolor:
         if str(process_data.get("enable_prime_tower", "0")) == "1":
             process_data["ooze_prevention"] = "1"
-        process_data["flush_into_infill"] = "1"
+        # Nunca purgar filamento oscuro dentro del relleno de piezas claras (evita manchas/sangrado en blanco)
+        process_data["flush_into_infill"] = "0"
+        process_data["flush_into_objects"] = "0"
+        process_data["avoid_crossing_perimeters"] = "1"
+        has_petg = False
         for f_idx, f_path in enumerate(filament_jsons):
             try:
                 f_data = _load_json(f_path)
@@ -369,13 +373,27 @@ def _apply_anti_stringing_and_tower_positioning(
                     else request.material
                 )
                 if slot_mat == "petg":
+                    has_petg = True
                     raw_t = f_data.get("nozzle_temperature")
                     if isinstance(raw_t, list) and raw_t:
                         cur_t = int(float(raw_t[0]))
                         f_data["nozzle_temperature"] = [str(max(225, cur_t - 5))]
-                        _save_json(f_path, f_data)
+                    f_data["filament_minimal_purge_on_wipe_tower"] = ["45"]
+                    f_data["retraction_length"] = ["1.2"]
+                    f_data["wipe"] = ["1"]
+                    f_data["wipe_distance"] = ["2.5"]
+                    f_data["retract_before_wipe"] = ["70%"]
+                    f_data["z_hop"] = ["0.6"]
+                    _save_json(f_path, f_data)
             except Exception:
                 pass
+        try:
+            cur_fm = float(str(process_data.get("flush_multiplier", "1.0") or "1.0"))
+        except ValueError:
+            cur_fm = 1.0
+        target_fm = 1.8 if has_petg else 1.5
+        if cur_fm < target_fm:
+            process_data["flush_multiplier"] = f"{target_fm:.2f}"
 
     if process_data.get("enable_prime_tower") == "1":
         printer = get_printer_config(request.printer_id)
@@ -420,8 +438,8 @@ def _apply_prime_tower_anti_detachment(
         else 0.0
     )
 
-    # 1. Brim ancho obligatorio (12.0 mm base; 15.0 mm si altura Z > 80 mm)
-    target_brim_w = 15.0 if max_z_mm > 80.0 else 12.0
+    # 1. Brim ancho obligatorio (15.0 mm base para evitar desprendimiento de la torre)
+    target_brim_w = 16.0 if max_z_mm > 80.0 else 15.0
     try:
         cur_brim_w = float(str(process_data.get("prime_tower_brim_width", "0")).strip() or "0")
     except ValueError:
@@ -429,25 +447,33 @@ def _apply_prime_tower_anti_detachment(
     eff_brim_w = max(cur_brim_w, target_brim_w)
     process_data["prime_tower_brim_width"] = _fmt(eff_brim_w, 1)
 
-    # 2. Huella amplia (>= 45 mm), cono estabilizador (15° si Z >= 60 mm) y costilla estructural (3.0 mm)
+    # 2. Huella amplia (>= 45 mm), cono estabilizador (15° desde Z >= 15 mm) y costilla estructural (3.0 mm)
     try:
         cur_tower_w = float(str(process_data.get("prime_tower_width", "0")).strip() or "0")
     except ValueError:
         cur_tower_w = 0.0
     process_data["prime_tower_width"] = _fmt(max(cur_tower_w, 45.0), 1)
 
-    if max_z_mm >= 60.0:
+    if max_z_mm >= 15.0 or max_z_mm == 0.0:
         try:
             cur_cone = float(str(process_data.get("wipe_tower_cone_angle", "0")).strip() or "0")
         except ValueError:
             cur_cone = 0.0
         process_data["wipe_tower_cone_angle"] = _fmt(max(cur_cone, 15.0), 0)
 
-    process_data["wipe_tower_rib_width"] = "3.0"
-    process_data["prime_tower_rib_width"] = "3.0"
+    process_data["wipe_tower_rib_width"] = "8.0"
+    process_data["prime_tower_rib_width"] = "8.0"
+    process_data["wipe_tower_extra_rib_length"] = "10"
+    process_data["wipe_tower_fillet_wall"] = "1"
     if "wipe_tower_bridging" not in process_data:
         process_data["wipe_tower_bridging"] = "10"
     process_data["wipe_tower_extra_flow"] = "105%"
+    process_data["wipe_tower_extra_spacing"] = "110%"
+    try:
+        cur_purge_spd = float(str(process_data.get("wipe_tower_max_purge_speed", "90")).strip() or "90")
+    except ValueError:
+        cur_purge_spd = 90.0
+    process_data["wipe_tower_max_purge_speed"] = _fmt(min(cur_purge_spd, 50.0), 0)
 
     # 3. Primera capa lenta (<= 25 mm/s), flujo completo (100%-105%) y Z-hop >= 0.4 mm anti-golpes
     try:
@@ -594,7 +620,7 @@ def patch_profiles_for_job(
 
         machine_data["extruder_colour"] = [s.color_hex for s in creator_slots]
         machine_data["idle_temperature"] = [
-            "195" if (s.material == "petg" and not request.lithophane_mode) else "170"
+            "155" if (s.material in ("petg", "abs") and not request.lithophane_mode) else "140"
             for s in creator_slots
         ]
         _save_json(dst_machine, machine_data)
@@ -631,7 +657,7 @@ def patch_profiles_for_job(
                 "PLA" if (request.lithophane_mode or is_support_mat) else slot_cfg.material.upper()
             ]
             slot_data["filament_is_support"] = ["1" if is_support_mat else "0"]
-            slot_data["idle_temperature"] = ["195" if eff_slot_mat == "petg" else "170"]
+            slot_data["idle_temperature"] = ["155" if eff_slot_mat in ("petg", "abs") else "140"]
             slot_data["activate_chamber_temp_control"] = ["1"]
             slot_data["chamber_temperature"] = [str(chamber_cfg["target_temp"])]
             if request.lithophane_mode:

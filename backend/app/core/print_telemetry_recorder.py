@@ -63,8 +63,22 @@ def _min_avg_max(values: list[float]) -> tuple[float | None, float | None, float
 def _compute_phase_stats(samples: list[dict[str, Any]]) -> TelemetryPhaseStats:
     if not samples:
         return TelemetryPhaseStats(samples_count=0)
-    noz = [float(s["nozzle_temp"]) for s in samples if s.get("nozzle_temp") is not None]
-    bed = [float(s["bed_temp"]) for s in samples if s.get("bed_temp") is not None]
+    active_noz = [
+        float(s["nozzle_temp"])
+        for s in samples
+        if s.get("nozzle_temp") is not None
+        and float(s["nozzle_temp"]) >= 150.0
+        and (s.get("nozzle_target") is None or float(s["nozzle_target"]) >= 150.0)
+    ]
+    noz = active_noz or [float(s["nozzle_temp"]) for s in samples if s.get("nozzle_temp") is not None]
+    active_bed = [
+        float(s["bed_temp"])
+        for s in samples
+        if s.get("bed_temp") is not None
+        and float(s["bed_temp"]) >= 35.0
+        and (s.get("bed_target") is None or float(s["bed_target"]) >= 35.0)
+    ]
+    bed = active_bed or [float(s["bed_temp"]) for s in samples if s.get("bed_temp") is not None]
     mcu = [float(s["mcu_temp"]) for s in samples if s.get("mcu_temp") is not None]
     host = [float(s["host_temp"]) for s in samples if s.get("host_temp") is not None]
     spd = [float(s["speed_mms"]) for s in samples if s.get("speed_mms") is not None and float(s["speed_mms"]) > 0]
@@ -115,7 +129,9 @@ def compute_session_summary(session: dict[str, Any]) -> TelemetrySessionSummary:
         if s.get("nozzle_target")
         and float(s["nozzle_target"]) >= 160
         and s.get("nozzle_temp") is not None
-        and float(s.get("progress_pct", 0.0)) >= 1.0
+        and float(s["nozzle_temp"]) >= 150.0
+        and 2.0 <= float(s.get("progress_pct", 0.0)) < 99.5
+        and str(s.get("printer_state") or "").lower() not in ("completed", "idle", "standby", "cancelled")
         and abs(float(s["nozzle_temp"]) - float(s["nozzle_target"])) >= 6.0
     ]
     if noz_drops:
@@ -568,12 +584,13 @@ def get_machine_material_learnings(
     for r in top_runs:
         overall = (r.get("stats") or {}).get("overall") or {}
         noz_avg = overall.get("nozzle_avg")
+        noz_min = overall.get("nozzle_min")
         bed_avg = overall.get("bed_avg")
         spd_avg = overall.get("speed_avg")
         mcu_max = overall.get("mcu_max")
-        if noz_avg is not None:
+        if noz_avg is not None and float(noz_avg) >= 180.0 and (noz_min is None or float(noz_min) >= 150.0):
             noz_vals.append(float(noz_avg))
-        if bed_avg is not None:
+        if bed_avg is not None and float(bed_avg) >= 40.0:
             bed_vals.append(float(bed_avg))
         if spd_avg is not None:
             spd_vals.append(float(spd_avg))
@@ -582,8 +599,13 @@ def get_machine_material_learnings(
 
         imps = [str(x).strip() for x in (r.get("improvements") or []) if str(x).strip()]
         for imp in imps:
-            if imp not in seen_imps:
+            # Filtrar falsos positivos de enfriamiento en sesiones legadas (boquilla < 150°C)
+            if "osciló entre " in imp and noz_min is not None and float(noz_min) < 150.0:
+                continue
+            cat_key = imp.split("(")[0].split(":")[0].strip().lower()
+            if imp not in seen_imps and cat_key not in seen_imps:
                 seen_imps.add(imp)
+                seen_imps.add(cat_key)
                 accumulated_improvements.append(imp)
 
         recent_runs.append(

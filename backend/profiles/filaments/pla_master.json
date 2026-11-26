@@ -52,7 +52,7 @@
     "0"
   ],
   "filament_max_volumetric_speed": [
-    "28"
+    "25"
   ],
   "filament_minimal_purge_on_wipe_tower": [
     "15"
@@ -121,7 +121,7 @@
     "1"
   ],
   "slow_down_layer_time": [
-    "4"
+    "6"
   ],
   "slow_down_min_speed": [
     "10"
@@ -130,7 +130,7 @@
     "45"
   ],
   "textured_plate_temp": [
-    "55"
+    "60"
   ],
   "textured_plate_temp_initial_layer": [
     "60"
@@ -160,7 +160,7 @@
     "240"
   ],
   "idle_temperature": [
-    "170"
+    "140"
   ],
   "activate_chamber_temp_control": [
     "0"
@@ -172,6 +172,6 @@
     "1"
   ],
   "pressure_advance": [
-    "0.03"
+    "0.025"
   ]
 }

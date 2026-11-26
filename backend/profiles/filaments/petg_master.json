@@ -7,7 +7,7 @@
     "0"
   ],
   "close_fan_the_first_x_layers": [
-    "3"
+    "1"
   ],
   "complete_print_exhaust_fan_speed": [
     "70"
@@ -31,10 +31,10 @@
     "20"
   ],
   "fan_max_speed": [
-    "60"
+    "80"
   ],
   "fan_min_speed": [
-    "40"
+    "60"
   ],
   "filament_cost": [
     "30"
@@ -46,7 +46,7 @@
     "1.75"
   ],
   "filament_flow_ratio": [
-    "0.96"
+    "0.98"
   ],
   "filament_is_support": [
     "0"
@@ -100,7 +100,7 @@
     "250"
   ],
   "overhang_fan_speed": [
-    "70"
+    "80"
   ],
   "overhang_fan_threshold": [
     "40%"
@@ -130,10 +130,10 @@
     "70"
   ],
   "textured_plate_temp": [
-    "75"
+    "80"
   ],
   "textured_plate_temp_initial_layer": [
-    "80"
+    "85"
   ],
   "filament_start_gcode": [
     "; Filament gcode\n"
@@ -160,7 +160,7 @@
     "60"
   ],
   "idle_temperature": [
-    "170"
+    "155"
   ],
   "activate_chamber_temp_control": [
     "0"
@@ -172,6 +172,6 @@
     "1"
   ],
   "pressure_advance": [
-    "0.04"
+    "0.046"
   ]
 }

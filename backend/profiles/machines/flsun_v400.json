@@ -49,8 +49,8 @@
     "400"
   ],
   "machine_max_speed_y": [
-    "400",
-    "400"
+    "1000",
+    "1000"
   ],
   "machine_max_speed_z": [
     "20",
@@ -61,12 +61,12 @@
     "2.5"
   ],
   "machine_max_jerk_x": [
-    "9",
-    "9"
+    "12",
+    "12"
   ],
   "machine_max_jerk_y": [
-    "9",
-    "9"
+    "12",
+    "12"
   ],
   "machine_max_jerk_z": [
     "0.4",
@@ -122,10 +122,10 @@
     "0"
   ],
   "retraction_speed": [
-    "45"
+    "30"
   ],
   "deretraction_speed": [
-    "45"
+    "30"
   ],
   "silent_mode": "0",
   "single_extruder_multi_material": "1",
