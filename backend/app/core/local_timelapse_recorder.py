@@ -22,7 +22,8 @@ from app.models.schemas import PrinterLiveStatus
 
 logger = logging.getLogger("slicerhub.local_timelapse")
 
-TIMELAPSE_DIR = TEMP_DIR / "timelapses"
+LEGACY_TIMELAPSE_DIR = TEMP_DIR / "timelapses"
+TIMELAPSE_DIR = Path.home() / ".nikk_slicer" / "timelapses"
 ACTIVE_TIMELAPSES_PATH = TIMELAPSE_DIR / "active_sessions.json"
 COMPLETED_TIMELAPSES_PATH = TIMELAPSE_DIR / "completed_timelapses.json"
 ARMED_PRINTERS_PATH = TIMELAPSE_DIR / "armed_printers.json"
@@ -228,6 +229,17 @@ class LocalTimelapseRecorder:
             return
         self._loaded = True
         TIMELAPSE_DIR.mkdir(parents=True, exist_ok=True)
+        # Migrar sesiones previas desde temp/timelapses hacia la carpeta permanente ~/.nikk_slicer/timelapses
+        if LEGACY_TIMELAPSE_DIR.is_dir() and LEGACY_TIMELAPSE_DIR.resolve() != TIMELAPSE_DIR.resolve():
+            try:
+                for item in LEGACY_TIMELAPSE_DIR.iterdir():
+                    dst = TIMELAPSE_DIR / item.name
+                    if item.is_dir():
+                        shutil.copytree(item, dst, dirs_exist_ok=True)
+                    elif item.is_file() and not dst.exists():
+                        shutil.copy2(item, dst)
+            except Exception as exc:
+                logger.warning("No se pudo migrar timelapses legados: %s", exc)
         if ACTIVE_TIMELAPSES_PATH.is_file():
             try:
                 raw = json.loads(ACTIVE_TIMELAPSES_PATH.read_text(encoding="utf-8"))
@@ -494,6 +506,7 @@ class LocalTimelapseRecorder:
             "armed_printers": sorted(self._armed_printers),
             "active": active,
             "completed": completed,
+            "storage_dir": str(TIMELAPSE_DIR),
         }
 
     def get_media_path(self, session_id: str, fmt: str = "webp") -> Path | None:

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Globe, Plus, Redo2, Server, Settings, Sliders, Undo2, X } from 'lucide-react';
+import { Activity, AlertTriangle, Box, Calculator, Cpu, FolderOpen, Globe, Plus, Redo2, Server, Settings, Sliders, Undo2, Video, X } from 'lucide-react';
 import { useI18n } from './i18n/I18nContext';
 import { useSessionHistory } from './hooks/useSessionHistory';
 import { ErrorJournalModal } from './components/ErrorJournalModal';
 import { QuoteCalculatorModal } from './components/QuoteCalculatorModal';
 import { SystemSetupModal } from './components/SystemSetupModal';
+import { TimelapseModal } from './components/TimelapseModal';
 import {
   API_BASE_URL,
   analyzeMesh,
@@ -21,6 +22,7 @@ import {
   fetchFullProject,
   fetchGcodeText,
   fetchLayOnFaceCandidates,
+  fetchLocalTimelapses,
   fetchPrintersConfig,
   fetchRecentProjects,
   fetchSavedProjects,
@@ -148,6 +150,8 @@ interface LastSessionData {
   scene_objects?: SceneObjectTransform[];
   selected_object_ids?: string[];
   support_blockers?: SupportBlockerItem[];
+  active_project_id?: string | null;
+  active_project_title?: string | null;
   saved_at?: string;
 }
 
@@ -211,6 +215,19 @@ export function App() {
   const [journalOpen, setJournalOpen] = useState(false);
   const [quoteCalculatorOpen, setQuoteCalculatorOpen] = useState(false);
   const [systemSetupOpen, setSystemSetupOpen] = useState(false);
+  const [timelapseModalOpen, setTimelapseModalOpen] = useState(false);
+  const [activeTimelapseCount, setActiveTimelapseCount] = useState(0);
+
+  useEffect(() => {
+    const syncActiveTimelapses = () => {
+      void fetchLocalTimelapses()
+        .then((res) => setActiveTimelapseCount(res.active.length))
+        .catch(() => { });
+    };
+    syncActiveTimelapses();
+    const timer = window.setInterval(syncActiveTimelapses, 15000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [machineProfiles, setMachineProfiles] = useState<MachineProfileInfo[]>([]);
@@ -370,6 +387,8 @@ export function App() {
   const [recentProjects, setRecentProjects] = useState<FullProjectSummary[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeProjectTitle, setActiveProjectTitle] = useState<string | null>(null);
+  const activeProjectIdRef = useRef<string | null>(null);
+  activeProjectIdRef.current = activeProjectId;
   const [windowSessionId] = useState<string>(() => {
     const p = new URLSearchParams(window.location.search).get('window_session_id');
     return p || `win_${Math.random().toString(36).slice(2, 10)}`;
@@ -780,6 +799,8 @@ export function App() {
           scene_objects: sceneObjects,
           selected_object_ids: selectedObjectIds,
           support_blockers: supportBlockers,
+          active_project_id: activeProjectId,
+          active_project_title: activeProjectTitle,
           saved_at: new Date().toISOString(),
         },
       }).catch(() => { });
@@ -1020,6 +1041,9 @@ export function App() {
   };
 
   const handleSelectStl = (file: File) => {
+    setActiveProjectId(null);
+    setActiveProjectTitle(null);
+    activeProjectIdRef.current = null;
     setStlFile(file);
     setMeshId(null);
     setSceneObjects([]);
@@ -1740,9 +1764,10 @@ export function App() {
     if (!stlFile && !meshId) return null;
     const effSlice = opts?.overrideSlice ?? sliceResult;
     const effAi = opts?.overrideAi ?? aiAnalysisResult;
-    const targetProjectId = opts?.forceNew ? null : activeProjectId;
+    const targetProjectId = opts?.forceNew ? null : activeProjectIdRef.current;
     const title =
       (opts?.customTitle || '').trim() ||
+      (targetProjectId ? activeProjectTitle?.trim() : '') ||
       effAi?.short_spanish_title?.trim() ||
       activeProjectTitle ||
       (stlFile?.name || 'Proyecto 3D').replace(/\.(stl|3mf)$/i, '');
@@ -1827,6 +1852,7 @@ export function App() {
         },
       });
       setActiveProjectId(saved.project_id);
+      activeProjectIdRef.current = saved.project_id;
       setActiveProjectTitle(saved.title);
       const recents = await fetchRecentProjects(0).catch(() => []);
       setRecentProjects(recents);
@@ -1904,6 +1930,7 @@ export function App() {
         setSupportBlockers(st.support_blockers as SupportBlockerItem[]);
       }
       setActiveProjectId(proj.project_id);
+      activeProjectIdRef.current = proj.project_id;
       setActiveProjectTitle(proj.title);
       if (proj.gcode_text) {
         setGcodeText(proj.gcode_text);
@@ -3810,6 +3837,21 @@ export function App() {
           </button>
           <button
             type="button"
+            onClick={() => setTimelapseModalOpen(true)}
+            title="Ver timelapses locales (en proceso y finalizados)"
+            className="flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-200 hover:border-cyan-400"
+          >
+            <Video className="h-3.5 w-3.5 text-cyan-400" />
+            <span>Timelapse</span>
+            {activeTimelapseCount > 0 && (
+              <span className="flex items-center gap-1 rounded-full bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-bold text-rose-300">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-500" />
+                {activeTimelapseCount}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
             onClick={() => setJournalOpen(true)}
             title={t.header.journalTitle}
             className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-amber-500/60"
@@ -4126,6 +4168,12 @@ export function App() {
         onClose={() => setSystemSetupOpen(false)}
       />
 
+      <TimelapseModal
+        open={timelapseModalOpen}
+        onClose={() => setTimelapseModalOpen(false)}
+        onActiveCountChange={setActiveTimelapseCount}
+      />
+
       <QuoteCalculatorModal
         open={quoteCalculatorOpen}
         onClose={() => setQuoteCalculatorOpen(false)}
@@ -4229,6 +4277,13 @@ export function App() {
                     if (sess.adhesion_type) setAdhesionType(sess.adhesion_type);
                     if (typeof sess.brim_width_mm === 'number') {
                       setBrimWidthMm(sess.brim_width_mm);
+                    }
+                    if (sess.active_project_id) {
+                      setActiveProjectId(sess.active_project_id);
+                      activeProjectIdRef.current = sess.active_project_id;
+                    }
+                    if (sess.active_project_title) {
+                      setActiveProjectTitle(sess.active_project_title);
                     }
 
                     setProjectLoadState({

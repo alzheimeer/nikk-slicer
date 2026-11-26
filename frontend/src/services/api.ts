@@ -1951,6 +1951,69 @@ export async function armLocalTimelapse(
   return res.json() as Promise<{ printer_id: string; armed: boolean; armed_printers: string[] }>;
 }
 
+export interface LocalTimelapseActiveSession {
+  session_id: string;
+  printer_id: string;
+  printer_name?: string;
+  filename?: string;
+  camera_url?: string;
+  started_at?: number;
+  started_iso?: string;
+  last_capture_ts?: number;
+  last_layer?: number;
+  frame_count?: number;
+  status?: string;
+}
+
+export interface LocalTimelapseCompleted {
+  session_id: string;
+  printer_id: string;
+  printer_name?: string;
+  filename?: string;
+  started_iso?: string;
+  completed_iso?: string;
+  duration_seconds?: number;
+  frame_count?: number;
+  has_mp4?: boolean;
+  has_avi?: boolean;
+  has_webp?: boolean;
+}
+
+export interface LocalTimelapsesResponse {
+  armed_printers: string[];
+  active: LocalTimelapseActiveSession[];
+  completed: LocalTimelapseCompleted[];
+  storage_dir?: string;
+}
+
+export async function fetchLocalTimelapses(
+  printerId?: string,
+): Promise<LocalTimelapsesResponse> {
+  const qs = printerId ? `?printer_id=${encodeURIComponent(printerId)}` : '';
+  const res = await fetch(`${API_BASE_URL}/timelapses${qs}`);
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<LocalTimelapsesResponse>;
+}
+
+export async function deleteLocalTimelapse(sessionId: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE_URL}/timelapses/${encodeURIComponent(sessionId)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+}
+
+export function getLocalTimelapseMediaUrl(
+  sessionId: string,
+  fmt: 'webp' | 'avi' | 'mp4' | 'thumb',
+): string {
+  return `${API_BASE_URL}/timelapses/${encodeURIComponent(sessionId)}/media?fmt=${fmt}`;
+}
+
 export async function printStoredFile(
   printerId: PrinterId,
   filename: string,
