@@ -44,6 +44,7 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  API_BASE_URL,
   fetchTelemetryLearnings,
   getGcodeUrl,
   requestAIDefectDiagnose,
@@ -4441,7 +4442,7 @@ export function SlicerWizard({
                             const isC5P = selectedProfileId === 'creator5_pro';
                             setPendingOutputAction(null);
                             if (isC5P && downloadFormat === 'gcode.3mf') {
-                              const ffUrl = `/api/export/${encodeURIComponent(sliceResult.job_id)}/flashforge-3mf?object_name=${encodeURIComponent(cleanName)}`;
+                              const ffUrl = `${API_BASE_URL}/export/${encodeURIComponent(sliceResult.job_id)}/flashforge-3mf?object_name=${encodeURIComponent(cleanName)}`;
                               void triggerFileDownload(ffUrl, `${cleanName}.gcode.3mf`);
                               return;
                             }

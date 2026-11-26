@@ -637,7 +637,16 @@ class DesktopApi:
         if not target:
             return {"saved": False, "cancelled": True}
         dest = Path(target[0] if isinstance(target, (list, tuple)) else target)
-        with urllib.request.urlopen(url, timeout=45) as resp:
+        eff_url = url
+        if eff_url.startswith("/"):
+            from urllib.parse import urljoin
+            cur_url = ""
+            try:
+                cur_url = str(win.get_current_url() or "")
+            except Exception:
+                cur_url = ""
+            eff_url = urljoin(cur_url if cur_url.startswith("http") else "http://127.0.0.1:8000", eff_url)
+        with urllib.request.urlopen(eff_url, timeout=45) as resp:
             dest.write_bytes(resp.read())
         return {"saved": True, "path": str(dest)}
 
