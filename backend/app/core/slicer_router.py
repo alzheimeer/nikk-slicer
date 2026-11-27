@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,14 @@ MM_RE = re.compile(
     r";\s*(?:total\s+)?filament used\s*\[mm\]\s*=\s*([0-9]+(?:\.[0-9]+)?)",
     re.IGNORECASE,
 )
+SLOT_GRAMS_RE = re.compile(
+    r"^;\s*filament used\s*\[g\]\s*=\s*(.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+SLOT_MM_RE = re.compile(
+    r"^;\s*filament used\s*\[mm\]\s*=\s*(.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +58,8 @@ class SlicingResult:
     support_time_seconds: int = 0
     support_weight_g: float = 0.0
     support_percentage: float = 0.0
+    filament_grams_by_slot: list[float] = field(default_factory=list)
+    filament_meters_by_slot: list[float] = field(default_factory=list)
 
 
 def _parse_time_to_seconds(est_time: str) -> int:
@@ -135,6 +145,32 @@ def parse_gcode_metrics(
     sup_time_sec = int(round(est_seconds * sup_ratio))
 
     return est_time, est_seconds, grams, meters, sup_time_sec, sup_weight_g, sup_pct
+
+
+def parse_gcode_slot_metrics(gcode_path: Path) -> tuple[list[float], list[float]]:
+    """Extrae el consumo por slot/extrusor (gramos y metros) desde el encabezado del `.gcode`."""
+    content = gcode_path.read_text(encoding="utf-8", errors="ignore")
+    lines = content.splitlines()
+    sample = "\n".join(lines[:150] + lines[-150:])
+
+    def _parse_csv_floats(pattern: re.Pattern[str], scale: float = 1.0, decimals: int = 2) -> list[float]:
+        matches = pattern.findall(sample)
+        if not matches:
+            return []
+        vals: list[float] = []
+        for token in matches[-1].split(","):
+            raw = token.strip()
+            if not raw:
+                continue
+            try:
+                vals.append(round(float(raw) * scale, decimals))
+            except ValueError:
+                continue
+        return vals
+
+    grams_by_slot = _parse_csv_floats(SLOT_GRAMS_RE, scale=1.0, decimals=2)
+    meters_by_slot = _parse_csv_floats(SLOT_MM_RE, scale=0.001, decimals=3)
+    return grams_by_slot, meters_by_slot
 
 
 def _extruder_for_z(
@@ -653,6 +689,11 @@ def run_slicer_cli(
         if not raw_gc.startswith("; SLICERHUB_LITHOPHANE_MODE = 1"):
             _atomic_write_text(gcode_path, "; SLICERHUB_LITHOPHANE_MODE = 1\n" + raw_gc)
     est_time, est_sec, grams, meters, sup_sec, sup_g, sup_pct = parse_gcode_metrics(gcode_path)
+    grams_by_slot, meters_by_slot = parse_gcode_slot_metrics(gcode_path)
+    if grams_by_slot and grams <= 0:
+        grams = round(sum(grams_by_slot), 2)
+    if meters_by_slot and len(meters_by_slot) > 1:
+        meters = round(sum(meters_by_slot), 3)
     return SlicingResult(
         gcode_path=gcode_path,
         estimated_time=est_time,
@@ -662,4 +703,6 @@ def run_slicer_cli(
         support_time_seconds=sup_sec,
         support_weight_g=sup_g,
         support_percentage=sup_pct,
+        filament_grams_by_slot=grams_by_slot,
+        filament_meters_by_slot=meters_by_slot,
     )

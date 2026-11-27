@@ -30,6 +30,7 @@ import {
   fetchUserPrefs,
   getProjectModelFileUrl,
   importModelsToPlate,
+  mergeSceneObjects,
   requestAIAnalyzeModel,
   requestAIOrientations,
   requestAIOptimizeSlice,
@@ -39,6 +40,7 @@ import {
   saveUserPrefs,
   sliceModel,
   splitMeshObjects,
+  splitSceneObject,
   uploadJobToPrinter,
   type AIAnalyzeModelResponse,
   type AIOrientationsResponse,
@@ -250,6 +252,10 @@ export function App() {
   const [analysis, setAnalysis] = useState<MeshAnalysisResponse | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isAutoOrienting, setIsAutoOrienting] = useState(false);
+  const [orientationsAttempt, setOrientationsAttempt] = useState(1);
+  const [orientationsError, setOrientationsError] = useState<string | null>(null);
+  const orientationsAbortRef = useRef<AbortController | null>(null);
+  const orientationsUserCancelledRef = useRef(false);
   const [isAutoArranging, setIsAutoArranging] = useState(false);
   const [isCuttingMesh, setIsCuttingMesh] = useState(false);
   const [isSplittingObjects, setIsSplittingObjects] = useState(false);
@@ -1154,9 +1160,20 @@ export function App() {
     );
   };
 
+  const handleCancelAutoOrient = () => {
+    orientationsUserCancelledRef.current = true;
+    orientationsAbortRef.current?.abort();
+    orientationsAbortRef.current = null;
+    setIsAutoOrienting(false);
+    setOrientationsError(null);
+  };
+
   const handleAutoOrient = async () => {
     if (!meshId && !stlFile) return;
+    orientationsUserCancelledRef.current = false;
     setIsAutoOrienting(true);
+    setOrientationsAttempt(1);
+    setOrientationsError(null);
     setErrorMsg(null);
     setSliceResult(null);
     setSendPrintMsg(null);
@@ -1167,16 +1184,55 @@ export function App() {
         ? sceneObjects.find((o) => o.object_id === selectedObjectIds[0]) ?? null
         : null;
     try {
-      const res = await requestAIOrientations({
-        printerId: selectedPrinterId,
-        material,
-        meshId,
-        file: meshId ? null : stlFile,
-        scalePercent: singleSelectedObj?.scale_percent || transform.scalePercent || 100,
-        objectId: singleSelectedObj?.object_id ?? null,
-        sceneObjects: !singleSelectedObj && sceneObjects.length > 1 ? sceneObjects : undefined,
-      });
-      if (seq !== analyzeSeqRef.current) return;
+      let res: AIOrientationsResponse | null = null;
+      let lastErr: unknown = null;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        if (orientationsUserCancelledRef.current || seq !== analyzeSeqRef.current) return;
+        setOrientationsAttempt(attempt);
+        const controller = new AbortController();
+        orientationsAbortRef.current = controller;
+        const timerId = window.setTimeout(() => {
+          controller.abort(new DOMException('Timeout', 'TimeoutError'));
+        }, 15000);
+        try {
+          res = await requestAIOrientations({
+            printerId: selectedPrinterId,
+            material,
+            meshId,
+            file: meshId ? null : stlFile,
+            scalePercent: singleSelectedObj?.scale_percent || transform.scalePercent || 100,
+            objectId: singleSelectedObj?.object_id ?? null,
+            sceneObjects: !singleSelectedObj && sceneObjects.length > 1 ? sceneObjects : undefined,
+            signal: controller.signal,
+          });
+          lastErr = null;
+          break;
+        } catch (err: unknown) {
+          lastErr = err;
+          if (orientationsUserCancelledRef.current || seq !== analyzeSeqRef.current) return;
+        } finally {
+          window.clearTimeout(timerId);
+          if (orientationsAbortRef.current === controller) {
+            orientationsAbortRef.current = null;
+          }
+        }
+      }
+
+      if (orientationsUserCancelledRef.current || seq !== analyzeSeqRef.current) return;
+      if (!res) {
+        const isTimeout =
+          lastErr instanceof DOMException &&
+          (lastErr.name === 'TimeoutError' || lastErr.name === 'AbortError');
+        const msg = isTimeout
+          ? 'Tiempo de espera agotado al analizar la geometría o conectar con la IA.'
+          : lastErr instanceof Error && lastErr.message
+            ? lastErr.message
+            : 'Error al calcular orientaciones con IA.';
+        setOrientationsError(msg);
+        setErrorMsg(msg);
+        return;
+      }
+
       setMeshId(res.mesh_id);
       setOrientationsData(res);
       const rec =
@@ -1186,13 +1242,8 @@ export function App() {
         applyOrientationToScene(rec, res.target_object_id);
         setAutoOrientMsg(`${rec.title}: ${rec.explanation}`);
       }
-    } catch (err: unknown) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : 'Error al calcular orientaciones con IA.',
-      );
     } finally {
+      orientationsAbortRef.current = null;
       setIsAutoOrienting(false);
     }
   };
@@ -1217,29 +1268,33 @@ export function App() {
       const sx = Math.max(0.01, (transform.scaleX ?? transform.scalePercent) / 100);
       const sy = Math.max(0.01, (transform.scaleY ?? transform.scalePercent) / 100);
       const sz = Math.max(0.01, (transform.scaleZ ?? transform.scalePercent) / 100);
-      const mappedObjs: SceneObjectTransform[] = res.scene_objects.map((o) => ({
-        object_id: o.object_id,
-        name: o.name,
-        extruder: o.extruder,
-        color_hex: o.color_hex,
-        mesh_url: o.mesh_url,
-        offset_x: Math.round(((transform.offsetX ?? 0) + (o.position?.[0] ?? 0) * sx) * 100) / 100,
-        offset_y: Math.round(((transform.offsetY ?? 0) + (o.position?.[1] ?? 0) * sy) * 100) / 100,
-        offset_z: Math.round(((o.position?.[2] ?? 0) * sz) * 100) / 100,
-        rot_x: transform.rotX,
-        rot_y: transform.rotY,
-        rot_z: transform.rotZ,
-        scale_percent: transform.scalePercent,
-        scale_x: transform.scaleX ?? null,
-        scale_y: transform.scaleY ?? null,
-        scale_z: transform.scaleZ ?? null,
-        drop_to_bed: transform.dropToBed ?? true,
-        dimensions_mm: [
-          Math.round(((o.dimensions_mm?.[0] ?? 0) * sx) * 100) / 100,
-          Math.round(((o.dimensions_mm?.[1] ?? 0) * sy) * 100) / 100,
-          Math.round(((o.dimensions_mm?.[2] ?? 0) * sz) * 100) / 100,
-        ],
-      }));
+      const mappedObjs: SceneObjectTransform[] = res.scene_objects.map((o) => {
+        const relZ = Math.round(((o.position?.[2] ?? 0) * sz) * 100) / 100;
+        const keepRelativeZ = relZ > 0.05;
+        return {
+          object_id: o.object_id,
+          name: o.name,
+          extruder: o.extruder,
+          color_hex: o.color_hex,
+          mesh_url: o.mesh_url,
+          offset_x: Math.round(((transform.offsetX ?? 0) + (o.position?.[0] ?? 0) * sx) * 100) / 100,
+          offset_y: Math.round(((transform.offsetY ?? 0) + (o.position?.[1] ?? 0) * sy) * 100) / 100,
+          offset_z: keepRelativeZ ? relZ : (transform.dropToBed === false ? (transform.offsetZ ?? 0) : 0),
+          rot_x: transform.rotX,
+          rot_y: transform.rotY,
+          rot_z: transform.rotZ,
+          scale_percent: transform.scalePercent,
+          scale_x: transform.scaleX ?? null,
+          scale_y: transform.scaleY ?? null,
+          scale_z: transform.scaleZ ?? null,
+          drop_to_bed: keepRelativeZ ? false : (transform.dropToBed ?? true),
+          dimensions_mm: [
+            Math.round(((o.dimensions_mm?.[0] ?? 0) * sx) * 100) / 100,
+            Math.round(((o.dimensions_mm?.[1] ?? 0) * sy) * 100) / 100,
+            Math.round(((o.dimensions_mm?.[2] ?? 0) * sz) * 100) / 100,
+          ],
+        };
+      });
       setSceneObjects(mappedObjs);
       setSelectedObjectIds(mappedObjs[0]?.object_id ? [mappedObjs[0].object_id] : []);
     } catch (err: unknown) {
@@ -1298,29 +1353,33 @@ export function App() {
         const sx = Math.max(0.01, (transform.scaleX ?? transform.scalePercent) / 100);
         const sy = Math.max(0.01, (transform.scaleY ?? transform.scalePercent) / 100);
         const sz = Math.max(0.01, (transform.scaleZ ?? transform.scalePercent) / 100);
-        existingObjs = res.base_objects.map((o) => ({
-          object_id: o.object_id,
-          name: o.name,
-          extruder: o.extruder,
-          color_hex: o.color_hex,
-          mesh_url: o.mesh_url,
-          offset_x: Math.round(((transform.offsetX ?? 0) + (o.position?.[0] ?? 0) * sx) * 100) / 100,
-          offset_y: Math.round(((transform.offsetY ?? 0) + (o.position?.[1] ?? 0) * sy) * 100) / 100,
-          offset_z: Math.round(((o.position?.[2] ?? 0) * sz) * 100) / 100,
-          rot_x: transform.rotX,
-          rot_y: transform.rotY,
-          rot_z: transform.rotZ,
-          scale_percent: transform.scalePercent,
-          scale_x: transform.scaleX ?? null,
-          scale_y: transform.scaleY ?? null,
-          scale_z: transform.scaleZ ?? null,
-          drop_to_bed: transform.dropToBed ?? true,
-          dimensions_mm: [
-            Math.round(((o.dimensions_mm?.[0] ?? 0) * sx) * 100) / 100,
-            Math.round(((o.dimensions_mm?.[1] ?? 0) * sy) * 100) / 100,
-            Math.round(((o.dimensions_mm?.[2] ?? 0) * sz) * 100) / 100,
-          ],
-        }));
+        existingObjs = res.base_objects.map((o) => {
+          const relZ = Math.round(((o.position?.[2] ?? 0) * sz) * 100) / 100;
+          const keepRelativeZ = relZ > 0.05;
+          return {
+            object_id: o.object_id,
+            name: o.name,
+            extruder: o.extruder,
+            color_hex: o.color_hex,
+            mesh_url: o.mesh_url,
+            offset_x: Math.round(((transform.offsetX ?? 0) + (o.position?.[0] ?? 0) * sx) * 100) / 100,
+            offset_y: Math.round(((transform.offsetY ?? 0) + (o.position?.[1] ?? 0) * sy) * 100) / 100,
+            offset_z: keepRelativeZ ? relZ : (transform.dropToBed === false ? (transform.offsetZ ?? 0) : 0),
+            rot_x: transform.rotX,
+            rot_y: transform.rotY,
+            rot_z: transform.rotZ,
+            scale_percent: transform.scalePercent,
+            scale_x: transform.scaleX ?? null,
+            scale_y: transform.scaleY ?? null,
+            scale_z: transform.scaleZ ?? null,
+            drop_to_bed: keepRelativeZ ? false : (transform.dropToBed ?? true),
+            dimensions_mm: [
+              Math.round(((o.dimensions_mm?.[0] ?? 0) * sx) * 100) / 100,
+              Math.round(((o.dimensions_mm?.[1] ?? 0) * sy) * 100) / 100,
+              Math.round(((o.dimensions_mm?.[2] ?? 0) * sz) * 100) / 100,
+            ],
+          };
+        });
       }
 
       const rawNewObjs: SceneObjectTransform[] = res.imported_objects.map((o) => ({
@@ -1380,6 +1439,126 @@ export function App() {
   const handleMergeObjects = () => {
     setSceneObjects([]);
     setSelectedObjectIds([]);
+  };
+
+  const handleSplitSingleObject = async (objectId: string) => {
+    if (!meshId) return;
+    const targetObj = sceneObjects.find((o) => o.object_id === objectId);
+    if (!targetObj) return;
+    setIsSplittingObjects(true);
+    setErrorMsg(null);
+    try {
+      const res = await splitSceneObject({
+        meshId,
+        printerId: selectedPrinterId,
+        objectId,
+      });
+      if (res.scene_objects.length <= 1) {
+        showProjectToast(`"${targetObj.name}" es una sola malla continua.`);
+        return;
+      }
+      const sx = Math.max(0.01, (targetObj.scale_x ?? targetObj.scale_percent) / 100);
+      const sy = Math.max(0.01, (targetObj.scale_y ?? targetObj.scale_percent) / 100);
+      const sz = Math.max(0.01, (targetObj.scale_z ?? targetObj.scale_percent) / 100);
+      const splitMapped: SceneObjectTransform[] = res.scene_objects.map((o) => {
+        const relZ = Math.round(((o.position?.[2] ?? 0) * sz) * 100) / 100;
+        const baseZ = targetObj.drop_to_bed ? 0 : (targetObj.offset_z ?? 0);
+        const keepRelZ = relZ > 0.05 || !targetObj.drop_to_bed;
+        return {
+          object_id: o.object_id,
+          name: `${targetObj.name} · ${o.name}`,
+          extruder: o.extruder || targetObj.extruder,
+          color_hex: o.color_hex ?? targetObj.color_hex,
+          mesh_url: o.mesh_url,
+          offset_x: Math.round(((targetObj.offset_x ?? 0) + (o.position?.[0] ?? 0) * sx) * 100) / 100,
+          offset_y: Math.round(((targetObj.offset_y ?? 0) + (o.position?.[1] ?? 0) * sy) * 100) / 100,
+          offset_z: Math.round((baseZ + relZ) * 100) / 100,
+          rot_x: targetObj.rot_x,
+          rot_y: targetObj.rot_y,
+          rot_z: targetObj.rot_z,
+          scale_percent: targetObj.scale_percent,
+          scale_x: targetObj.scale_x ?? null,
+          scale_y: targetObj.scale_y ?? null,
+          scale_z: targetObj.scale_z ?? null,
+          drop_to_bed: keepRelZ ? false : true,
+          dimensions_mm: [
+            Math.round(((o.dimensions_mm?.[0] ?? 0) * sx) * 100) / 100,
+            Math.round(((o.dimensions_mm?.[1] ?? 0) * sy) * 100) / 100,
+            Math.round(((o.dimensions_mm?.[2] ?? 0) * sz) * 100) / 100,
+          ],
+        };
+      });
+      const nextScene = sceneObjects.flatMap((o) =>
+        o.object_id === objectId ? splitMapped : [o],
+      );
+      setSceneObjects(nextScene);
+      setSelectedObjectIds(splitMapped.map((o) => o.object_id));
+      showProjectToast(`"${targetObj.name}" dividido en ${splitMapped.length} partes.`);
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Error dividiendo el objeto seleccionado.',
+      );
+    } finally {
+      setIsSplittingObjects(false);
+    }
+  };
+
+  const handleMergeSelectedObjects = async (objectIds: string[]) => {
+    if (!meshId) return;
+    const idSet = new Set(objectIds);
+    const targets = sceneObjects.filter((o) => idSet.has(o.object_id));
+    if (targets.length < 2) return;
+    setIsSplittingObjects(true);
+    setErrorMsg(null);
+    try {
+      const res = await mergeSceneObjects({
+        meshId,
+        printerId: selectedPrinterId,
+        objects: targets,
+      });
+      const mo = res.merged_object;
+      const mergedZ = Math.round((mo.position?.[2] ?? 0) * 100) / 100;
+      const mergedTransform: SceneObjectTransform = {
+        object_id: mo.object_id,
+        name: mo.name || `${targets[0].name} (Unido)`,
+        extruder: mo.extruder,
+        color_hex: mo.color_hex,
+        mesh_url: mo.mesh_url,
+        offset_x: Math.round((mo.position?.[0] ?? 0) * 100) / 100,
+        offset_y: Math.round((mo.position?.[1] ?? 0) * 100) / 100,
+        offset_z: mergedZ,
+        rot_x: 0,
+        rot_y: 0,
+        rot_z: 0,
+        scale_percent: 100,
+        scale_x: null,
+        scale_y: null,
+        scale_z: null,
+        drop_to_bed: mergedZ <= 0.05,
+        dimensions_mm: mo.dimensions_mm,
+      };
+      let inserted = false;
+      const nextScene: SceneObjectTransform[] = [];
+      for (const o of sceneObjects) {
+        if (idSet.has(o.object_id)) {
+          if (!inserted) {
+            nextScene.push(mergedTransform);
+            inserted = true;
+          }
+        } else {
+          nextScene.push(o);
+        }
+      }
+      setSceneObjects(nextScene);
+      setSelectedObjectIds([mergedTransform.object_id]);
+      showProjectToast(`${targets.length} objetos unidos en "${mergedTransform.name}".`);
+    } catch (err: unknown) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Error uniendo los objetos seleccionados.',
+      );
+    } finally {
+      setIsSplittingObjects(false);
+    }
   };
 
   const handleAutoArrange = async (instances: ModelInstanceTransform[]) => {
@@ -4056,6 +4235,10 @@ export function App() {
             onChangeTransform={handleChangeTransform}
             onAutoOrient={handleAutoOrient}
             isAutoOrienting={isAutoOrienting}
+            orientationsAttempt={orientationsAttempt}
+            orientationsError={orientationsError}
+            onCancelOrientations={handleCancelAutoOrient}
+            onDismissOrientationsError={() => setOrientationsError(null)}
             autoOrientMessage={autoOrientMsg}
             orientationsData={orientationsData}
             selectedOrientationId={selectedOrientationId}
@@ -4079,6 +4262,8 @@ export function App() {
             onChangeSceneObjects={setSceneObjects}
             onSplitObjects={handleSplitObjects}
             onMergeObjects={handleMergeObjects}
+            onSplitSceneObject={handleSplitSingleObject}
+            onMergeSceneObjects={handleMergeSelectedObjects}
             isSplittingObjects={isSplittingObjects}
             onImportModels={triggerImportModelsPicker}
             isImportingModels={isImportingModels}
@@ -4190,6 +4375,7 @@ export function App() {
                 hours: hMatch ? Number(hMatch[1]) : 0,
                 minutes: mMatch ? Number(mMatch[1]) : 0,
                 grams: sliceResult.filament_grams,
+                filamentBySlot: sliceResult.filament_by_slot,
               };
             })()
             : {}),

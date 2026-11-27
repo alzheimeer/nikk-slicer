@@ -139,9 +139,11 @@ from app.core.mesh_analyzer import (
     import_models_to_plate,
     inject_support_blockers_into_3mf,
     load_and_transform_mesh,
+    merge_selected_scene_objects,
     prepare_painted_3mf_for_slicer,
     sanitize_euler_rotation,
     split_mesh_into_scene_objects,
+    split_single_scene_object,
     transform_and_export_3mf_parts,
 )
 from app.core.slicer_router import run_slicer_cli
@@ -171,6 +173,8 @@ from app.models.schemas import (
     LayOnFaceResponse,
     MachineMaterialLearningsResponse,
     MaterialType,
+    MergeSceneObjectsRequest,
+    MergeSceneObjectsResponse,
     MeshAnalysisResponse,
     ModelInstanceTransform,
     PostPrintCompendium,
@@ -188,6 +192,7 @@ from app.models.schemas import (
     SaveProjectRequest,
     SceneObjectTransform,
     SplitObjectsResponse,
+    SplitSceneObjectRequest,
     QualityPreset,
     SendPrintRequest,
     SendPrintResponse,
@@ -740,6 +745,38 @@ async def split_objects_endpoint(
     return SplitObjectsResponse(mesh_id=resolved_id, scene_objects=objs)
 
 
+@app.post("/api/models/{mesh_id}/split-object", response_model=SplitObjectsResponse)
+async def split_single_object_endpoint(
+    mesh_id: str,
+    req: SplitSceneObjectRequest,
+) -> SplitObjectsResponse:
+    """Divide únicamente un objeto específico de la escena en sus sub-partes geométricas."""
+    _resolve_printer_or_400(req.printer_id)
+    try:
+        objs = split_single_scene_object(mesh_id, req.object_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SplitObjectsResponse(mesh_id=mesh_id, scene_objects=objs)
+
+
+@app.post("/api/models/{mesh_id}/merge-objects", response_model=MergeSceneObjectsResponse)
+async def merge_selected_objects_endpoint(
+    mesh_id: str,
+    req: MergeSceneObjectsRequest,
+) -> MergeSceneObjectsResponse:
+    """Une múltiples objetos seleccionados en un único objeto multicolor."""
+    _resolve_printer_or_400(req.printer_id)
+    try:
+        merged = merge_selected_scene_objects(mesh_id, req.objects)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return MergeSceneObjectsResponse(mesh_id=mesh_id, merged_object=merged)
+
+
 @app.post("/api/models/import-to-plate", response_model=ImportToPlateResponse)
 async def import_to_plate_endpoint(
     printer_id: PrinterId = Form(...),
@@ -1040,23 +1077,41 @@ def _execute_slice_job_sync(
     )
 
     if len(req.scene_objects) > 0:
+        has_scene_multicolor = bool(analysis.is_multicolor) or len({o.extruder for o in req.scene_objects}) > 1 or any(
+            o.extruder > 1 or bool(getattr(o, "color_paint_map", None))
+            for o in req.scene_objects
+        )
+        if not has_scene_multicolor:
+            for o in req.scene_objects:
+                stl_p = get_scene_object_stl_path(resolved_id, o.object_id)
+                if stl_p is not None and stl_p.with_name(f"{o.object_id}.paint.json").is_file():
+                    has_scene_multicolor = True
+                    break
+        patched = patch_profiles_for_job(
+            req,
+            job_dir,
+            multimaterial_3mf=(printer.profile_id == "creator5_pro" and (len(req.scene_objects) > 1 or has_scene_multicolor)),
+            is_multicolor=has_scene_multicolor,
+            model_dimensions_mm=(
+                analysis.dimensions_mm.x,
+                analysis.dimensions_mm.y,
+                analysis.dimensions_mm.z,
+            ),
+        )
+        uniform_raft: int | None = None
+        try:
+            proc_cfg = json.loads(patched.process_json.read_text(encoding="utf-8"))
+            if str(proc_cfg.get("enable_prime_tower", "0")) == "1":
+                uniform_raft = int(float(str(proc_cfg.get("raft_layers", "0") or "0")))
+        except Exception:
+            uniform_raft = None
         assembled_3mf_path = assemble_scene_objects_for_slicer(
             resolved_id,
             req.scene_objects,
             job_dir,
             printer,
             part_extruder_map=req.part_extruder_map,
-        )
-        patched = patch_profiles_for_job(
-            req,
-            job_dir,
-            multimaterial_3mf=(printer.profile_id == "creator5_pro" and len(req.scene_objects) > 1),
-            is_multicolor=bool(analysis.is_multicolor),
-            model_dimensions_mm=(
-                analysis.dimensions_mm.x,
-                analysis.dimensions_mm.y,
-                analysis.dimensions_mm.z,
-            ),
+            uniform_raft_layers=uniform_raft,
         )
         model_input = assembled_3mf_path
         f_ids = None
@@ -1284,20 +1339,52 @@ def _execute_slice_job_sync(
         logger.warning("No se pudo construir sliced_profile_snapshot para job %s: %s", job_id, exc)
         sliced_profile_snapshot = None
 
+    filament_by_slot_items: list[dict[str, Any]] = []
+    if result.filament_grams_by_slot or req.extruders_config:
+        slot_count = max(
+            len(result.filament_grams_by_slot),
+            len(result.filament_meters_by_slot),
+            len(req.extruders_config) if req.extruders_config else 0,
+        )
+        cfg_by_idx = {slot.extruder_index: slot for slot in (req.extruders_config or [])}
+        total_g_for_pct = sum(result.filament_grams_by_slot) if result.filament_grams_by_slot else result.filament_grams
+        for idx in range(slot_count):
+            g_val = (
+                result.filament_grams_by_slot[idx]
+                if idx < len(result.filament_grams_by_slot)
+                else (result.filament_grams if idx == req.model_extruder and not result.filament_grams_by_slot else 0.0)
+            )
+            m_val = (
+                result.filament_meters_by_slot[idx]
+                if idx < len(result.filament_meters_by_slot)
+                else (result.filament_meters if idx == req.model_extruder and not result.filament_meters_by_slot else 0.0)
+            )
+            cfg_slot = cfg_by_idx.get(idx)
+            pct_val = round((g_val / total_g_for_pct) * 100.0, 1) if total_g_for_pct > 1e-6 else 0.0
+            filament_by_slot_items.append(
+                {
+                    "slot": f"T{idx}",
+                    "slot_index": idx,
+                    "color_hex": cfg_slot.color_hex if cfg_slot else "#38BDF8",
+                    "material": (cfg_slot.material if cfg_slot else req.material).upper(),
+                    "grams": round(g_val, 2),
+                    "meters": round(m_val, 3),
+                    "percentage": pct_val,
+                }
+            )
+
     if printer.profile_id == "creator5_pro":
         try:
             tool_entries: list[dict[str, Any]] = []
-            if req.extruders_config:
-                per_tool_g = round(result.filament_grams / max(1, len(req.extruders_config)), 2)
-                per_tool_m = round(result.filament_meters / max(1, len(req.extruders_config)), 2)
-                for slot in req.extruders_config:
+            if filament_by_slot_items:
+                for slot_item in filament_by_slot_items:
                     tool_entries.append(
                         {
-                            "tool_id": slot.extruder_index,
-                            "material": slot.material.upper(),
-                            "color": slot.color_hex,
-                            "used_g": per_tool_g,
-                            "used_m": per_tool_m,
+                            "tool_id": slot_item["slot_index"],
+                            "material": slot_item["material"],
+                            "color": slot_item["color_hex"],
+                            "used_g": slot_item["grams"],
+                            "used_m": slot_item["meters"],
                         }
                     )
             else:
@@ -1397,6 +1484,7 @@ def _execute_slice_job_sync(
         estimated_time_seconds=result.estimated_time_seconds,
         filament_grams=result.filament_grams,
         filament_meters=result.filament_meters,
+        filament_by_slot=filament_by_slot_items,
         support_time_seconds=result.support_time_seconds,
         support_weight_g=result.support_weight_g,
         support_percentage=result.support_percentage,

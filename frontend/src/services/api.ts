@@ -56,6 +56,7 @@ export interface ModelInstanceTransform {
   overrides?: ObjectPrintOverrides;
   support_paint_map?: SupportPaintMap;
   support_paint_mode?: SupportPaintMode;
+  color_paint_map?: Record<number, number>;
 }
 
 export interface ModelTransform {
@@ -232,6 +233,7 @@ export interface SceneObjectTransform {
   overrides?: ObjectPrintOverrides;
   support_paint_map?: SupportPaintMap;
   support_paint_mode?: SupportPaintMode;
+  color_paint_map?: Record<number, number>;
 }
 
 export interface AutoOrientResponse {
@@ -470,6 +472,16 @@ export interface SlicedProfileSnapshot {
   filaments: SlicedProfileFilament[];
 }
 
+export interface FilamentSlotUsage {
+  slot: string;
+  slot_index: number;
+  color_hex: string;
+  material: string;
+  grams: number;
+  meters: number;
+  percentage: number;
+}
+
 export interface SliceResponse {
   job_id: string;
   gcode_url: string;
@@ -477,6 +489,7 @@ export interface SliceResponse {
   estimated_time_seconds?: number;
   filament_grams: number;
   filament_meters: number;
+  filament_by_slot?: FilamentSlotUsage[];
   support_time_seconds?: number;
   support_weight_g?: number;
   support_percentage?: number;
@@ -1090,6 +1103,7 @@ export async function requestAIOrientations({
   scalePercent = 100,
   objectId,
   sceneObjects,
+  signal,
 }: {
   printerId: PrinterId;
   material: MaterialType;
@@ -1098,6 +1112,7 @@ export async function requestAIOrientations({
   scalePercent?: number;
   objectId?: string | null;
   sceneObjects?: SceneObjectTransform[];
+  signal?: AbortSignal;
 }): Promise<AIOrientationsResponse> {
   const form = new FormData();
   form.append('printer_id', printerId);
@@ -1130,6 +1145,7 @@ export async function requestAIOrientations({
   const res = await fetch(`${API_BASE_URL}/ai/orientations`, {
     method: 'POST',
     body: form,
+    signal,
   });
   if (!res.ok) {
     throw new Error(await parseError(res));
@@ -1639,6 +1655,46 @@ export async function splitMeshObjects({
     throw new Error(await parseError(res));
   }
   return res.json() as Promise<{ mesh_id: string; scene_objects: SceneObjectInfo[] }>;
+}
+
+export async function splitSceneObject({
+  meshId,
+  printerId,
+  objectId,
+}: {
+  meshId: string;
+  printerId: PrinterId;
+  objectId: string;
+}): Promise<{ mesh_id: string; scene_objects: SceneObjectInfo[] }> {
+  const res = await fetch(`${API_BASE_URL}/models/${encodeURIComponent(meshId)}/split-object`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ printer_id: printerId, object_id: objectId }),
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<{ mesh_id: string; scene_objects: SceneObjectInfo[] }>;
+}
+
+export async function mergeSceneObjects({
+  meshId,
+  printerId,
+  objects,
+}: {
+  meshId: string;
+  printerId: PrinterId;
+  objects: SceneObjectTransform[];
+}): Promise<{ mesh_id: string; merged_object: SceneObjectInfo }> {
+  const res = await fetch(`${API_BASE_URL}/models/${encodeURIComponent(meshId)}/merge-objects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ printer_id: printerId, objects }),
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return res.json() as Promise<{ mesh_id: string; merged_object: SceneObjectInfo }>;
 }
 
 export async function applyLayerPauses({

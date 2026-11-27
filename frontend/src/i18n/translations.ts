@@ -119,6 +119,16 @@ export interface TranslationSchema {
     mouseHint: string;
     paintedStats: string;
   };
+  orientationsModal: {
+    calculatingTitle: string;
+    calculatingSubtitle: string;
+    retryingSubtitle: string;
+    cancel: string;
+    errorTitle: string;
+    timeoutError: string;
+    retry: string;
+    close: string;
+  };
   exportMenu: {
     exportSelection: string;
     export3mf: string;
@@ -310,6 +320,16 @@ export const translations: Record<Language, TranslationSchema> = {
       clearObjectPaint: 'Limpiar pintura de este objeto',
       mouseHint: 'Clic izq: acción activa · Clic der: bloquear · Shift+Clic: borrar',
       paintedStats: 'Triángulos pintados',
+    },
+    orientationsModal: {
+      calculatingTitle: 'Calculando orientaciones óptimas con IA...',
+      calculatingSubtitle: 'Evaluando altura Z, voladizos y estabilidad en cama',
+      retryingSubtitle: 'Reintentando cálculo de orientaciones (intento 2/2)...',
+      cancel: 'Cancelar',
+      errorTitle: 'Error al calcular orientaciones con IA',
+      timeoutError: 'Tiempo de espera agotado al analizar la geometría o conectar con la IA.',
+      retry: 'Reintentar',
+      close: 'Cerrar',
     },
     exportMenu: {
       exportSelection: 'Exportar Selección',
@@ -576,6 +596,16 @@ export const translations: Record<Language, TranslationSchema> = {
       clearObjectPaint: 'Clear object painting',
       mouseHint: 'Left-click: active tool · Right-click: block · Shift+Click: erase',
       paintedStats: 'Painted triangles',
+    },
+    orientationsModal: {
+      calculatingTitle: 'Calculating optimal AI orientations...',
+      calculatingSubtitle: 'Evaluating Z height, overhangs, and bed stability',
+      retryingSubtitle: 'Retrying orientation calculation (attempt 2/2)...',
+      cancel: 'Cancel',
+      errorTitle: 'Could not calculate AI orientations',
+      timeoutError: 'Timed out while analyzing geometry or connecting to AI.',
+      retry: 'Retry',
+      close: 'Close',
     },
     exportMenu: {
       exportSelection: 'Export Selection',

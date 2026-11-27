@@ -9,7 +9,7 @@ import {
   Store,
   X,
 } from 'lucide-react';
-import type { MaterialType, ProfileId } from '../services/api';
+import type { FilamentSlotUsage, MaterialType, ProfileId } from '../services/api';
 
 export interface QuoteInitialData {
   modelName?: string;
@@ -21,6 +21,8 @@ export interface QuoteInitialData {
   grams?: number;
   filamentPricePerKg?: number;
   energyRateKwh?: number;
+  filamentBySlot?: FilamentSlotUsage[];
+  spoolWeightGrams?: number;
 }
 
 export interface QuoteCalculatorModalProps {
@@ -135,6 +137,7 @@ export function QuoteCalculatorModal({
   const [hours, setHours] = useState(2);
   const [minutes, setMinutes] = useState(30);
   const [grams, setGrams] = useState(45);
+  const [spoolWeightGrams, setSpoolWeightGrams] = useState(1000);
 
   const [filamentPricePerKg, setFilamentPricePerKg] = useState(preset.filamentPricePerKg);
   const [energyRateKwh, setEnergyRateKwh] = useState(preset.energyRateKwh);
@@ -209,6 +212,9 @@ export function QuoteCalculatorModal({
       if (typeof initialData.hours === 'number') setHours(Math.max(0, Math.floor(initialData.hours)));
       if (typeof initialData.minutes === 'number') setMinutes(Math.max(0, Math.min(59, Math.round(initialData.minutes))));
       if (typeof initialData.grams === 'number') setGrams(Math.max(0, Number(initialData.grams.toFixed(1))));
+      if (typeof initialData.spoolWeightGrams === 'number' && initialData.spoolWeightGrams > 0) {
+        setSpoolWeightGrams(Math.round(initialData.spoolWeightGrams));
+      }
     }
     setCopiedMsg(false);
     setSavedPresetMsg(false);
@@ -303,6 +309,45 @@ export function QuoteCalculatorModal({
     platformEnabled,
     platformPct,
   ]);
+
+  const slotReport = useMemo(() => {
+    const safeSpool = Math.max(50, Number(spoolWeightGrams) || 1000);
+    const rawSlots = initialData?.filamentBySlot ?? [];
+    const baseInitialGrams = Number(initialData?.grams ?? 0);
+    const scale =
+      baseInitialGrams > 0.01 && Math.abs(grams - baseInitialGrams) > 0.05
+        ? grams / baseInitialGrams
+        : 1;
+
+    const slots = rawSlots.map((slot) => {
+      const unitGrams = Number((slot.grams * scale).toFixed(2));
+      const totalGrams = Number((unitGrams * calc.qty).toFixed(2));
+      const totalMeters = Number((slot.meters * scale * calc.qty).toFixed(2));
+      const rollsExact = totalGrams / safeSpool;
+      const rollsToBuy = totalGrams > 0 ? Math.ceil(rollsExact) : 0;
+      return {
+        ...slot,
+        unitGrams,
+        totalGrams,
+        totalMeters,
+        rollsExact,
+        rollsToBuy,
+      };
+    });
+
+    const totalRollsToBuy =
+      slots.length > 0
+        ? slots.reduce((acc, s) => acc + s.rollsToBuy, 0)
+        : calc.totalGramsAll > 0
+          ? Math.ceil(calc.totalGramsAll / safeSpool)
+          : 0;
+
+    return {
+      spoolGrams: safeSpool,
+      slots,
+      totalRollsToBuy,
+    };
+  }, [initialData?.filamentBySlot, initialData?.grams, grams, calc.qty, calc.totalGramsAll, spoolWeightGrams]);
 
   if (!open) return null;
 
@@ -901,6 +946,98 @@ export function QuoteCalculatorModal({
                   <span>Costo Real Total (Punto de Equilibrio)</span>
                   <span className="font-mono">{formatCop(calc.breakEvenTotal)}</span>
                 </div>
+              </div>
+
+              {/* Informe de gasto por slot y rollos a comprar */}
+              <div className="space-y-2 rounded-xl border border-indigo-500/30 bg-slate-900/80 p-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold text-indigo-200">
+                      Informe de Filamento y Rollos ({calc.qty} {calc.qty === 1 ? 'ud' : 'uds'})
+                    </p>
+                    <p className="text-[10px] text-slate-400">
+                      {slotReport.slots.length > 0
+                        ? 'Consumo acumulado por slot y rollos necesarios a comprar'
+                        : 'Rollos necesarios según el peso total del lote'}
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-1 text-[10px] text-slate-300">
+                    <span>Rollo (g):</span>
+                    <input
+                      type="number"
+                      min={100}
+                      step={50}
+                      value={spoolWeightGrams}
+                      onChange={(e) => setSpoolWeightGrams(Math.max(100, Number(e.target.value) || 1000))}
+                      className="w-16 rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-center font-mono text-[11px] font-semibold text-indigo-200"
+                    />
+                  </label>
+                </div>
+
+                {slotReport.slots.length > 0 ? (
+                  <div className="space-y-1">
+                    {slotReport.slots.map((s) => (
+                      <div
+                        key={s.slot}
+                        className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 ${
+                          s.totalGrams > 0
+                            ? 'border border-slate-800 bg-slate-950/80 text-slate-100'
+                            : 'bg-slate-950/35 text-slate-500'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-full border border-white/25"
+                            style={{ backgroundColor: s.color_hex }}
+                          />
+                          <span className="font-mono font-bold">{s.slot}</span>
+                          <span className="text-[10px] opacity-80">{s.material}</span>
+                          <span className="text-[10px] text-slate-400">
+                            ({s.unitGrams.toFixed(1)} g/ud)
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 font-mono text-[11px]">
+                          <span>
+                            {s.totalGrams >= 1000
+                              ? `${(s.totalGrams / 1000).toFixed(2)} kg`
+                              : `${s.totalGrams.toLocaleString('es-CO')} g`}
+                          </span>
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                              s.rollsToBuy > 0
+                                ? 'bg-indigo-500/20 text-indigo-200 border border-indigo-500/40'
+                                : 'bg-slate-900 text-slate-500'
+                            }`}
+                            title={`${s.rollsExact.toFixed(2)} rollos exactos de ${slotReport.spoolGrams}g`}
+                          >
+                            {s.rollsToBuy} {s.rollsToBuy === 1 ? 'rollo' : 'rollos'}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="flex items-center justify-between border-t border-slate-800 pt-1.5 text-[11px] font-semibold text-indigo-200">
+                      <span>Total lote ({calc.totalGramsAll.toLocaleString('es-CO')} g)</span>
+                      <span className="font-mono">
+                        Comprar {slotReport.totalRollsToBuy}{' '}
+                        {slotReport.totalRollsToBuy === 1 ? 'rollo' : 'rollos'} de{' '}
+                        {slotReport.spoolGrams}g
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/80 px-2.5 py-1.5 text-[11px]">
+                    <span className="text-slate-300">
+                      {material.toUpperCase()} ·{' '}
+                      {calc.totalGramsAll >= 1000
+                        ? `${(calc.totalGramsAll / 1000).toFixed(2)} kg`
+                        : `${calc.totalGramsAll.toLocaleString('es-CO')} g`}
+                    </span>
+                    <span className="rounded border border-indigo-500/40 bg-indigo-500/20 px-2 py-0.5 font-mono font-bold text-indigo-200">
+                      Comprar {slotReport.totalRollsToBuy}{' '}
+                      {slotReport.totalRollsToBuy === 1 ? 'rollo' : 'rollos'} ({(calc.totalGramsAll / slotReport.spoolGrams).toFixed(2)} exactos)
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Resultado Final */}

@@ -1293,6 +1293,11 @@ def build_sliced_profile_snapshot(
                     }
                 )
 
+    if _as_str(proc.get("enable_prime_tower"), "0") == "1":
+        uniform_raft = _as_int(proc.get("raft_layers"), 0)
+        for ov_entry in per_object_adhesion_overrides:
+            ov_entry["raft_layers"] = uniform_raft
+
     return {
         "quality": {
             "layer_height": _as_float(proc.get("layer_height"), 0.2),

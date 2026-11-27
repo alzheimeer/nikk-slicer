@@ -2641,7 +2641,21 @@ def evaluate_orientation_candidates(
     else:
         raw_mesh = load_raw_mesh(model_path)
 
-    raw_mesh_hero = _detect_hero_face_normal(raw_mesh, extracted, is_3mf)
+    # Aceleración para mallas densas (> 35.000 triángulos, ej. Meshy 500k): simplificar a ~15.000
+    eval_mesh = raw_mesh
+    if len(raw_mesh.faces) > 35000:
+        simplified_mesh = None
+        try:
+            simplified_mesh = raw_mesh.simplify_quadric_decimation(face_count=15000)
+        except Exception:
+            simplified_mesh = None
+        if simplified_mesh is not None and len(simplified_mesh.faces) >= 500:
+            eval_mesh = simplified_mesh
+        else:
+            sample_idx = np.linspace(0, len(raw_mesh.faces) - 1, 15000, dtype=np.int64)
+            eval_mesh = raw_mesh.submesh([sample_idx], append=True)
+
+    raw_mesh_hero = _detect_hero_face_normal(eval_mesh, extracted, is_3mf)
     hero_vec_np = np.array(raw_mesh_hero, dtype=np.float64) if raw_mesh_hero is not None else None
     is_character_like = (
         is_multicolor
@@ -2652,16 +2666,16 @@ def evaluate_orientation_candidates(
     )
     hero_face_detected = bool(hero_vec_np is not None and is_character_like)
 
-    hull = raw_mesh.convex_hull
+    hull = eval_mesh.convex_hull
     hull_verts = hull.vertices.copy()
     to_origin, _ = trimesh.bounds.oriented_bounds(hull)
     r_obb = to_origin[:3, :3]
 
-    n_faces = len(raw_mesh.faces)
+    n_faces = len(eval_mesh.faces)
     step = max(1, n_faces // 18000)
-    normals_sub = raw_mesh.face_normals[::step].copy()
-    areas_sub = raw_mesh.area_faces[::step].copy()
-    centers_sub = raw_mesh.triangles_center[::step].copy()
+    normals_sub = eval_mesh.face_normals[::step].copy()
+    areas_sub = eval_mesh.area_faces[::step].copy()
+    centers_sub = eval_mesh.triangles_center[::step].copy()
     tot_area = float(areas_sub.sum()) or 1.0
 
     scale_factor = max(0.05, scale_percent / 100.0)
@@ -2670,7 +2684,7 @@ def evaluate_orientation_candidates(
     oh_45_cos = math.cos(math.radians(45.0))
 
     try:
-        raw_vol_cm3 = abs(float(raw_mesh.volume)) * (scale_factor ** 3) / 1000.0
+        raw_vol_cm3 = abs(float(eval_mesh.volume)) * (scale_factor ** 3) / 1000.0
     except Exception:
         raw_vol_cm3 = 0.0
     if raw_vol_cm3 <= 0.1:
@@ -3519,6 +3533,123 @@ def _load_meshes_from_file(
     ], paint_map, palette
 
 
+def _combine_parts_into_single_mesh(
+    parts: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]],
+    paint_map: dict[str, list[str | None]],
+    palette: list[str],
+    fallback_name: str,
+) -> tuple[MultimaterialPartInfo, trimesh.Trimesh, list[str | None] | None, list[str]]:
+    """Une submallas de un `.3mf` o escena en un único objeto preservando `paint_color` y paleta."""
+    valid = [(pi, pm) for pi, pm in parts if len(pm.faces) > 0 and len(pm.vertices) > 0]
+    if not valid:
+        raise ValueError(f"No se encontraron mallas 3D válidas en '{fallback_name}'.")
+
+    clean_stem = Path(fallback_name).stem or "Pieza 1"
+    default_palette = ["#F68D11", "#191919", "#DBDADA", "#EC120B"]
+    resolved_palette = [
+        (palette[i] if i < len(palette) and palette[i] else default_palette[i])
+        for i in range(4)
+    ]
+
+    if len(valid) == 1:
+        p_info, p_mesh = valid[0]
+        raw_pc = paint_map.get(p_info.part_id)
+        pc_out = raw_pc if (raw_pc and len(raw_pc) == len(p_mesh.faces) and any(raw_pc)) else None
+        ext = max(1, min(4, int(p_info.extruder or 1)))
+        if p_info.color_hex and ext - 1 < 4 and (ext - 1 >= len(palette) or not palette[ext - 1]):
+            resolved_palette[ext - 1] = p_info.color_hex
+        single_info = p_info.model_copy(
+            update={
+                "part_id": "united_1",
+                "name": p_info.name or clean_stem,
+                "extruder": ext,
+                "triangle_count": int(len(p_mesh.faces)),
+            }
+        )
+        return single_info, p_mesh, pc_out, resolved_palette
+
+    vert_chunks: list[np.ndarray] = []
+    face_chunks: list[np.ndarray] = []
+    combined_paint: list[str | None] = []
+    had_explicit_paint = False
+    v_offset = 0
+
+    for p_info, p_mesh in valid:
+        v_arr = np.asarray(p_mesh.vertices, dtype=np.float64)
+        f_arr = np.asarray(p_mesh.faces, dtype=np.int64)
+        n_faces = int(len(f_arr))
+        ext = max(1, min(4, int(p_info.extruder or 1)))
+        if p_info.color_hex and ext - 1 < 4 and (ext - 1 >= len(palette) or not palette[ext - 1]):
+            resolved_palette[ext - 1] = p_info.color_hex
+        fallback_code = _PAINT_DIRECT_CODE.get(ext, "4")
+
+        raw_pc = paint_map.get(p_info.part_id)
+        if raw_pc and len(raw_pc) == n_faces and any(raw_pc):
+            had_explicit_paint = True
+            combined_paint.extend([pc if pc else fallback_code for pc in raw_pc])
+        else:
+            combined_paint.extend([fallback_code] * n_faces)
+
+        vert_chunks.append(v_arr)
+        face_chunks.append(f_arr + v_offset)
+        v_offset += int(len(v_arr))
+
+    combined_mesh = trimesh.Trimesh(
+        vertices=np.vstack(vert_chunks),
+        faces=np.vstack(face_chunks),
+        process=False,
+    )
+    distinct_codes = {c for c in combined_paint if c}
+    final_paint: list[str | None] | None = (
+        combined_paint if (had_explicit_paint or len(distinct_codes) > 1) else None
+    )
+    first_ext = max(1, min(4, int(valid[0][0].extruder or 1)))
+    first_color = valid[0][0].color_hex or resolved_palette[first_ext - 1]
+    united_info = MultimaterialPartInfo(
+        part_id="united_1",
+        name=clean_stem,
+        extruder=first_ext,
+        color_hex=first_color,
+        triangle_count=int(len(combined_mesh.faces)),
+    )
+    return united_info, combined_mesh, final_paint, resolved_palette
+
+
+def _load_united_entries_from_file(
+    file_path: Path,
+    orig_name: str,
+) -> list[tuple[MultimaterialPartInfo, trimesh.Trimesh, list[str | None] | None, list[str]]]:
+    """Carga cada archivo 3D como una única pieza unida (preservando colores multicolor)."""
+    import tempfile
+    import zipfile
+
+    ext = file_path.suffix.lower()
+    if ext == ".zip":
+        entries: list[tuple[MultimaterialPartInfo, trimesh.Trimesh, list[str | None] | None, list[str]]] = []
+        with tempfile.TemporaryDirectory(prefix="nikk_zip_u_") as tmp_dir:
+            with zipfile.ZipFile(file_path, "r") as zf:
+                zf.extractall(tmp_dir)
+            tmp_root = Path(tmp_dir)
+            candidates = sorted(
+                p
+                for p in tmp_root.rglob("*")
+                if p.is_file()
+                and not p.name.startswith(".")
+                and "__MACOSX" not in p.parts
+                and p.suffix.lower() in (SUPPORTED_IMPORT_EXTENSIONS - {".zip"})
+            )
+            if not candidates:
+                raise ValueError(
+                    f"El archivo '{orig_name}' no contiene modelos 3D compatibles (.stl, .3mf, .obj, .amf, .step)."
+                )
+            for cand in candidates:
+                entries.extend(_load_united_entries_from_file(cand, cand.name))
+        return entries
+
+    parts, paint_map, palette = _load_meshes_from_file(file_path, orig_name)
+    return [_combine_parts_into_single_mesh(parts, paint_map, palette, orig_name)]
+
+
 def import_models_to_plate(
     files_with_names: list[tuple[Path, str]],
     *,
@@ -3527,14 +3658,14 @@ def import_models_to_plate(
     base_extruder: int = 1,
     base_name: str = "Pieza 1",
 ) -> tuple[str, list[SceneObjectInfo], list[SceneObjectInfo]]:
-    """Importa uno o más archivos 3D/CAD al plato actual preservando objetos existentes."""
+    """Importa uno o más archivos 3D/CAD al plato actual preservando objetos existentes unidos."""
     resolved_id = (base_mesh_id or "").strip() or uuid.uuid4().hex[:12]
     obj_dir = _scene_objects_dir(resolved_id)
     obj_dir.mkdir(parents=True, exist_ok=True)
 
     base_objects: list[SceneObjectInfo] = []
     if base_mesh_id and not has_existing_scene_objects:
-        # Materializar el modelo único actual como primer objeto independiente en caché
+        # Materializar el modelo actual como UN solo objeto intacto (sin dividir submallas)
         cached_candidate: Path | None = None
         for ext in (".3mf", ".stl", ".obj", ".amf"):
             cand = MESH_CACHE_DIR / f"{resolved_id}{ext}"
@@ -3559,29 +3690,26 @@ def import_models_to_plate(
                 ]
                 b_paint, b_pal = {}, []
             if b_parts:
-                # Re-etiquetar con prefijo orig_ para evitar colisiones con importados
-                renamed_base: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
-                renamed_paint: dict[str, list[str | None]] = {}
-                for b_idx, (bp, bm) in enumerate(b_parts):
-                    new_pid = f"orig_{b_idx + 1}"
-                    if bp.part_id in b_paint:
-                        renamed_paint[new_pid] = b_paint[bp.part_id]
-                    renamed_base.append(
-                        (
-                            bp.model_copy(
-                                update={
-                                    "part_id": new_pid,
-                                    "extruder": max(1, min(4, int(base_extruder))) if len(b_parts) == 1 else bp.extruder,
-                                }
-                            ),
-                            bm,
-                        )
-                    )
+                united_info, united_mesh, united_paint, resolved_pal = _combine_parts_into_single_mesh(
+                    b_parts,
+                    b_paint,
+                    b_pal,
+                    base_name,
+                )
+                eff_ext = (
+                    max(1, min(4, int(base_extruder)))
+                    if united_paint is None
+                    else united_info.extruder
+                )
+                single_info = united_info.model_copy(
+                    update={"part_id": "orig_1", "extruder": eff_ext}
+                )
+                renamed_paint = {"orig_1": united_paint} if united_paint else None
                 base_objects = _export_scene_objects_to_cache(
                     resolved_id,
-                    renamed_base,
-                    paint_colors_by_id=renamed_paint or None,
-                    palette=b_pal or None,
+                    [(single_info, united_mesh)],
+                    paint_colors_by_id=renamed_paint,
+                    palette=resolved_pal or None,
                 )
 
     imported_objects: list[SceneObjectInfo] = []
@@ -3590,8 +3718,7 @@ def import_models_to_plate(
     first_mesh_for_cache: trimesh.Trimesh | None = None
 
     for file_path, orig_name in files_with_names:
-        parts, paint_map, palette = _load_meshes_from_file(file_path, orig_name)
-        for p_info, p_mesh in parts:
+        for p_info, p_mesh, united_paint, palette in _load_united_entries_from_file(file_path, orig_name):
             if len(p_mesh.faces) == 0:
                 continue
             seq_idx += 1
@@ -3611,14 +3738,12 @@ def import_models_to_plate(
             stl_bytes = exported if isinstance(exported, (bytes, bytearray)) else str(exported).encode("utf-8")
             stl_path.write_bytes(bytes(stl_bytes))
 
-            if p_info.part_id in paint_map:
-                pc_list = paint_map[p_info.part_id]
-                if any(pc_list):
-                    paint_path = obj_dir / f"{obj_id}.paint.json"
-                    paint_path.write_text(
-                        json.dumps({"paint_colors": pc_list, "palette": palette}, separators=(",", ":")),
-                        encoding="utf-8",
-                    )
+            if united_paint and any(united_paint):
+                paint_path = obj_dir / f"{obj_id}.paint.json"
+                paint_path.write_text(
+                    json.dumps({"paint_colors": united_paint, "palette": palette}, separators=(",", ":")),
+                    encoding="utf-8",
+                )
 
             ext = local_mesh.extents
             imported_objects.append(
@@ -3645,6 +3770,241 @@ def import_models_to_plate(
         raise ValueError("No se encontraron mallas 3D válidas en los archivos seleccionados.")
 
     return resolved_id, base_objects, imported_objects
+
+
+def split_single_scene_object(
+    mesh_id: str,
+    object_id: str,
+) -> list[SceneObjectInfo]:
+    """Divide un objeto específico de la escena en sus componentes geométricos conservando `paint_color`."""
+    stl_path = get_scene_object_stl_path(mesh_id, object_id)
+    if stl_path is None:
+        raise FileNotFoundError(f"No se encontró el objeto '{object_id}' en caché.")
+
+    paint_path = stl_path.with_name(f"{object_id}.paint.json")
+    raw_pcs: list[str | None] | None = None
+    palette: list[str] = []
+    if paint_path.is_file():
+        loaded_raw = trimesh.load(str(stl_path), force="mesh", process=False)
+        raw = loaded_raw.dump(concatenate=True) if isinstance(loaded_raw, trimesh.Scene) else loaded_raw
+        try:
+            p_data = json.loads(paint_path.read_text(encoding="utf-8"))
+            cand_pcs = p_data.get("paint_colors")
+            if isinstance(cand_pcs, list) and len(cand_pcs) == len(raw.faces):
+                raw_pcs = cand_pcs
+            pal_raw = p_data.get("palette")
+            if isinstance(pal_raw, list):
+                palette = [str(c) for c in pal_raw]
+        except Exception:
+            raw_pcs = None
+    else:
+        raw = load_raw_mesh(stl_path)
+
+    if len(raw.faces) == 0:
+        raise ValueError("El objeto seleccionado no contiene triángulos válidos.")
+
+    verts = np.asarray(raw.vertices, dtype=np.float64)
+    faces = np.asarray(raw.faces, dtype=np.int64)
+    adj_mesh = raw.copy()
+    adj_mesh.merge_vertices()
+    comp_labels = trimesh.graph.connected_components(adj_mesh.face_adjacency, nodes=np.arange(len(faces)))
+    shells_idx: list[np.ndarray] = [np.asarray(c, dtype=np.int64) for c in comp_labels if len(c) >= 10]
+    if not shells_idx:
+        shells_idx = [np.arange(len(faces), dtype=np.int64)]
+
+    # Calcular envolvente global para devolver posiciones relativas exactas respecto al objeto original
+    b_all = raw.bounds
+    g_cx = float((b_all[0][0] + b_all[1][0]) / 2.0)
+    g_cy = float((b_all[0][1] + b_all[1][1]) / 2.0)
+    g_zmin = float(b_all[0][2])
+
+    shells_idx.sort(key=lambda idxs: float(np.prod(raw.submesh([idxs], append=True).extents)), reverse=True)
+    obj_dir = _scene_objects_dir(mesh_id)
+    batch = uuid.uuid4().hex[:6]
+    out: list[SceneObjectInfo] = []
+
+    for idx, f_idxs in enumerate(shells_idx[:48]):
+        sub_faces = faces[f_idxs]
+        used_v, inv = np.unique(sub_faces, return_inverse=True)
+        sub_verts = verts[used_v]
+        remapped = inv.reshape((-1, 3))
+        sh = trimesh.Trimesh(vertices=sub_verts, faces=remapped, process=False)
+
+        b = sh.bounds
+        lcx = float((b[0][0] + b[1][0]) / 2.0)
+        lcy = float((b[0][1] + b[1][1]) / 2.0)
+        lz0 = float(b[0][2])
+        local_mesh = sh.copy()
+        local_mesh.apply_translation([-lcx, -lcy, -lz0])
+
+        new_id = f"{object_id}_s{batch}_{idx + 1}"
+        out_stl = obj_dir / f"{new_id}.stl"
+        exp = local_mesh.export(file_type="stl")
+        out_stl.write_bytes(bytes(exp) if isinstance(exp, (bytes, bytearray)) else str(exp).encode("utf-8"))
+
+        part_ext = 1
+        part_hex: str | None = None
+        if raw_pcs is not None:
+            sub_pcs = [raw_pcs[int(fi)] for fi in f_idxs]
+            if any(sub_pcs):
+                out_paint = obj_dir / f"{new_id}.paint.json"
+                out_paint.write_text(
+                    json.dumps({"paint_colors": sub_pcs, "palette": palette}, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                first_non_null = next((c for c in sub_pcs if c), None)
+                if first_non_null:
+                    part_ext = max(1, min(4, decode_paint_color_extruder(first_non_null)))
+                    if part_ext - 1 < len(palette):
+                        part_hex = palette[part_ext - 1]
+
+        ext_mm = local_mesh.extents
+        out.append(
+            SceneObjectInfo(
+                object_id=new_id,
+                name=f"Parte {idx + 1}",
+                extruder=part_ext,
+                color_hex=part_hex,
+                mesh_url=f"/api/models/{mesh_id}/objects/{new_id}.stl",
+                position=[
+                    round(lcx - g_cx, 2),
+                    round(lcy - g_cy, 2),
+                    round(max(0.0, lz0 - g_zmin), 2),
+                ],
+                rotation=[0.0, 0.0, 0.0],
+                scale=[100.0, 100.0, 100.0],
+                dimensions_mm=[round(float(ext_mm[0]), 2), round(float(ext_mm[1]), 2), round(float(ext_mm[2]), 2)],
+            )
+        )
+    return out
+
+
+def merge_selected_scene_objects(
+    mesh_id: str,
+    objects: list[SceneObjectTransform],
+) -> SceneObjectInfo:
+    """Une múltiples objetos seleccionados en un único objeto multicolor preservando posiciones relativas."""
+    if len(objects) < 2:
+        raise ValueError("Selecciona al menos 2 objetos para unirlos.")
+
+    parts_with_meshes: list[tuple[MultimaterialPartInfo, trimesh.Trimesh]] = []
+    paint_map: dict[str, list[str | None]] = {}
+    palette: list[str] = []
+
+    for idx, obj in enumerate(objects):
+        stl_path = get_scene_object_stl_path(mesh_id, obj.object_id)
+        if stl_path is None:
+            continue
+        paint_path = stl_path.with_name(f"{obj.object_id}.paint.json")
+        if paint_path.is_file():
+            loaded_raw = trimesh.load(str(stl_path), force="mesh", process=False)
+            raw = loaded_raw.dump(concatenate=True) if isinstance(loaded_raw, trimesh.Scene) else loaded_raw
+        else:
+            raw = load_raw_mesh(stl_path)
+
+        tx = apply_transform_to_mesh(
+            raw,
+            printer=None,
+            scale_percent=obj.scale_percent,
+            rot_x=obj.rot_x,
+            rot_y=obj.rot_y,
+            rot_z=obj.rot_z,
+            scale_x=obj.scale_x,
+            scale_y=obj.scale_y,
+            scale_z=obj.scale_z,
+            offset_x=obj.offset_x,
+            offset_y=obj.offset_y,
+            offset_z=obj.offset_z,
+            drop_to_bed=obj.drop_to_bed,
+            copy=False,
+        )
+
+        pid = f"m_{idx + 1}"
+        obj_ext = max(1, min(4, int(obj.extruder or 1)))
+        pcs: list[str | None] | None = None
+        if paint_path.is_file():
+            try:
+                p_data = json.loads(paint_path.read_text(encoding="utf-8"))
+                raw_pcs = p_data.get("paint_colors")
+                if isinstance(raw_pcs, list) and len(raw_pcs) == len(tx.faces):
+                    pcs = list(raw_pcs)
+                if not palette and isinstance(p_data.get("palette"), list):
+                    palette = [str(c) for c in p_data["palette"]]
+            except Exception:
+                pcs = None
+
+        raw_cmap = getattr(obj, "color_paint_map", None) or {}
+        if raw_cmap:
+            base_code = _PAINT_DIRECT_CODE.get(obj_ext, "4")
+            if pcs is None:
+                pcs = [base_code] * len(tx.faces)
+            for k, v in raw_cmap.items():
+                try:
+                    ki = int(k)
+                    vi = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= ki < len(pcs) and 1 <= vi <= 4:
+                    pcs[ki] = _PAINT_DIRECT_CODE[vi]
+
+        if pcs is not None:
+            paint_map[pid] = pcs
+
+        parts_with_meshes.append(
+            (
+                MultimaterialPartInfo(
+                    part_id=pid,
+                    name=obj.name or f"Pieza {idx + 1}",
+                    extruder=obj_ext,
+                    color_hex=obj.color_hex,
+                    triangle_count=int(len(tx.faces)),
+                ),
+                tx,
+            )
+        )
+
+    if len(parts_with_meshes) < 2:
+        raise ValueError("No se encontraron suficientes piezas válidas en caché para unir.")
+
+    united_info, united_mesh, united_paint, resolved_pal = _combine_parts_into_single_mesh(
+        parts_with_meshes,
+        paint_map,
+        palette,
+        objects[0].name or "Pieza_Unida",
+    )
+
+    b = united_mesh.bounds
+    cx = float((b[0][0] + b[1][0]) / 2.0)
+    cy = float((b[0][1] + b[1][1]) / 2.0)
+    z0 = float(b[0][2])
+    local_mesh = united_mesh.copy()
+    local_mesh.apply_translation([-cx, -cy, -z0])
+
+    new_id = f"merged_{uuid.uuid4().hex[:8]}"
+    obj_dir = _scene_objects_dir(mesh_id)
+    stl_out = obj_dir / f"{new_id}.stl"
+    exp = local_mesh.export(file_type="stl")
+    stl_out.write_bytes(bytes(exp) if isinstance(exp, (bytes, bytearray)) else str(exp).encode("utf-8"))
+
+    if united_paint and any(united_paint):
+        paint_out = obj_dir / f"{new_id}.paint.json"
+        paint_out.write_text(
+            json.dumps({"paint_colors": united_paint, "palette": resolved_pal}, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+    ext_mm = local_mesh.extents
+    return SceneObjectInfo(
+        object_id=new_id,
+        name=united_info.name,
+        extruder=united_info.extruder,
+        color_hex=united_info.color_hex,
+        mesh_url=f"/api/models/{mesh_id}/objects/{new_id}.stl",
+        position=[round(cx, 2), round(cy, 2), round(max(0.0, z0), 2)],
+        rotation=[0.0, 0.0, 0.0],
+        scale=[100.0, 100.0, 100.0],
+        dimensions_mm=[round(float(ext_mm[0]), 2), round(float(ext_mm[1]), 2), round(float(ext_mm[2]), 2)],
+    )
 
 
 def _encode_custom_supports_attr(state: Any) -> str:
@@ -3721,6 +4081,7 @@ def assemble_scene_objects_for_slicer(
     job_dir: Path,
     printer: PrinterConfig,
     part_extruder_map: dict[str, int] | None = None,
+    uniform_raft_layers: int | None = None,
 ) -> Path:
     """Reconstruye un `.3mf` multi-objeto con `paint_color`, `paint_supports` y volúmenes `support_blocker`."""
     bed_cx, bed_cy = _bed_center_xy(printer)
@@ -3748,7 +4109,18 @@ def assemble_scene_objects_for_slicer(
         stl_path = get_scene_object_stl_path(mesh_id, obj.object_id)
         if stl_path is None:
             continue
-        mesh = load_raw_mesh(stl_path)
+        paint_path = stl_path.with_name(f"{obj.object_id}.paint.json")
+        if paint_path.is_file():
+            loaded_raw = trimesh.load(str(stl_path), force="mesh", process=False)
+            mesh = (
+                loaded_raw.dump(concatenate=True)
+                if isinstance(loaded_raw, trimesh.Scene)
+                else loaded_raw
+            )
+            # Soldar vértices duplicados del STL manteniendo orden exacto de caras para Flash Studio
+            mesh.merge_vertices()
+        else:
+            mesh = load_raw_mesh(stl_path)
         transformed = apply_transform_to_mesh(
             mesh,
             printer=None,
@@ -3767,16 +4139,30 @@ def assemble_scene_objects_for_slicer(
         )
 
         explicit_part_ext = override_map.get(obj.object_id)
-        paint_path = stl_path.with_name(f"{obj.object_id}.paint.json")
         paint_list: list[str | None] | None = None
         if (explicit_part_ext is None or explicit_part_ext == 0) and paint_path.is_file():
             try:
                 p_data = json.loads(paint_path.read_text(encoding="utf-8"))
                 raw_pcs = p_data.get("paint_colors")
                 if isinstance(raw_pcs, list) and len(raw_pcs) == len(transformed.faces):
-                    paint_list = raw_pcs
+                    paint_list = list(raw_pcs)
             except Exception:
                 paint_list = None
+
+        raw_cmap = getattr(obj, "color_paint_map", None) or {}
+        if (explicit_part_ext is None or explicit_part_ext == 0) and raw_cmap:
+            base_ext = max(1, min(4, int(obj.extruder or 1)))
+            base_code = _PAINT_DIRECT_CODE.get(base_ext, "4")
+            if paint_list is None:
+                paint_list = [base_code] * len(transformed.faces)
+            for k, v in raw_cmap.items():
+                try:
+                    ki = int(k)
+                    vi = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= ki < len(paint_list) and 1 <= vi <= 4:
+                    paint_list[ki] = _PAINT_DIRECT_CODE[vi]
 
         verts = transformed.vertices
         faces = transformed.faces
@@ -3897,6 +4283,8 @@ def assemble_scene_objects_for_slicer(
         meta_lines: list[str] = [
             f'    <metadata type="object" key="name" value="{safe_name}"/>'
         ]
+        if part_ext_num is not None:
+            meta_lines.append(f'    <metadata type="object" key="extruder" value="{part_ext_num}"/>')
         if paint_mode == "enforcers_only" and (ov is None or ov.enable_support != False):
             meta_lines.append('    <metadata type="object" key="enable_support" value="1"/>')
             if ov is None or ov.support_type == "inherit":
@@ -3915,12 +4303,14 @@ def assemble_scene_objects_for_slicer(
             if ov.brim_type != "inherit":
                 if ov.brim_type == "raft":
                     meta_lines.append('    <metadata type="object" key="brim_type" value="no_brim"/>')
+                    r_val = int(uniform_raft_layers) if uniform_raft_layers is not None else int(ov.raft_layers)
                     meta_lines.append(
-                        f'    <metadata type="object" key="raft_layers" value="{int(ov.raft_layers)}"/>'
+                        f'    <metadata type="object" key="raft_layers" value="{r_val}"/>'
                     )
                 elif ov.brim_type == "no_brim":
                     meta_lines.append('    <metadata type="object" key="brim_type" value="no_brim"/>')
-                    meta_lines.append('    <metadata type="object" key="raft_layers" value="0"/>')
+                    r_val = int(uniform_raft_layers) if uniform_raft_layers is not None else 0
+                    meta_lines.append(f'    <metadata type="object" key="raft_layers" value="{r_val}"/>')
                 else:
                     meta_lines.append(
                         f'    <metadata type="object" key="brim_type" value="{ov.brim_type}"/>'
@@ -3928,7 +4318,16 @@ def assemble_scene_objects_for_slicer(
                     meta_lines.append(
                         f'    <metadata type="object" key="brim_width" value="{float(ov.brim_width):g}"/>'
                     )
-                    meta_lines.append('    <metadata type="object" key="raft_layers" value="0"/>')
+                    r_val = int(uniform_raft_layers) if uniform_raft_layers is not None else 0
+                    meta_lines.append(f'    <metadata type="object" key="raft_layers" value="{r_val}"/>')
+            elif uniform_raft_layers is not None:
+                meta_lines.append(
+                    f'    <metadata type="object" key="raft_layers" value="{int(uniform_raft_layers)}"/>'
+                )
+        elif uniform_raft_layers is not None:
+            meta_lines.append(
+                f'    <metadata type="object" key="raft_layers" value="{int(uniform_raft_layers)}"/>'
+            )
 
         if blocker_oids:
             meta_lines.append(f'    <part id="{part_oid}" subtype="normal_part">')
@@ -4048,6 +4447,21 @@ def export_instances_with_support_paint_3mf(
         if sup_paint_map:
             has_any_support_paint = True
 
+        raw_cmap = getattr(inst, "color_paint_map", None) or {}
+        color_paint_attr_map: dict[int, str] = {}
+        if raw_cmap:
+            base_code = _PAINT_DIRECT_CODE.get(1, "4")
+            for f_i in range(len(transformed.faces)):
+                color_paint_attr_map[f_i] = base_code
+            for k, v in raw_cmap.items():
+                try:
+                    ki = int(k)
+                    vi = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= ki < len(transformed.faces) and 1 <= vi <= 4:
+                    color_paint_attr_map[ki] = _PAINT_DIRECT_CODE[vi]
+
         part_oid = next_oid
         next_oid += 1
 
@@ -4057,8 +4471,10 @@ def export_instances_with_support_paint_3mf(
         t_rows = []
         for f_idx, f in enumerate(faces):
             sc = sup_paint_map.get(f_idx, "")
+            pc = color_paint_attr_map.get(f_idx, "")
             sa = f' paint_supports="{sc}" slic3rpe:custom_supports="{sc}"' if sc else ""
-            t_rows.append(f'          <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}"{sa} />')
+            pa = f' paint_color="{pc}"' if pc else ""
+            t_rows.append(f'          <triangle v1="{f[0]}" v2="{f[1]}" v3="{f[2]}"{pa}{sa} />')
         t_lines = "\n".join(t_rows)
         xml_objects.append(
             f'    <object id="{part_oid}" type="model" name="Pieza_{idx_i}">\n'

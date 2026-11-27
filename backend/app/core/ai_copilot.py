@@ -487,7 +487,7 @@ def _merge_llm_response(
     )
 
 
-def _call_gemini(prompt: str, api_key: str) -> dict[str, Any]:
+def _call_gemini(prompt: str, api_key: str, *, timeout: float = 12.0) -> dict[str, Any]:
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-2.5-flash:generateContent?key={api_key}"
@@ -507,13 +507,13 @@ def _call_gemini(prompt: str, api_key: str) -> dict[str, Any]:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=12) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     text = data["candidates"][0]["content"]["parts"][0]["text"]
     return json.loads(text)
 
 
-def _call_deepseek(prompt: str, api_key: str) -> dict[str, Any]:
+def _call_deepseek(prompt: str, api_key: str, *, timeout: float = 20.0) -> dict[str, Any]:
     url = "https://api.deepseek.com/chat/completions"
     body = json.dumps(
         {
@@ -532,7 +532,7 @@ def _call_deepseek(prompt: str, api_key: str) -> dict[str, Any]:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     text = data["choices"][0]["message"]["content"]
     return json.loads(text)
@@ -1139,7 +1139,7 @@ def generate_post_print_compendium(
     )
 
 
-def _call_ai_json(prompt: str) -> tuple[dict[str, Any] | None, str]:
+def _call_ai_json(prompt: str, *, timeout_sec: float | None = None) -> tuple[dict[str, Any] | None, str]:
     """Llama al proveedor IA activo (DeepSeek o Google Gemini) y devuelve `(json_dict, provider)`."""
     from app.core.platform_detector import get_active_ai_config
 
@@ -1165,9 +1165,9 @@ def _call_ai_json(prompt: str) -> tuple[dict[str, Any] | None, str]:
             continue
         try:
             if prov == "gemini":
-                return _call_gemini(prompt, key), "GEMINI_API"
-            return _call_deepseek(prompt, key), "DEEPSEEK_API"
-        except (urllib.error.URLError, KeyError, ValueError, TimeoutError):
+                return _call_gemini(prompt, key, timeout=timeout_sec or 12.0), "GEMINI_API"
+            return _call_deepseek(prompt, key, timeout=timeout_sec or 20.0), "DEEPSEEK_API"
+        except Exception:
             continue
     return None, "HEURISTICA_LOCAL"
 
@@ -1535,7 +1535,7 @@ def analyze_model_for_ai(req: AIAnalyzeModelRequest) -> AIAnalyzeModelResponse:
         "- recommended_heights (array de 1 o 2 números de `allowed_heights`)\n"
         f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
     )
-    raw_json, provider = _call_ai_json(prompt)
+    raw_json, provider = _call_ai_json(prompt, timeout_sec=8.0)
     summary = default_summary
     rec_heights = list(rec_by_cat[category])
 
@@ -1824,7 +1824,7 @@ def optimize_slice_with_ai(
         "fuzzy_skin (bool), fuzzy_skin_thickness (float 0.15..0.35), fuzzy_skin_point_distance (float 0.3..0.8).\n"
         f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
     )
-    raw_json, provider = _call_ai_json(prompt)
+    raw_json, provider = _call_ai_json(prompt, timeout_sec=8.0)
     fuzzy_thick = 0.25
     fuzzy_dist = 0.40
     sup_plate_only = True
@@ -2056,7 +2056,7 @@ def diagnose_print_defect(
         "adhesion_type, brim_width_mm, fuzzy_skin).\n"
         f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
     )
-    raw_json, provider = _call_ai_json(prompt)
+    raw_json, provider = _call_ai_json(prompt, timeout_sec=8.0)
     if raw_json:
         if raw_json.get("root_cause"):
             root_cause = str(raw_json["root_cause"])[:220]
@@ -2142,7 +2142,7 @@ def evaluate_orientations_with_ai(
         f"Datos: {json.dumps(prompt_ctx, ensure_ascii=False)}"
     )
 
-    raw_json, provider = _call_ai_json(prompt)
+    raw_json, provider = _call_ai_json(prompt, timeout_sec=8.0)
     opt_by_id = {str(o["id"]): o for o in raw_options}
     valid_ids = set(opt_by_id.keys())
     ai_explanations: dict[str, str] = {}

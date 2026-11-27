@@ -4141,6 +4141,47 @@ export function SlicerWizard({
               </div>
             </div>
 
+            {sliceResult.filament_by_slot && sliceResult.filament_by_slot.length > 0 && (
+              <div className="rounded-lg border border-indigo-500/25 bg-slate-950/75 px-2.5 py-2 text-[10px]">
+                <div className="mb-1.5 flex items-center justify-between text-slate-300">
+                  <span className="font-semibold text-indigo-200">
+                    Consumo por color / slot
+                  </span>
+                  <span className="font-mono font-semibold text-slate-200">
+                    Total: {sliceResult.filament_grams} g · {sliceResult.filament_meters} m
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {sliceResult.filament_by_slot.map((slotItem) => (
+                    <div
+                      key={slotItem.slot}
+                      className={`flex items-center justify-between rounded px-1.5 py-1 ${
+                        slotItem.grams > 0
+                          ? 'bg-slate-900/80 text-slate-100'
+                          : 'bg-slate-900/35 text-slate-500'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="h-2.5 w-2.5 shrink-0 rounded-full border border-white/25"
+                          style={{ backgroundColor: slotItem.color_hex }}
+                        />
+                        <span className="font-mono font-semibold">{slotItem.slot}</span>
+                        <span className="text-[9px] opacity-80">{slotItem.material}</span>
+                      </div>
+                      <div className="flex items-center gap-2 font-mono">
+                        <span>{slotItem.grams.toFixed(2)} g</span>
+                        <span className="opacity-75">{slotItem.meters.toFixed(2)} m</span>
+                        {slotItem.percentage > 0 && (
+                          <span className="text-indigo-300">({slotItem.percentage}%)</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {(sliceResult.supports_enabled || sliceResult.support_z_distance != null) && (
               <div className="flex flex-wrap items-center justify-between gap-1 rounded-lg border border-cyan-500/25 bg-slate-950/75 px-2.5 py-1.5 text-[10px]">
                 <span className="font-semibold text-cyan-200">
@@ -4821,6 +4862,8 @@ export function SlicerWizard({
                 hours: Math.floor(Math.max(0, Math.round(estHours * 3600)) / 3600),
                 minutes: Math.floor((Math.max(0, Math.round(estHours * 3600)) % 3600) / 60),
                 grams: sliceResult.filament_grams,
+                filamentBySlot: sliceResult.filament_by_slot,
+                spoolWeightGrams: costs.spoolWeightGrams,
                 filamentPricePerKg:
                   costs.spoolWeightGrams > 0
                     ? Math.round((costs.spoolCostPesos / costs.spoolWeightGrams) * 1000)

@@ -153,6 +153,7 @@ class ModelInstanceTransform(BaseModel):
     overrides: ObjectPrintOverrides | None = None
     support_paint_map: dict[int, int] | None = None
     support_paint_mode: Literal["auto", "enforcers_only"] = "auto"
+    color_paint_map: dict[int, int] | None = None
 
 
 class AutoArrangeRequest(BaseModel):
@@ -321,6 +322,7 @@ class SceneObjectTransform(BaseModel):
     overrides: ObjectPrintOverrides | None = None
     support_paint_map: dict[int, int] | None = None
     support_paint_mode: Literal["auto", "enforcers_only"] = "auto"
+    color_paint_map: dict[int, int] | None = None
 
 
 class LayerPauseItem(BaseModel):
@@ -365,6 +367,18 @@ class SaveProjectRequest(BaseModel):
     state: dict[str, Any] = Field(default_factory=dict)
 
 
+class FilamentSlotUsage(BaseModel):
+    """Consumo real de filamento por slot/extrusor (T0..T3) tras el laminado."""
+
+    slot: str
+    slot_index: int
+    color_hex: str = "#38BDF8"
+    material: str = "PLA"
+    grams: float = 0.0
+    meters: float = 0.0
+    percentage: float = 0.0
+
+
 class SliceResponse(BaseModel):
     """Resultado completo del laminado CLI y análisis geométrico."""
 
@@ -374,6 +388,7 @@ class SliceResponse(BaseModel):
     estimated_time_seconds: int = 0
     filament_grams: float
     filament_meters: float
+    filament_by_slot: list[FilamentSlotUsage] = Field(default_factory=list)
     support_time_seconds: int = 0
     support_weight_g: float = 0.0
     support_percentage: float = 0.0
@@ -981,3 +996,24 @@ class ExportSelectionRequest(BaseModel):
     instances: list[ModelInstanceTransform] = Field(default_factory=list)
     part_extruder_map: dict[str, int] = Field(default_factory=dict)
     filename_base: str = "export"
+
+
+class SplitSceneObjectRequest(BaseModel):
+    """Solicitud para dividir un objeto específico de la escena en sus sub-partes."""
+
+    printer_id: PrinterId = "creator5_pro"
+    object_id: str
+
+
+class MergeSceneObjectsRequest(BaseModel):
+    """Solicitud para unir múltiples objetos seleccionados en un único objeto multicolor."""
+
+    printer_id: PrinterId = "creator5_pro"
+    objects: list[SceneObjectTransform] = Field(default_factory=list)
+
+
+class MergeSceneObjectsResponse(BaseModel):
+    """Respuesta tras unir los objetos seleccionados en uno solo."""
+
+    mesh_id: str
+    merged_object: SceneObjectInfo

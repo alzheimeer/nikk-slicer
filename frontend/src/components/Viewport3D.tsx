@@ -14,6 +14,15 @@ import {
   type SupportPaintMap,
   type SupportPaintValue,
 } from '../utils/supportPaint';
+import {
+  buildColorPaintOverlayGeometry,
+  paintColorHeightRangeOnMesh,
+  paintColorSmartFillOnGeometry,
+  paintColorSphereWorldOnMesh,
+  paintColorTriangleOnGeometry,
+  type ColorPaintMap,
+  type ColorPaintToolMode,
+} from '../utils/colorPaint';
 import { useI18n } from '../i18n/I18nContext';
 import {
   ArrowDownToLine,
@@ -32,6 +41,7 @@ import {
   Maximize2,
   MousePointerClick,
   Move,
+  Paintbrush,
   Pause,
   Play,
   Plus,
@@ -77,6 +87,7 @@ export type CadToolMode =
   | 'lay_on_face'
   | 'cut'
   | 'support_blocker'
+  | 'color_paint'
   | 'measure';
 
 interface Viewport3DProps {
@@ -89,6 +100,10 @@ interface Viewport3DProps {
   onChangeTransform: (next: ModelTransform) => void;
   onAutoOrient: () => void;
   isAutoOrienting?: boolean;
+  orientationsAttempt?: number;
+  orientationsError?: string | null;
+  onCancelOrientations?: () => void;
+  onDismissOrientationsError?: () => void;
   autoOrientMessage?: string | null;
   orientationsData?: AIOrientationsResponse | null;
   selectedOrientationId?: string | null;
@@ -118,6 +133,8 @@ interface Viewport3DProps {
   onChangeSceneObjects?: (next: SceneObjectTransform[]) => void;
   onSplitObjects?: () => Promise<void> | void;
   onMergeObjects?: () => void;
+  onSplitSceneObject?: (objectId: string) => Promise<void> | void;
+  onMergeSceneObjects?: (objectIds: string[]) => Promise<void> | void;
   isSplittingObjects?: boolean;
   hasSlicedProfile?: boolean;
   onOpenProfileInspector?: () => void;
@@ -382,6 +399,24 @@ export interface SupportPaintBrushConfig {
   onReportTriCount?: (count: number) => void;
 }
 
+export interface ColorPaintBrushConfig {
+  active: boolean;
+  isTarget: boolean;
+  tool: ColorPaintToolMode;
+  extruder: number; // 0 = borrar, 1..4 = cabezal
+  radiusMm: number;
+  smartFillAngle: number;
+  heightBandMm: number;
+  extruderColors: string[];
+  onUpdateColorMap: (next: ColorPaintMap) => void;
+  onHoverCursor: (
+    cursor: { pos: [number, number, number]; normal: [number, number, number] } | null,
+  ) => void;
+  onPaintingChange?: (painting: boolean) => void;
+  onHoverMeshChange?: (hovering: boolean) => void;
+  onReportTriCount?: (count: number) => void;
+}
+
 function SceneObjectItemPreview({
   obj,
   isSelected,
@@ -391,7 +426,9 @@ function SceneObjectItemPreview({
   partExtruderMap,
   activeCadTool,
   supportPaintConfig,
+  colorPaintConfig,
   onSelect,
+  onObjectContextMenu,
   onCommitOffset,
   onDraggingChange,
 }: {
@@ -403,7 +440,9 @@ function SceneObjectItemPreview({
   partExtruderMap?: Record<string, number>;
   activeCadTool: CadToolMode | null;
   supportPaintConfig?: SupportPaintBrushConfig;
+  colorPaintConfig?: ColorPaintBrushConfig;
   onSelect: (ev: ThreeEvent<MouseEvent>) => void;
+  onObjectContextMenu?: (ev: ThreeEvent<MouseEvent>) => void;
   onCommitOffset: (patch: Partial<SceneObjectTransform>) => void;
   onDraggingChange: (dragging: boolean) => void;
 }) {
@@ -413,6 +452,8 @@ function SceneObjectItemPreview({
   const controlsRef = useRef<any>(null);
   const latestMapRef = useRef<SupportPaintMap>(obj.support_paint_map ?? {});
   latestMapRef.current = obj.support_paint_map ?? {};
+  const latestColorMapRef = useRef<ColorPaintMap>(obj.color_paint_map ?? {});
+  latestColorMapRef.current = obj.color_paint_map ?? {};
 
   useEffect(() => {
     let cancelled = false;
@@ -577,11 +618,27 @@ function SceneObjectItemPreview({
 
   useEffect(() => () => supportOverlayGeo?.dispose(), [supportOverlayGeo]);
 
+  const colorOverlayGeo = useMemo(() => {
+    if (!transformed || ghostMode) return null;
+    const cMap = obj.color_paint_map ?? {};
+    if (Object.keys(cMap).length === 0) return null;
+    return buildColorPaintOverlayGeometry(
+      transformed.geo,
+      cMap,
+      colorPaintConfig?.extruderColors ?? extruderColors ?? [],
+    );
+  }, [transformed, ghostMode, obj.color_paint_map, colorPaintConfig?.extruderColors, extruderColors]);
+
+  useEffect(() => () => colorOverlayGeo?.dispose(), [colorOverlayGeo]);
+
   useEffect(() => {
     if (transformed?.geo && supportPaintConfig?.isTarget) {
       supportPaintConfig.onReportTriCount?.(getGeometryTriangleCount(transformed.geo));
     }
-  }, [transformed, supportPaintConfig?.isTarget]);
+    if (transformed?.geo && colorPaintConfig?.isTarget) {
+      colorPaintConfig.onReportTriCount?.(getGeometryTriangleCount(transformed.geo));
+    }
+  }, [transformed, supportPaintConfig?.isTarget, colorPaintConfig?.isTarget]);
 
   if (!transformed) return null;
 
@@ -644,6 +701,68 @@ function SceneObjectItemPreview({
     }
   };
 
+  const applyColorPaintAtEvent = (
+    e: ThreeEvent<PointerEvent>,
+    isMove: boolean,
+  ) => {
+    if (!colorPaintConfig?.active || !groupNode) return;
+    if (!colorPaintConfig.isTarget) {
+      if (!isMove) onSelect(e as unknown as ThreeEvent<MouseEvent>);
+      return;
+    }
+    const hitMesh = e.object as THREE.Mesh | undefined;
+    if (!hitMesh || !hitMesh.geometry) return;
+    hitMesh.updateMatrixWorld(true);
+    const worldNormal = e.face
+      ? e.face.normal.clone().transformDirection(hitMesh.matrixWorld).normalize()
+      : new THREE.Vector3(0, 1, 0);
+    colorPaintConfig.onHoverMeshChange?.(true);
+    colorPaintConfig.onHoverCursor({
+      pos: [e.point.x, e.point.y, e.point.z],
+      normal: [worldNormal.x, worldNormal.y, worldNormal.z],
+    });
+    if (!isMove) {
+      colorPaintConfig.onPaintingChange?.(true);
+    }
+    if (isMove && !(e.buttons & 1) && !(e.buttons & 2)) return;
+    if (isMove && colorPaintConfig.tool !== 'sphere') return;
+    const effExt = e.shiftKey || e.button === 2 || (e.buttons & 2) !== 0 ? 0 : colorPaintConfig.extruder;
+    const curMap = latestColorMapRef.current;
+    const targetGeo = hitMesh.geometry as THREE.BufferGeometry;
+    let nextMap: ColorPaintMap | null = null;
+    if (colorPaintConfig.tool === 'smart_fill' && e.faceIndex != null) {
+      nextMap = paintColorSmartFillOnGeometry(
+        targetGeo,
+        e.faceIndex,
+        colorPaintConfig.smartFillAngle,
+        effExt,
+        curMap,
+      );
+    } else if (colorPaintConfig.tool === 'height_range') {
+      nextMap = paintColorHeightRangeOnMesh(
+        hitMesh,
+        e.point,
+        colorPaintConfig.heightBandMm,
+        effExt,
+        curMap,
+      );
+    } else if (colorPaintConfig.tool === 'triangle' && e.faceIndex != null) {
+      nextMap = paintColorTriangleOnGeometry(targetGeo, e.faceIndex, effExt, curMap);
+    } else {
+      nextMap = paintColorSphereWorldOnMesh(
+        hitMesh,
+        e.point,
+        colorPaintConfig.radiusMm,
+        effExt,
+        curMap,
+      );
+    }
+    if (nextMap) {
+      latestColorMapRef.current = nextMap;
+      colorPaintConfig.onUpdateColorMap(nextMap);
+    }
+  };
+
   const showGizmo =
     !ghostMode &&
     isSelected &&
@@ -657,28 +776,51 @@ function SceneObjectItemPreview({
         onClick={(e) => {
           e.stopPropagation();
           if (supportPaintConfig?.active && supportPaintConfig.isTarget) return;
+          if (colorPaintConfig?.active && colorPaintConfig.isTarget) return;
           onSelect(e);
         }}
         onPointerDown={(e) => {
-          if (!supportPaintConfig?.active) return;
-          e.stopPropagation();
-          applyPaintAtEvent(e, false);
+          if (supportPaintConfig?.active) {
+            e.stopPropagation();
+            applyPaintAtEvent(e, false);
+            return;
+          }
+          if (colorPaintConfig?.active) {
+            e.stopPropagation();
+            applyColorPaintAtEvent(e, false);
+          }
         }}
         onPointerMove={(e) => {
-          if (!supportPaintConfig?.active) return;
-          e.stopPropagation();
-          applyPaintAtEvent(e, true);
+          if (supportPaintConfig?.active) {
+            e.stopPropagation();
+            applyPaintAtEvent(e, true);
+            return;
+          }
+          if (colorPaintConfig?.active) {
+            e.stopPropagation();
+            applyColorPaintAtEvent(e, true);
+          }
         }}
         onPointerOut={() => {
           if (supportPaintConfig?.active) {
             supportPaintConfig.onHoverCursor(null);
             supportPaintConfig.onHoverMeshChange?.(false);
           }
+          if (colorPaintConfig?.active) {
+            colorPaintConfig.onHoverCursor(null);
+            colorPaintConfig.onHoverMeshChange?.(false);
+          }
         }}
         onContextMenu={(e) => {
-          if (supportPaintConfig?.active) {
+          if (supportPaintConfig?.active || colorPaintConfig?.active) {
             e.stopPropagation();
             e.nativeEvent.preventDefault();
+            return;
+          }
+          if (onObjectContextMenu) {
+            e.stopPropagation();
+            e.nativeEvent.preventDefault();
+            onObjectContextMenu(e);
           }
         }}
       >
@@ -698,6 +840,19 @@ function SceneObjectItemPreview({
             />
           )}
         </mesh>
+        {colorOverlayGeo && (
+          <mesh geometry={colorOverlayGeo} renderOrder={9} raycast={() => null}>
+            <meshStandardMaterial
+              vertexColors
+              roughness={0.35}
+              metalness={0.08}
+              side={THREE.DoubleSide}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
+            />
+          </mesh>
+        )}
         {supportOverlayGeo && (
           <mesh geometry={supportOverlayGeo} renderOrder={10} raycast={() => null}>
             <meshBasicMaterial
@@ -1012,6 +1167,7 @@ function SingleInstancePreview({
   activeCadTool,
   isDraggingGizmo,
   supportPaintConfig,
+  colorPaintConfig,
   onSelectInstance,
   onSurfaceClick,
   onCommitOffset,
@@ -1028,6 +1184,7 @@ function SingleInstancePreview({
   activeCadTool: CadToolMode | null;
   isDraggingGizmo: boolean;
   supportPaintConfig?: SupportPaintBrushConfig;
+  colorPaintConfig?: ColorPaintBrushConfig;
   onSelectInstance: () => void;
   onSurfaceClick?: (point: THREE.Vector3) => void;
   onCommitOffset: (next: { offset_x?: number; offset_y?: number; offset_z?: number; rot_x?: number; rot_y?: number; rot_z?: number }) => void;
@@ -1036,6 +1193,8 @@ function SingleInstancePreview({
   const groupRef = useRef<THREE.Group | null>(null);
   const latestInstMapRef = useRef<SupportPaintMap>(inst.support_paint_map ?? {});
   latestInstMapRef.current = inst.support_paint_map ?? {};
+  const latestInstColorMapRef = useRef<ColorPaintMap>(inst.color_paint_map ?? {});
+  latestInstColorMapRef.current = inst.color_paint_map ?? {};
   const [gizmoTarget, setGizmoTarget] = useState<THREE.Group | null>(null);
   const handleGroupRef = useCallback((el: THREE.Group | null) => {
     groupRef.current = el;
@@ -1308,6 +1467,86 @@ function SingleInstancePreview({
     }
   };
 
+  const applySingleColorPaintAtEvent = (
+    e: ThreeEvent<PointerEvent>,
+    isMove: boolean,
+  ) => {
+    if (!colorPaintConfig?.active || !stlBaseResult || !groupRef.current) return;
+    if (!colorPaintConfig.isTarget) {
+      if (!isMove) onSelectInstance();
+      return;
+    }
+    const hitMesh = e.object as THREE.Mesh | undefined;
+    if (!hitMesh || !hitMesh.geometry) return;
+    hitMesh.updateMatrixWorld(true);
+    const worldNormal = e.face
+      ? e.face.normal.clone().transformDirection(hitMesh.matrixWorld).normalize()
+      : new THREE.Vector3(0, 1, 0);
+    colorPaintConfig.onHoverMeshChange?.(true);
+    colorPaintConfig.onHoverCursor({
+      pos: [e.point.x, e.point.y, e.point.z],
+      normal: [worldNormal.x, worldNormal.y, worldNormal.z],
+    });
+    if (!isMove) {
+      colorPaintConfig.onPaintingChange?.(true);
+    }
+    if (isMove && !(e.buttons & 1) && !(e.buttons & 2)) return;
+    if (isMove && colorPaintConfig.tool !== 'sphere') return;
+    const effExt = e.shiftKey || e.button === 2 || (e.buttons & 2) !== 0 ? 0 : colorPaintConfig.extruder;
+    const curMap = latestInstColorMapRef.current;
+    let nextMap: ColorPaintMap | null = null;
+    if (colorPaintConfig.tool === 'smart_fill' && e.faceIndex != null) {
+      nextMap = paintColorSmartFillOnGeometry(
+        stlBaseResult.geo,
+        e.faceIndex,
+        colorPaintConfig.smartFillAngle,
+        effExt,
+        curMap,
+      );
+    } else if (colorPaintConfig.tool === 'height_range') {
+      nextMap = paintColorHeightRangeOnMesh(
+        hitMesh,
+        e.point,
+        colorPaintConfig.heightBandMm,
+        effExt,
+        curMap,
+      );
+    } else if (colorPaintConfig.tool === 'triangle' && e.faceIndex != null) {
+      nextMap = paintColorTriangleOnGeometry(stlBaseResult.geo, e.faceIndex, effExt, curMap);
+    } else {
+      nextMap = paintColorSphereWorldOnMesh(
+        hitMesh,
+        e.point,
+        colorPaintConfig.radiusMm,
+        effExt,
+        curMap,
+      );
+    }
+    if (nextMap) {
+      latestInstColorMapRef.current = nextMap;
+      colorPaintConfig.onUpdateColorMap(nextMap);
+    }
+  };
+
+  const singleColorOverlayGeo = useMemo(() => {
+    if (!stlBaseResult || ghostMode) return null;
+    const cMap = inst.color_paint_map ?? {};
+    if (Object.keys(cMap).length === 0) return null;
+    return buildColorPaintOverlayGeometry(
+      stlBaseResult.geo,
+      cMap,
+      colorPaintConfig?.extruderColors ?? extruderColors ?? [],
+    );
+  }, [stlBaseResult, ghostMode, inst.color_paint_map, colorPaintConfig?.extruderColors, extruderColors]);
+
+  useEffect(() => () => singleColorOverlayGeo?.dispose(), [singleColorOverlayGeo]);
+
+  useEffect(() => {
+    if (stlBaseResult?.geo && colorPaintConfig?.isTarget) {
+      colorPaintConfig.onReportTriCount?.(getGeometryTriangleCount(stlBaseResult.geo));
+    }
+  }, [stlBaseResult, colorPaintConfig?.isTarget]);
+
   const singleSupportOverlayGeo = useMemo(() => {
     if (!stlBaseResult || ghostMode) return null;
     const pMap = inst.support_paint_map ?? {};
@@ -1388,6 +1627,11 @@ function SingleInstancePreview({
       applySinglePaintAtEvent(e, true);
       return;
     }
+    if (colorPaintConfig?.active) {
+      e.stopPropagation();
+      applySingleColorPaintAtEvent(e, true);
+      return;
+    }
     if (e.buttons !== 1) return;
     if (activeCadTool === 'support_blocker' && onSurfaceClick) {
       e.stopPropagation();
@@ -1414,6 +1658,11 @@ function SingleInstancePreview({
           if (supportPaintConfig?.active) {
             e.stopPropagation();
             applySinglePaintAtEvent(e, false);
+            return;
+          }
+          if (colorPaintConfig?.active) {
+            e.stopPropagation();
+            applySingleColorPaintAtEvent(e, false);
           }
         }}
         onPointerMove={handlePointerMove}
@@ -1422,9 +1671,13 @@ function SingleInstancePreview({
             supportPaintConfig.onHoverCursor(null);
             supportPaintConfig.onHoverMeshChange?.(false);
           }
+          if (colorPaintConfig?.active) {
+            colorPaintConfig.onHoverCursor(null);
+            colorPaintConfig.onHoverMeshChange?.(false);
+          }
         }}
         onContextMenu={(e) => {
-          if (supportPaintConfig?.active) {
+          if (supportPaintConfig?.active || colorPaintConfig?.active) {
             e.stopPropagation();
             e.nativeEvent.preventDefault();
           }
@@ -1448,6 +1701,19 @@ function SingleInstancePreview({
           />
         )}
       </mesh>
+      {singleColorOverlayGeo && (
+        <mesh geometry={singleColorOverlayGeo} scale={gpuScale} renderOrder={9} raycast={() => null}>
+          <meshStandardMaterial
+            vertexColors
+            roughness={0.35}
+            metalness={0.08}
+            side={THREE.DoubleSide}
+            polygonOffset
+            polygonOffsetFactor={-1}
+            polygonOffsetUnits={-1}
+          />
+        </mesh>
+      )}
       {singleSupportOverlayGeo && (
         <mesh geometry={singleSupportOverlayGeo} scale={gpuScale} renderOrder={10} raycast={() => null}>
           <meshBasicMaterial
@@ -1876,6 +2142,10 @@ export function Viewport3D({
   onChangeTransform,
   onAutoOrient,
   isAutoOrienting = false,
+  orientationsAttempt = 1,
+  orientationsError = null,
+  onCancelOrientations,
+  onDismissOrientationsError,
   autoOrientMessage = null,
   orientationsData = null,
   selectedOrientationId = null,
@@ -1900,6 +2170,8 @@ export function Viewport3D({
   onChangeSceneObjects,
   onSplitObjects,
   onMergeObjects,
+  onSplitSceneObject,
+  onMergeSceneObjects,
   isSplittingObjects = false,
   hasSlicedProfile = false,
   onOpenProfileInspector,
@@ -1913,6 +2185,11 @@ export function Viewport3D({
 }: Viewport3DProps) {
   const { t } = useI18n();
   const [bedContextMenu, setBedContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [objectContextMenu, setObjectContextMenu] = useState<{
+    x: number;
+    y: number;
+    objectId: string;
+  } | null>(null);
   const [viewMode, setViewMode] = useState<'stl' | 'gcode'>('stl');
   const [pauseNoteDraft, setPauseNoteDraft] = useState<string>('');
   const [showPauseInput, setShowPauseInput] = useState<boolean>(false);
@@ -1961,6 +2238,12 @@ export function Viewport3D({
   } | null>(null);
   const [isPaintingSupport, setIsPaintingSupport] = useState<boolean>(false);
   const [isHoveringPaintMesh, setIsHoveringPaintMesh] = useState<boolean>(false);
+  const [colorBrushTool, setColorBrushTool] = useState<ColorPaintToolMode>('sphere');
+  const [colorBrushExtruder, setColorBrushExtruder] = useState<number>(1);
+  const [colorBrushRadius, setColorBrushRadius] = useState<number>(8);
+  const [colorSmartFillAngle, setColorSmartFillAngle] = useState<number>(35);
+  const [colorHeightBandMm, setColorHeightBandMm] = useState<number>(3);
+  const [colorPaintTriCount, setColorPaintTriCount] = useState<number>(0);
 
   useEffect(() => {
     if (!isPaintingSupport) return;
@@ -2803,9 +3086,10 @@ export function Viewport3D({
     <div
       ref={containerRef}
       onContextMenu={(e) => {
-        if (viewMode !== 'stl' || activeCadTool === 'support_blocker' || !onImportModels) return;
+        if (viewMode !== 'stl' || activeCadTool === 'support_blocker' || activeCadTool === 'color_paint' || !onImportModels) return;
         if (!(e.target instanceof HTMLCanvasElement)) return;
         e.preventDefault();
+        setObjectContextMenu(null);
         const rect = containerRef.current?.getBoundingClientRect();
         if (!rect) return;
         setBedContextMenu({
@@ -2815,6 +3099,7 @@ export function Viewport3D({
       }}
       onPointerDown={(e) => {
         if (bedContextMenu) setBedContextMenu(null);
+        if (objectContextMenu) setObjectContextMenu(null);
         if (e.button !== 0 || viewMode !== 'stl' || sceneObjects.length === 0) return;
         if (e.shiftKey && e.target instanceof HTMLCanvasElement) {
           const rect = containerRef.current?.getBoundingClientRect();
@@ -2886,6 +3171,69 @@ export function Viewport3D({
           </button>
         </div>
       )}
+      {objectContextMenu && (() => {
+        const ctxSelIds = selectedSet.has(objectContextMenu.objectId)
+          ? selectedObjectIds
+          : [objectContextMenu.objectId];
+        const ctxMulti = ctxSelIds.length >= 2;
+        const ctxObj = sceneObjects.find((o) => o.object_id === objectContextMenu.objectId);
+        return (
+          <div
+            style={{ left: objectContextMenu.x, top: objectContextMenu.y }}
+            className="absolute z-50 w-56 rounded-xl border border-slate-700 bg-slate-900/95 p-1.5 text-xs shadow-2xl backdrop-blur"
+            onMouseLeave={() => setObjectContextMenu(null)}
+          >
+            <div className="truncate px-2 py-1 text-[10px] font-semibold text-slate-400">
+              {ctxMulti ? `${ctxSelIds.length} objetos seleccionados` : (ctxObj?.name || 'Pieza')}
+            </div>
+            {!ctxMulti && onSplitSceneObject && (
+              <button
+                type="button"
+                disabled={isSplittingObjects}
+                onClick={() => {
+                  const targetId = objectContextMenu.objectId;
+                  setObjectContextMenu(null);
+                  void onSplitSceneObject(targetId);
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-semibold text-purple-200 hover:bg-purple-500/20 disabled:opacity-50"
+              >
+                <Layers className="h-3.5 w-3.5 text-purple-400" />
+                <span>Separar objeto en partes</span>
+              </button>
+            )}
+            {ctxMulti && onMergeSceneObjects && (
+              <button
+                type="button"
+                disabled={isSplittingObjects}
+                onClick={() => {
+                  setObjectContextMenu(null);
+                  void onMergeSceneObjects(ctxSelIds);
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50"
+              >
+                <Box className="h-3.5 w-3.5 text-cyan-400" />
+                <span>Unir {ctxSelIds.length} objetos en uno</span>
+              </button>
+            )}
+            {sceneObjects.length > ctxSelIds.length && onChangeSceneObjects && (
+              <button
+                type="button"
+                onClick={() => {
+                  const delSet = new Set(ctxSelIds);
+                  const rem = sceneObjects.filter((o) => !delSet.has(o.object_id));
+                  setObjectContextMenu(null);
+                  onChangeSceneObjects(rem);
+                  onSelectObjects?.(rem[0]?.object_id ? [rem[0].object_id] : []);
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-semibold text-rose-200 hover:bg-rose-500/20"
+              >
+                <Trash2 className="h-3.5 w-3.5 text-rose-400" />
+                <span>{ctxMulti ? `Eliminar ${ctxSelIds.length} objetos` : 'Eliminar objeto'}</span>
+              </button>
+            )}
+          </div>
+        );
+      })()}
       {/* Contenedor superior HUD + Submenú CAD (flujo vertical para evitar solapamientos) */}
       <div className="pointer-events-none absolute inset-x-4 top-4 z-20 flex flex-col items-start gap-2.5">
         {/* Barra superior HUD */}
@@ -2921,6 +3269,9 @@ export function Viewport3D({
                 ['lay_on_face', t.step2.place, FlipVertical2],
                 ['cut', t.step2.cut, Scissors],
                 ['support_blocker', 'No Soportes', Ban],
+                ...(extruderColors && extruderColors.length > 0
+                  ? [['color_paint', 'Pintar Color', Paintbrush] as const]
+                  : []),
                 ['measure', t.step2.measure, Ruler],
               ] as const
             ).map(([toolId, label, Icon]) => {
@@ -2978,7 +3329,7 @@ export function Viewport3D({
               </button>
             )}
 
-            {sceneObjects.length > 0 && onMergeObjects ? (
+            {sceneObjects.length > 0 && !sceneObjects.some((o) => o.object_id.startsWith('imp_')) && onMergeObjects ? (
               <button
                 type="button"
                 onClick={onMergeObjects}
@@ -2988,7 +3339,7 @@ export function Viewport3D({
                 <Box className="h-3.5 w-3.5" />
                 <span>Unir Objetos</span>
               </button>
-            ) : onSplitObjects ? (
+            ) : sceneObjects.length === 0 && onSplitObjects ? (
               <button
                 type="button"
                 disabled={isSplittingObjects}
@@ -3832,6 +4183,194 @@ export function Viewport3D({
             </>
           )}
 
+          {activeCadTool === 'color_paint' && (() => {
+            const isMultiScene = sceneObjects.length > 1;
+            const targetSceneObj =
+              sceneObjects.length === 1
+                ? sceneObjects[0]
+                : selectedSceneObjs.length === 1
+                  ? selectedSceneObjs[0]
+                  : null;
+            const targetInst = sceneObjects.length === 0 ? activeInstance : null;
+            const hasTarget = Boolean(targetSceneObj || targetInst);
+            const targetName = targetSceneObj
+              ? targetSceneObj.name
+              : targetInst
+                ? `Pieza #${safeIdx + 1}`
+                : '';
+            const curMap: ColorPaintMap =
+              (targetSceneObj ? targetSceneObj.color_paint_map : targetInst?.color_paint_map) ?? {};
+            const totalPainted = Object.keys(curMap).length;
+            const palette = extruderColors ?? ['#F68D11', '#191919', '#DBDADA', '#EC120B'];
+
+            const updateTargetColorPaint = (nextMap: ColorPaintMap) => {
+              if (targetSceneObj && onChangeSceneObjects) {
+                onChangeSceneObjects(
+                  sceneObjects.map((o) =>
+                    o.object_id === targetSceneObj.object_id ? { ...o, color_paint_map: nextMap } : o,
+                  ),
+                );
+              } else if (targetInst) {
+                updateActiveInstance({ color_paint_map: nextMap });
+              }
+            };
+
+            return (
+              <>
+                <div className="flex items-center justify-between gap-1">
+                  <span className="font-semibold text-cyan-200">Pintar Color (Orca)</span>
+                  {(totalPainted > 0 || colorPaintTriCount > 0) && (
+                    <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">
+                      <span className="text-cyan-300">{totalPainted.toLocaleString()}</span>
+                      {colorPaintTriCount > 0 ? ` / ${colorPaintTriCount.toLocaleString()}` : ''}
+                    </span>
+                  )}
+                </div>
+
+                {isMultiScene && !targetSceneObj ? (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-200">
+                    Selecciona 1 pieza en el plato para pintarla.
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-cyan-500/35 bg-cyan-500/10 px-2 py-1 text-[10px] text-cyan-100">
+                    <span className="text-slate-400">Pintando: </span>
+                    <strong className="font-semibold">{targetName}</strong>
+                  </div>
+                )}
+
+                {hasTarget && (
+                  <>
+                    <div className="grid grid-cols-5 gap-1">
+                      {[1, 2, 3, 4].map((extNum) => {
+                        const hex = palette[extNum - 1] || '#94a3b8';
+                        const active = colorBrushExtruder === extNum;
+                        return (
+                          <button
+                            key={extNum}
+                            type="button"
+                            onClick={() => setColorBrushExtruder(extNum)}
+                            title={`Filamento T${extNum - 1}`}
+                            className={`flex items-center justify-center gap-1 rounded-lg border py-1 text-[10px] font-bold transition ${
+                              active
+                                ? 'border-cyan-400 bg-cyan-500/20 text-white ring-1 ring-cyan-400/50'
+                                : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-600'
+                            }`}
+                          >
+                            <span
+                              className="h-2.5 w-2.5 rounded-full border border-white/40"
+                              style={{ backgroundColor: hex }}
+                            />
+                            <span>T{extNum - 1}</span>
+                          </button>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        onClick={() => setColorBrushExtruder(0)}
+                        className={`rounded-lg border py-1 text-[10px] font-semibold transition ${
+                          colorBrushExtruder === 0
+                            ? 'border-rose-400 bg-rose-500/20 text-rose-100'
+                            : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Borrar
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-1">
+                      {(
+                        [
+                          ['sphere', 'Esfera'],
+                          ['smart_fill', 'Relleno'],
+                          ['height_range', 'Altura Z'],
+                          ['triangle', 'Triángulo'],
+                        ] as const
+                      ).map(([mode, label]) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => setColorBrushTool(mode)}
+                          className={`rounded-lg border py-1 text-[10px] font-semibold transition ${
+                            colorBrushTool === mode
+                              ? 'border-cyan-500 bg-cyan-500/20 text-cyan-200'
+                              : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {colorBrushTool === 'sphere' && (
+                      <div>
+                        <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                          <span className="text-slate-300">Radio Pincel</span>
+                          <span className="font-mono font-semibold text-cyan-300">{colorBrushRadius} mm</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={1}
+                          max={25}
+                          step={1}
+                          value={colorBrushRadius}
+                          onChange={(e) => setColorBrushRadius(Number(e.target.value))}
+                          className="h-1.5 w-full cursor-pointer accent-cyan-400"
+                        />
+                      </div>
+                    )}
+                    {colorBrushTool === 'smart_fill' && (
+                      <div>
+                        <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                          <span className="text-slate-300">Ángulo Relleno</span>
+                          <span className="font-mono font-semibold text-cyan-300">{colorSmartFillAngle}°</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={5}
+                          max={80}
+                          step={5}
+                          value={colorSmartFillAngle}
+                          onChange={(e) => setColorSmartFillAngle(Number(e.target.value))}
+                          className="h-1.5 w-full cursor-pointer accent-cyan-400"
+                        />
+                      </div>
+                    )}
+                    {colorBrushTool === 'height_range' && (
+                      <div>
+                        <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                          <span className="text-slate-300">Franja Altura Z</span>
+                          <span className="font-mono font-semibold text-cyan-300">{colorHeightBandMm} mm</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0.5}
+                          max={20}
+                          step={0.5}
+                          value={colorHeightBandMm}
+                          onChange={(e) => setColorHeightBandMm(Number(e.target.value))}
+                          className="h-1.5 w-full cursor-pointer accent-cyan-400"
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between gap-1 text-[10px] text-slate-400">
+                      <span>Click: pintar · Shift/Click der.: borrar</span>
+                      {totalPainted > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => updateTargetColorPaint({})}
+                          className="rounded border border-rose-500/40 bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-rose-200 hover:bg-rose-500/25"
+                        >
+                          Limpiar
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </>
+            );
+          })()}
+
           {activeCadTool === 'support_blocker' && (() => {
             const isMultiScene = sceneObjects.length > 1;
             const targetSceneObj =
@@ -4173,6 +4712,45 @@ export function Viewport3D({
                   </span>
                   <span className="text-[9px] text-slate-400">Por Pieza</span>
                 </div>
+                {targetSceneObj && extruderColors && extruderColors.length > 0 && onChangeSceneObjects && (
+                  <div className="space-y-1">
+                    <span className="block text-[10px] text-slate-400">
+                      Color / Cabezal de esta pieza
+                    </span>
+                    <div className="grid grid-cols-4 gap-1">
+                      {extruderColors.slice(0, 4).map((hex, slotIdx) => {
+                        const extNum = slotIdx + 1;
+                        const active = targetSceneObj.extruder === extNum;
+                        return (
+                          <button
+                            key={extNum}
+                            type="button"
+                            onClick={() => {
+                              onChangeSceneObjects(
+                                sceneObjects.map((o) =>
+                                  o.object_id === targetSceneObj.object_id
+                                    ? { ...o, extruder: extNum, color_hex: hex }
+                                    : o,
+                                ),
+                              );
+                            }}
+                            className={`flex items-center justify-center gap-1 rounded-lg border py-1 text-[10px] font-bold transition ${
+                              active
+                                ? 'border-cyan-400 bg-cyan-500/20 text-white ring-1 ring-cyan-400/50'
+                                : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-600'
+                            }`}
+                          >
+                            <span
+                              className="h-2.5 w-2.5 rounded-full border border-white/40"
+                              style={{ backgroundColor: hex }}
+                            />
+                            <span>T{slotIdx}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-1.5">
                   <label className="space-y-0.5">
                     <span className="block text-[10px] text-slate-400">
@@ -4644,7 +5222,7 @@ export function Viewport3D({
               const isSel = selectedSet.has(obj.object_id);
               const isPaintTarget =
                 viewMode === 'stl' &&
-                activeCadTool === 'support_blocker' &&
+                (activeCadTool === 'support_blocker' || activeCadTool === 'color_paint') &&
                 (sceneObjects.length === 1 || (selectedSceneObjs.length === 1 && isSel));
               return (
                 <SceneObjectItemPreview
@@ -4660,6 +5238,47 @@ export function Viewport3D({
                       ? activeCadTool
                       : null
                   }
+                  colorPaintConfig={
+                    viewMode === 'stl' && activeCadTool === 'color_paint'
+                      ? {
+                          active: true,
+                          isTarget: isPaintTarget,
+                          tool: colorBrushTool,
+                          extruder: colorBrushExtruder,
+                          radiusMm: colorBrushRadius,
+                          smartFillAngle: colorSmartFillAngle,
+                          heightBandMm: colorHeightBandMm,
+                          extruderColors: extruderColors ?? ['#F68D11', '#191919', '#DBDADA', '#EC120B'],
+                          onUpdateColorMap: (nextMap) => {
+                            onChangeSceneObjects?.(
+                              sceneObjects.map((o) =>
+                                o.object_id === obj.object_id
+                                  ? { ...o, color_paint_map: nextMap }
+                                  : o,
+                              ),
+                            );
+                          },
+                          onHoverCursor: setHoveredBrushCursor,
+                          onPaintingChange: setIsPaintingSupport,
+                          onHoverMeshChange: setIsHoveringPaintMesh,
+                          onReportTriCount: setColorPaintTriCount,
+                        }
+                      : undefined
+                  }
+                  onObjectContextMenu={(ev) => {
+                    if (viewMode !== 'stl') return;
+                    if (!selectedSet.has(obj.object_id)) {
+                      onSelectObjects?.([obj.object_id]);
+                    }
+                    const rect = containerRef.current?.getBoundingClientRect();
+                    if (!rect) return;
+                    setBedContextMenu(null);
+                    setObjectContextMenu({
+                      x: Math.max(8, Math.min(rect.width - 230, ev.nativeEvent.clientX - rect.left)),
+                      y: Math.max(8, Math.min(rect.height - 130, ev.nativeEvent.clientY - rect.top)),
+                      objectId: obj.object_id,
+                    });
+                  }}
                   supportPaintConfig={
                     viewMode === 'stl' && activeCadTool === 'support_blocker'
                       ? {
@@ -4738,6 +5357,30 @@ export function Viewport3D({
               partExtruderMap={partExtruderMap}
               activeCadTool={viewMode === 'stl' ? activeCadTool : null}
               isDraggingGizmo={isDraggingGizmo}
+              colorPaintConfig={
+                viewMode === 'stl' && activeCadTool === 'color_paint'
+                  ? {
+                      active: true,
+                      isTarget: idx === safeIdx,
+                      tool: colorBrushTool,
+                      extruder: colorBrushExtruder,
+                      radiusMm: colorBrushRadius,
+                      smartFillAngle: colorSmartFillAngle,
+                      heightBandMm: colorHeightBandMm,
+                      extruderColors: extruderColors ?? ['#F68D11', '#191919', '#DBDADA', '#EC120B'],
+                      onUpdateColorMap: (nextMap) => {
+                        const nextInstances = instances.map((it, i) =>
+                          i === idx ? { ...it, color_paint_map: nextMap } : it,
+                        );
+                        onChangeTransform({ ...transform, instances: nextInstances });
+                      },
+                      onHoverCursor: setHoveredBrushCursor,
+                      onPaintingChange: setIsPaintingSupport,
+                      onHoverMeshChange: setIsHoveringPaintMesh,
+                      onReportTriCount: setColorPaintTriCount,
+                    }
+                  : undefined
+              }
               supportPaintConfig={
                 viewMode === 'stl' && activeCadTool === 'support_blocker'
                   ? {
@@ -4793,21 +5436,27 @@ export function Viewport3D({
           ))
         )}
 
-        {/* Aro 3D del pincel de pintura de soportes proyectado sobre la superficie */}
+        {/* Aro 3D del pincel de pintura de soportes o color proyectado sobre la superficie */}
         {viewMode === 'stl' &&
           stlFile &&
-          activeCadTool === 'support_blocker' &&
+          (activeCadTool === 'support_blocker' || activeCadTool === 'color_paint') &&
           hoveredBrushCursor && (() => {
             const n = new THREE.Vector3(...hoveredBrushCursor.normal).normalize();
             const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
             const p = new THREE.Vector3(...hoveredBrushCursor.pos).addScaledVector(n, 0.15);
-            const ringR = supportBrushTool === 'sphere' ? blockerRadius : 2.5;
-            const ringColor =
-              supportBrushAction === 1
-                ? '#10b981'
-                : supportBrushAction === 2
-                  ? '#ef4444'
-                  : '#38bdf8';
+            const isColorMode = activeCadTool === 'color_paint';
+            const ringR = isColorMode
+              ? (colorBrushTool === 'sphere' ? colorBrushRadius : 2.5)
+              : (supportBrushTool === 'sphere' ? blockerRadius : 2.5);
+            const ringColor = isColorMode
+              ? (colorBrushExtruder === 0
+                  ? '#f43f5e'
+                  : (extruderColors?.[colorBrushExtruder - 1] || '#38bdf8'))
+              : (supportBrushAction === 1
+                  ? '#10b981'
+                  : supportBrushAction === 2
+                    ? '#ef4444'
+                    : '#38bdf8');
             return (
               <mesh position={[p.x, p.y, p.z]} quaternion={q} raycast={() => null}>
                 <ringGeometry args={[Math.max(0.5, ringR * 0.85), ringR, 40]} />
@@ -4898,7 +5547,7 @@ export function Viewport3D({
 
         <OrbitControls
           makeDefault
-          enabled={!isDraggingGizmo && !marqueeRect && !isPaintingSupport && !(activeCadTool === 'support_blocker' && isHoveringPaintMesh)}
+          enabled={!isDraggingGizmo && !marqueeRect && !isPaintingSupport && !((activeCadTool === 'support_blocker' || activeCadTool === 'color_paint') && isHoveringPaintMesh)}
           enableDamping
           dampingFactor={0.08}
           minDistance={25}
@@ -5006,11 +5655,53 @@ export function Viewport3D({
           <div className="flex flex-col items-center gap-2.5 rounded-2xl border border-emerald-500/40 bg-slate-900/95 px-6 py-4 shadow-2xl">
             <Loader2 className="h-7 w-7 animate-spin text-emerald-400" />
             <p className="text-xs font-semibold text-emerald-100">
-              Calculando orientaciones óptimas con IA...
+              {t.orientationsModal.calculatingTitle}
             </p>
             <span className="text-[11px] text-slate-400">
-              Evaluando altura Z, voladizos y estabilidad en cama
+              {orientationsAttempt >= 2
+                ? t.orientationsModal.retryingSubtitle
+                : t.orientationsModal.calculatingSubtitle}
             </span>
+            {onCancelOrientations && (
+              <button
+                type="button"
+                onClick={onCancelOrientations}
+                className="mt-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-1 text-[11px] font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+              >
+                {t.orientationsModal.cancel}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {stlFile && viewMode === 'stl' && !isAutoOrienting && orientationsError && (
+        <div className="pointer-events-auto absolute inset-x-3 bottom-3 z-20 rounded-2xl border border-rose-500/45 bg-slate-900/95 p-3.5 text-xs shadow-2xl backdrop-blur">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <p className="font-semibold text-rose-200">{t.orientationsModal.errorTitle}</p>
+              <p className="text-[11px] text-slate-300">
+                {orientationsError || t.orientationsModal.timeoutError}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={onAutoOrient}
+                className="rounded-lg border border-emerald-500/50 bg-emerald-500/20 px-3 py-1.5 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/30"
+              >
+                {t.orientationsModal.retry}
+              </button>
+              {onDismissOrientationsError && (
+                <button
+                  type="button"
+                  onClick={onDismissOrientationsError}
+                  className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-[11px] font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+                >
+                  {t.orientationsModal.close}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

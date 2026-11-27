@@ -553,6 +553,7 @@ export function applyPaintColorsToBufferGeometry(
   const srcPos = posAttr.array as Float32Array;
   const nextPos = new Float32Array(triCount * 9);
   const nextColors = new Float32Array(triCount * 9);
+  const origTriMap = new Uint32Array(triCount);
   const offsets = [0, counts[0] * 9, (counts[0] + counts[1]) * 9, (counts[0] + counts[1] + counts[2]) * 9];
   const colorObjs = [0, 1, 2, 3].map((s) => new THREE.Color(palette[s] || fallbackPalette[s]));
 
@@ -561,6 +562,7 @@ export function applyPaintColorsToBufferGeometry(
     const dst = offsets[s];
     const src = t * 9;
     nextPos.set(srcPos.subarray(src, src + 9), dst);
+    origTriMap[dst / 9] = t;
     const c = colorObjs[s];
     for (let k = 0; k < 3; k += 1) {
       nextColors[dst + k * 3] = c.r;
@@ -584,5 +586,6 @@ export function applyPaintColorsToBufferGeometry(
   }
   geo.userData.paintedExtruderGroups = true;
   geo.userData.paintedPalette = palette;
+  geo.userData.origTriMap = origTriMap;
   return true;
 }
