@@ -59,11 +59,32 @@ class CameraHub:
         if ch.task is not None and not ch.task.done():
             ch.task.cancel()
             try:
-                await ch.task
+                await asyncio.wait_for(ch.task, timeout=1.5)
             except BaseException:
                 pass
             ch.task = None
         ch.force_reconnect_event.clear()
+
+    async def get_frame_or_wait(self, camera_url: str, wait_timeout: float = 2.5) -> bytes | None:
+        """Devuelve el último JPEG en RAM o espera brevemente el primer frame sin bloquear el pool HTTP."""
+        ch = self._get_or_create(camera_url)
+        ch.last_subscriber_ts = time.time()
+        self._ensure_worker(ch)
+        now = time.time()
+        if ch.latest_jpeg and (now - ch.latest_ts) <= 6.0:
+            return ch.latest_jpeg
+        deadline = now + max(0.2, wait_timeout)
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return ch.latest_jpeg if (ch.latest_jpeg and (time.time() - ch.latest_ts) <= 6.0) else None
+            async with ch.frame_cond:
+                try:
+                    await asyncio.wait_for(ch.frame_cond.wait(), timeout=min(remaining, 1.0))
+                except asyncio.TimeoutError:
+                    pass
+            if ch.latest_jpeg and (time.time() - ch.latest_ts) <= 6.0:
+                return ch.latest_jpeg
 
     def _ensure_worker(self, ch: _CameraChannel) -> None:
         if ch.task is None or ch.task.done():
@@ -147,8 +168,8 @@ class CameraHub:
                     try:
                         await asyncio.wait_for(ch.frame_cond.wait(), timeout=5.0)
                     except asyncio.TimeoutError:
-                        # Mantener vivo el stream o salir si no hay señal tras espera
-                        if not ch.latest_jpeg:
+                        # Salir si no hay señal o el frame quedó obsoleto (>10s sin actualizar)
+                        if not ch.latest_jpeg or (time.time() - ch.latest_ts) > 10.0:
                             break
         finally:
             ch.subscribers = max(0, ch.subscribers - 1)

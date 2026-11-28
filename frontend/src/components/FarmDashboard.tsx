@@ -92,12 +92,7 @@ function stateBadge(state: string, online: boolean): { label: string; cls: strin
 }
 
 const CAMERA_AUTO_SLEEP_MS = 5 * 60 * 1000;
-
-function withStreamNonce(url: string, nonce: number): string {
-  if (!url || nonce <= 0) return url;
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}_t=${nonce}`;
-}
+let cachedFarmStatuses: PrinterLiveStatus[] = [];
 
 function CameraStreamBox({
   url,
@@ -114,18 +109,23 @@ function CameraStreamBox({
 }) {
   const [failed, setFailed] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
+  const [reconnecting, setReconnecting] = useState(false);
   const [streamNonce, setStreamNonce] = useState(0);
-  const imgRef = useRef<HTMLImageElement | null>(null);
-  const effectiveUrl =
-    url && printerId
-      ? `${API_BASE_URL}/printers/${encodeURIComponent(printerId)}/camera/stream`
-      : url;
+  const [frameSrc, setFrameSrc] = useState<string>('');
+  const objectUrlRef = useRef<string>('');
+  const abortRef = useRef<AbortController | null>(null);
 
   const releaseSocket = useCallback(() => {
-    if (imgRef.current) {
-      imgRef.current.src = '';
-    }
-  }, []);
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = '';
+      }
+      setFrameSrc('');
+    }, []);
 
   useEffect(() => {
     setFailed(false);
@@ -138,6 +138,78 @@ function CameraStreamBox({
       releaseSocket();
     }
   }, [pausedExternal, releaseSocket]);
+
+  // Polling adaptativo de frames JPEG vía /camera/frame: evita ocupar los 6 sockets HTTP/1.1 del WebView
+  useEffect(() => {
+    if (!url || !printerId || failed || !isPlaying || pausedExternal) return;
+
+    let cancelled = false;
+    let timerId: number | null = null;
+    let consecutiveErrors = 0;
+
+    const pullFrame = async () => {
+      if (cancelled) return;
+      if (document.hidden) {
+        timerId = window.setTimeout(() => void pullFrame(), 600);
+        return;
+      }
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const reqTimeout = window.setTimeout(() => controller.abort(), 3500);
+
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/printers/${encodeURIComponent(printerId)}/camera/frame?_t=${Date.now()}`,
+          { signal: controller.signal, cache: 'no-store' },
+        );
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const blob = await res.blob();
+        if (cancelled) return;
+        const nextUrl = URL.createObjectURL(blob);
+        const prevUrl = objectUrlRef.current;
+        objectUrlRef.current = nextUrl;
+        setFrameSrc(nextUrl);
+        if (prevUrl) {
+          URL.revokeObjectURL(prevUrl);
+        }
+        consecutiveErrors = 0;
+        if (!cancelled) {
+          timerId = window.setTimeout(() => void pullFrame(), onExpand ? 260 : 140);
+        }
+      } catch (err: unknown) {
+        if (cancelled) return;
+        if (err instanceof DOMException && err.name === 'AbortError' && abortRef.current !== controller) {
+          return;
+        }
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= 3) {
+          releaseSocket();
+          setFailed(true);
+          return;
+        }
+        timerId = window.setTimeout(() => void pullFrame(), 500);
+      } finally {
+        window.clearTimeout(reqTimeout);
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+        }
+      }
+    };
+
+    void pullFrame();
+
+    return () => {
+      cancelled = true;
+      if (timerId !== null) window.clearTimeout(timerId);
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+    };
+  }, [url, printerId, failed, isPlaying, pausedExternal, streamNonce, onExpand, releaseSocket]);
 
   useEffect(() => {
     if (!url || failed || !isPlaying || pausedExternal) return;
@@ -159,78 +231,98 @@ function CameraStreamBox({
   }, [url, failed, isPlaying, pausedExternal]);
 
   const handleResume = async () => {
+    if (reconnecting) return;
+    setReconnecting(true);
     releaseSocket();
     if (printerId && url) {
+      const controller = new AbortController();
+      const tId = window.setTimeout(() => controller.abort(), 4000);
       await fetch(
         `${API_BASE_URL}/printers/${encodeURIComponent(printerId)}/camera/reconnect`,
         { method: 'POST' },
       ).catch(() => { });
-    }
-    setFailed(false);
-    setStreamNonce(Date.now());
-    setIsPlaying(true);
+      { method: 'POST', signal: controller.signal },
+      )
+        .catch (() => { })
+        .finally(() => window.clearTimeout(tId));
+}
+setFailed(false);
+setIsPlaying(true);
+setStreamNonce(Date.now());
+setIsPlaying(true);
+setReconnecting(false);
   };
 
-  if (pausedExternal) {
-    return (
-      <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/90 px-3 text-center">
-        <Camera className="h-5 w-5 text-cyan-400" />
-        <p className="text-[11px] font-medium text-slate-300">
-          Abierta en vista ampliada
-        </p>
-      </div>
-    );
-  }
+if (pausedExternal) {
+  return (
+    <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/90 px-3 text-center">
+      <Camera className="h-5 w-5 text-cyan-400" />
+      <p className="text-[11px] font-medium text-slate-300">
+        Abierta en vista ampliada
+      </p>
+    </div>
+  );
+}
 
-  if (!url || failed) {
-    return (
-      <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/80 text-center">
-        <CameraOff className="h-5 w-5 text-slate-600" />
-        <p className="text-[11px] font-medium text-slate-500">
-          {url ? 'Cámara MJPEG sin señal (reintentando...)' : 'Sin URL de cámara configurada'}
-        </p>
-        {url && (
-          <button
-            type="button"
-            onClick={() => void handleResume()}
-            className="flex items-center gap-1 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/25"
-          >
-            <Play className="h-3 w-3 fill-current" />
-            Reconectar
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  if (!isPlaying) {
-    return (
-      <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/90 px-3 text-center">
+if (!url || failed) {
+  return (
+    <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/80 text-center">
+      <CameraOff className="h-5 w-5 text-slate-600" />
+      <p className="text-[11px] font-medium text-slate-500">
+        {url ? 'Cámara MJPEG sin señal (reintentando...)' : 'Sin URL de cámara configurada'}
+      </p>
+      {url && (
         <button
           type="button"
-          onClick={handleResume}
-          aria-label={`Reanudar cámara ${name}`}
-          className="flex h-11 w-11 items-center justify-center rounded-full border border-emerald-400/60 bg-emerald-500/20 text-emerald-300 shadow-lg shadow-emerald-500/15 transition hover:scale-105 hover:bg-emerald-500/30"
+          onClick={() => void handleResume()}
+          className="flex items-center gap-1 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-1 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-500/25"
         >
-          <Play className="ml-0.5 h-5 w-5 fill-current" />
+          <Play className="h-3 w-3 fill-current" />
+          Reconectar
         </button>
-        <div>
-          <p className="text-[11px] font-semibold text-slate-200">
-            Cámara en reposo
-          </p>
-          <p className="text-[10px] text-slate-400">
-            Pausada tras 5 min para ahorrar recursos
-          </p>
-        </div>
-      </div>
-    );
-  }
+      )}
+    </div>
+  );
+}
 
+if (!isPlaying) {
   return (
-    <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl border border-slate-800 bg-black">
+    <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/90 px-3 text-center">
+      <button
+        type="button"
+        onClick={handleResume}
+        aria-label={`Reanudar cámara ${name}`}
+        className="flex h-11 w-11 items-center justify-center rounded-full border border-emerald-400/60 bg-emerald-500/20 text-emerald-300 shadow-lg shadow-emerald-500/15 transition hover:scale-105 hover:bg-emerald-500/30"
+      >
+        <Play className="ml-0.5 h-5 w-5 fill-current" />
+      </button>
+      <div>
+        <p className="text-[11px] font-semibold text-slate-200">
+          Cámara en reposo
+        </p>
+        <p className="text-[10px] text-slate-400">
+          Pausada tras 5 min para ahorrar recursos
+        </p>
+      </div>
+    </div>
+  );
+}
+
+return (
+  <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl border border-slate-800 bg-black">
+    <img
+      ref={imgRef}
+      src={withStreamNonce(effectiveUrl, streamNonce)}
+      alt={`Cámara ${name}`}
+      onError={() => {
+        releaseSocket();
+        setFailed(true);
+      }}
+      className="h-full w-full bg-black object-contain"
+    />
+    {frameSrc ? (
       <img
-        ref={imgRef}
-        src={withStreamNonce(effectiveUrl, streamNonce)}
+        src={frameSrc}
         alt={`Cámara ${name}`}
         onError={() => {
           releaseSocket();
@@ -238,43 +330,53 @@ function CameraStreamBox({
         }}
         className="h-full w-full bg-black object-contain"
       />
-      <span className="absolute left-2 top-2 flex items-center gap-1 rounded-md bg-slate-950/80 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 backdrop-blur">
-        <Camera className="h-3 w-3" />
-        EN VIVO
-      </span>
-      <div className="absolute right-2 top-2 flex items-center gap-1">
+    ) : (
+      <div className="flex h-full w-full items-center justify-center gap-2 text-[11px] text-slate-400">
+        <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />
+        Conectando cámara...
+      </div>
+    )}
+    <span className="absolute left-2 top-2 flex items-center gap-1 rounded-md bg-slate-950/80 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 backdrop-blur">
+      <Camera className="h-3 w-3" />
+      EN VIVO
+    </span>
+    <div className="absolute right-2 top-2 flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => {
+          releaseSocket();
+          setIsPlaying(false);
+        }}
+        title="Pausar cámara para ahorrar recursos"
+        aria-label={`Pausar cámara ${name}`}
+        className="flex items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/80 p-1 text-slate-300 backdrop-blur transition hover:border-amber-400/70 hover:text-amber-200"
+      >
+        <Pause className="h-3.5 w-3.5" />
+      </button>
+      {onExpand && (
         <button
           type="button"
-          onClick={() => {
-            releaseSocket();
-            setIsPlaying(false);
-          }}
-          title="Pausar cámara para ahorrar recursos"
-          aria-label={`Pausar cámara ${name}`}
-          className="flex items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/80 p-1 text-slate-300 backdrop-blur transition hover:border-amber-400/70 hover:text-amber-200"
+          onClick={onExpand}
+          title="Ampliar cámara en modal"
+          aria-label={`Ampliar cámara ${name}`}
+          className="flex items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/80 p-1 text-slate-200 backdrop-blur transition hover:border-cyan-400/70 hover:text-cyan-200"
         >
-          <Pause className="h-3.5 w-3.5" />
+          <Maximize2 className="h-3.5 w-3.5" />
         </button>
-        {onExpand && (
-          <button
-            type="button"
-            onClick={onExpand}
-            title="Ampliar cámara en modal"
-            aria-label={`Ampliar cámara ${name}`}
-            className="flex items-center justify-center rounded-md border border-slate-700/80 bg-slate-950/80 p-1 text-slate-200 backdrop-blur transition hover:border-cyan-400/70 hover:text-cyan-200"
-          >
-            <Maximize2 className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
+      )}
     </div>
-  );
+  </div>
+);
 }
 
 export function FarmDashboard() {
   const [statuses, setStatuses] = useState<PrinterLiveStatus[]>([]);
   const [loading, setLoading] = useState(true);
+  const [statuses, setStatuses] = useState<PrinterLiveStatus[]>(() => cachedFarmStatuses);
+  const [loading, setLoading] = useState(() => cachedFarmStatuses.length === 0);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const statusInFlightRef = useRef(false);
+  const statusAbortRef = useRef<AbortController | null>(null);
   const [expandedCamera, setExpandedCamera] = useState<{
     url: string;
     name: string;
@@ -361,1290 +463,1334 @@ export function FarmDashboard() {
   };
 
   const loadStatus = useCallback(async () => {
-    try {
-      const list = await fetchPrintersStatus();
-      setStatuses(list);
-      setGlobalError(null);
-
-      // Refrescar sesión de grabación continua y último compendio para máquinas habilitadas
-      const onlineIds = list.filter((s) => s.online).map((s) => s.printer_id);
-      if (onlineIds.length > 0) {
-        const sessEntries = await Promise.all(
-          onlineIds.map(async (pid) => {
-            try {
-              const sess = await fetchPrinterTelemetrySession(pid);
-              return [pid, sess] as const;
-            } catch {
-              return [pid, null] as const;
-            }
-          }),
-        );
-        setTelemetrySessionById((prev) => {
-          const next = { ...prev };
-          for (const [pid, sess] of sessEntries) {
-            if (sess) next[pid] = sess;
-          }
-          return next;
-        });
-      }
-    } catch (err: unknown) {
-      setGlobalError(err instanceof Error ? err.message : 'Error consultando la granja.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadStatus();
-    const timer = window.setInterval(() => {
-      void loadStatus();
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [loadStatus]);
-
-  const handleControl = async (
-    printerId: PrinterId,
-    action: 'pause' | 'resume' | 'cancel',
-  ) => {
-    setPrinterActionBusy(printerId, action);
-    setPrinterFeedback(printerId, null);
-    try {
-      const res = await controlPrinter(printerId, action);
-      setPrinterFeedback(printerId, res.message);
-      void loadStatus();
-    } catch (err: unknown) {
-      setPrinterFeedback(
-        printerId,
-        err instanceof Error ? err.message : `Error ejecutando ${action}.`,
-      );
-    } finally {
-      setPrinterActionBusy(printerId, null);
-    }
-  };
-
-  const handleToggleLight = async (printerId: PrinterId, currentOn?: boolean) => {
-    setPrinterActionBusy(printerId, 'light');
-    setPrinterFeedback(printerId, null);
-    try {
-      const target = currentOn === undefined ? undefined : !currentOn;
-      const res = await togglePrinterLight(printerId, target);
-      setPrinterFeedback(printerId, res.message);
-      setStatuses((prev) =>
-        prev.map((item) =>
-          item.printer_id === printerId ? { ...item, light_on: res.light_on } : item,
-        ),
-      );
-    } catch (err: unknown) {
-      setPrinterFeedback(
-        printerId,
-        err instanceof Error ? err.message : 'Error conmutando luz LED.',
-      );
-    } finally {
-      setPrinterActionBusy(printerId, null);
-    }
-  };
-
-  const loadFilesForPrinter = async (printerId: PrinterId) => {
-    setPrinterActionBusy(printerId, 'files_list');
-    try {
-      const res = await fetchPrinterFiles(printerId);
-      setFilesById((prev) => ({ ...prev, [printerId]: res.files }));
-      setFilesNonceById((prev) => ({ ...prev, [printerId]: Date.now() }));
-    } catch (err: unknown) {
-      setPrinterFeedback(
-        printerId,
-        err instanceof Error ? err.message : 'Error listando archivos en memoria.',
-      );
-    } finally {
-      setPrinterActionBusy(printerId, null);
-    }
-  };
-
-  const handleToggleFilesAccordion = async (printerId: PrinterId) => {
-    const nextOpen = !filesOpenById[printerId];
-    setFilesOpenById((prev) => ({ ...prev, [printerId]: nextOpen }));
-    if (nextOpen) {
-      await loadFilesForPrinter(printerId);
-    }
-  };
-
-  const handlePrintStoredFile = async (
-    printerId: PrinterId,
-    filename: string,
-    autoLeveling = false,
-  ) => {
-    setPrinterActionBusy(printerId, `print:${filename}`);
-    setPrinterFeedback(printerId, null);
-    setConfirmPrintById((prev) => ({ ...prev, [printerId]: null }));
-    try {
-      const res = await printStoredFile(
-        printerId,
-        filename,
-        enableTimelapseForFile,
-        autoLeveling,
-      );
-      setPrinterFeedback(printerId, res.message);
-      await loadStatus();
-    } catch (err: unknown) {
-      setPrinterFeedback(
-        printerId,
-        err instanceof Error ? err.message : `Error iniciando '${filename}'.`,
-      );
-    } finally {
-      setPrinterActionBusy(printerId, null);
-    }
-  };
-
-  const handleDeleteStoredFile = async (printerId: PrinterId, filename: string) => {
-    setPrinterActionBusy(printerId, `delete:${filename}`);
-    setPrinterFeedback(printerId, null);
-    try {
-      const res = await deleteStoredFile(printerId, filename);
-      setConfirmDeleteById((prev) => ({ ...prev, [printerId]: null }));
-      setPrinterFeedback(printerId, res.message);
-      await loadFilesForPrinter(printerId);
-    } catch (err: unknown) {
-      setPrinterFeedback(
-        printerId,
-        err instanceof Error ? err.message : `Error eliminando '${filename}'.`,
-      );
-    } finally {
-      setPrinterActionBusy(printerId, null);
-    }
-  };
-
-  const handleDeleteAllStoredFiles = async (printerId: PrinterId) => {
-    setPrinterActionBusy(printerId, 'delete_all');
-    setPrinterFeedback(printerId, null);
-    try {
-      const res = await deleteAllStoredFiles(printerId);
-      setConfirmDeleteAllById((prev) => ({ ...prev, [printerId]: false }));
-      setConfirmDeleteById((prev) => ({ ...prev, [printerId]: null }));
-      setPrinterFeedback(printerId, res.message);
-      await loadFilesForPrinter(printerId);
-    } catch (err: unknown) {
-      setPrinterFeedback(
-        printerId,
-        err instanceof Error ? err.message : 'Error eliminando todos los archivos.',
-      );
-    } finally {
-      setPrinterActionBusy(printerId, null);
-    }
-  };
-
-  const handleDownloadStoredFile = async (printerId: PrinterId, filename: string) => {
-    setPrinterActionBusy(printerId, `download:${filename}`);
-    setPrinterFeedback(printerId, null);
-    try {
-      const url = getPrinterStoredFileDownloadUrl(printerId, filename);
-      const safeName = filename.split('/').pop() || filename;
-      const pywebviewSave = (
-        window as unknown as {
-          pywebview?: {
-            api?: {
-              save_file?: (
-                fileUrl: string,
-                suggestedName: string,
-              ) => Promise<{ saved?: boolean; path?: string; cancelled?: boolean; error?: string }>;
-            };
-          };
-        }
-      ).pywebview?.api?.save_file;
-
-      if (pywebviewSave) {
-        const result = await pywebviewSave(url, safeName);
-        if (result?.error) {
-          throw new Error(result.error);
-        }
-        if (result?.saved) {
-          setPrinterFeedback(printerId, `Archivo guardado: ${result.path || safeName}`);
-        }
+    const loadStatus = useCallback(async (manual = false) => {
+      if (!manual && statusInFlightRef.current) {
         return;
       }
-
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`No se pudo descargar '${safeName}' (HTTP ${res.status}).`);
+      if (manual && statusAbortRef.current) {
+        statusAbortRef.current.abort();
+        statusAbortRef.current = null;
       }
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = objectUrl;
-      anchor.download = safeName;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-      setPrinterFeedback(printerId, `Archivo descargado: ${safeName}`);
-    } catch (err: unknown) {
-      setPrinterFeedback(
-        printerId,
-        err instanceof Error ? err.message : `Error descargando '${filename}'.`,
-      );
-    } finally {
-      setPrinterActionBusy(printerId, null);
-    }
-  };
+      const controller = new AbortController();
+      statusAbortRef.current = controller;
+      statusInFlightRef.current = true;
+      if (manual) {
+        setLoading(true);
+      }
+      try {
+        const list = await fetchPrintersStatus();
+        const list = await fetchPrintersStatus(controller.signal);
+        if (controller.signal.aborted) return;
+        cachedFarmStatuses = list;
+        setStatuses(list);
+        setGlobalError(null);
 
-  const loadTimelapsesForPrinter = async (printerId: PrinterId) => {
-    setPrinterActionBusy(printerId, 'timelapses');
-    try {
-      const res = await fetchPrinterTimelapses(printerId);
-      setTimelapsesById((prev) => ({
-        ...prev,
-        [printerId]: { videos: res.timelapses, message: res.message },
-      }));
-    } catch (err: unknown) {
-      setPrinterFeedback(
-        printerId,
-        err instanceof Error ? err.message : 'Error consultando timelapses.',
-      );
-    } finally {
-      setPrinterActionBusy(printerId, null);
-    }
-  };
+        // Refrescar sesión de grabación continua y último compendio para máquinas habilitadas
+        const onlineIds = list.filter((s) => s.online).map((s) => s.printer_id);
+        if (onlineIds.length > 0) {
+          const sessEntries = await Promise.all(
+            onlineIds.map(async (pid) => {
+              try {
+                const sess = await fetchPrinterTelemetrySession(pid);
+                return [pid, sess] as const;
+              } catch {
+                return [pid, null] as const;
+              }
+            }),
+          );
+          setTelemetrySessionById((prev) => {
+            const next = { ...prev };
+            for (const [pid, sess] of sessEntries) {
+              if (sess) next[pid] = sess;
+            }
+            return next;
+          });
+        }
+      } catch (err: unknown) {
+        if (err instanceof Error && err.message === 'Operación cancelada por el usuario.') {
+          return;
+        }
+        setGlobalError(err instanceof Error ? err.message : 'Error consultando la granja.');
+      } finally {
+        if (statusAbortRef.current === controller) {
+          statusAbortRef.current = null;
+          statusInFlightRef.current = false;
+        }
+        setLoading(false);
+      }
+    }, []);
 
-  const handleToggleTimelapsesAccordion = async (printerId: PrinterId) => {
-    const nextOpen = !timelapseOpenById[printerId];
-    setTimelapseOpenById((prev) => ({ ...prev, [printerId]: nextOpen }));
-    if (nextOpen) {
-      await loadTimelapsesForPrinter(printerId);
-    }
-  };
+    useEffect(() => {
+      void loadStatus();
+      void loadStatus(false);
+      const timer = window.setInterval(() => {
+        void loadStatus();
+        void loadStatus(false);
+      }, 3000);
+      return () => window.clearInterval(timer);
+      return () => {
+        window.clearInterval(timer);
+        if (statusAbortRef.current) {
+          statusAbortRef.current.abort();
+          statusAbortRef.current = null;
+        }
+        statusInFlightRef.current = false;
+      };
+    }, [loadStatus]);
 
-  const handleAIDiagnosis = async (printerId: PrinterId) => {
-    setPrinterActionBusy(printerId, 'ai_telemetry');
-    setPrinterFeedback(printerId, null);
-    try {
-      const res = await requestAITelemetryDiagnosis(printerId);
-      setAiDiagById((prev) => ({ ...prev, [printerId]: res }));
-    } catch (err: unknown) {
-      setPrinterFeedback(
-        printerId,
-        err instanceof Error ? err.message : 'Error analizando telemetría con IA.',
-      );
-    } finally {
-      setPrinterActionBusy(printerId, null);
-    }
-  };
+    const handleControl = async (
+      printerId: PrinterId,
+      action: 'pause' | 'resume' | 'cancel',
+    ) => {
+      setPrinterActionBusy(printerId, action);
+      setPrinterFeedback(printerId, null);
+      try {
+        const res = await controlPrinter(printerId, action);
+        setPrinterFeedback(printerId, res.message);
+        void loadStatus();
+      } catch (err: unknown) {
+        setPrinterFeedback(
+          printerId,
+          err instanceof Error ? err.message : `Error ejecutando ${action}.`,
+        );
+      } finally {
+        setPrinterActionBusy(printerId, null);
+      }
+    };
 
-  const handleGenerateCompendium = async (printerId: PrinterId) => {
-    setPrinterActionBusy(printerId, 'ai_compendium');
-    setPrinterFeedback(printerId, null);
-    try {
-      const comp = await generatePrinterCompendium(printerId);
-      setPartialCompendiumById((prev) => ({ ...prev, [printerId]: comp }));
-      const refreshed = await fetchPrinterTelemetrySession(printerId);
-      setTelemetrySessionById((prev) => ({ ...prev, [printerId]: refreshed }));
-    } catch (err: unknown) {
-      setPrinterFeedback(
-        printerId,
-        err instanceof Error ? err.message : 'Error generando compendio acumulado.',
-      );
-    } finally {
-      setPrinterActionBusy(printerId, null);
-    }
-  };
+    const handleToggleLight = async (printerId: PrinterId, currentOn?: boolean) => {
+      setPrinterActionBusy(printerId, 'light');
+      setPrinterFeedback(printerId, null);
+      try {
+        const target = currentOn === undefined ? undefined : !currentOn;
+        const res = await togglePrinterLight(printerId, target);
+        setPrinterFeedback(printerId, res.message);
+        setStatuses((prev) =>
+          prev.map((item) =>
+            item.printer_id === printerId ? { ...item, light_on: res.light_on } : item,
+          ),
+        );
+      } catch (err: unknown) {
+        setPrinterFeedback(
+          printerId,
+          err instanceof Error ? err.message : 'Error conmutando luz LED.',
+        );
+      } finally {
+        setPrinterActionBusy(printerId, null);
+      }
+    };
 
-  return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-800 bg-slate-900/75 px-4 py-3">
-        <div>
-          <h2 className="text-sm font-bold text-slate-100">
-            Monitor en Vivo · Granja de {statuses.length || 6} Impresoras
-          </h2>
-          <p className="text-[11px] text-slate-400">
-            Control aislado por máquina · Archivos remotos, Luz LED, Timelapse y Telemetría IA (refresco cada 3 s)
-          </p>
+    const loadFilesForPrinter = async (printerId: PrinterId) => {
+      setPrinterActionBusy(printerId, 'files_list');
+      try {
+        const res = await fetchPrinterFiles(printerId);
+        setFilesById((prev) => ({ ...prev, [printerId]: res.files }));
+        setFilesNonceById((prev) => ({ ...prev, [printerId]: Date.now() }));
+      } catch (err: unknown) {
+        setPrinterFeedback(
+          printerId,
+          err instanceof Error ? err.message : 'Error listando archivos en memoria.',
+        );
+      } finally {
+        setPrinterActionBusy(printerId, null);
+      }
+    };
+
+    const handleToggleFilesAccordion = async (printerId: PrinterId) => {
+      const nextOpen = !filesOpenById[printerId];
+      setFilesOpenById((prev) => ({ ...prev, [printerId]: nextOpen }));
+      if (nextOpen) {
+        await loadFilesForPrinter(printerId);
+      }
+    };
+
+    const handlePrintStoredFile = async (
+      printerId: PrinterId,
+      filename: string,
+      autoLeveling = false,
+    ) => {
+      setPrinterActionBusy(printerId, `print:${filename}`);
+      setPrinterFeedback(printerId, null);
+      setConfirmPrintById((prev) => ({ ...prev, [printerId]: null }));
+      try {
+        const res = await printStoredFile(
+          printerId,
+          filename,
+          enableTimelapseForFile,
+          autoLeveling,
+        );
+        setPrinterFeedback(printerId, res.message);
+        await loadStatus();
+      } catch (err: unknown) {
+        setPrinterFeedback(
+          printerId,
+          err instanceof Error ? err.message : `Error iniciando '${filename}'.`,
+        );
+      } finally {
+        setPrinterActionBusy(printerId, null);
+      }
+    };
+
+    const handleDeleteStoredFile = async (printerId: PrinterId, filename: string) => {
+      setPrinterActionBusy(printerId, `delete:${filename}`);
+      setPrinterFeedback(printerId, null);
+      try {
+        const res = await deleteStoredFile(printerId, filename);
+        setConfirmDeleteById((prev) => ({ ...prev, [printerId]: null }));
+        setPrinterFeedback(printerId, res.message);
+        await loadFilesForPrinter(printerId);
+      } catch (err: unknown) {
+        setPrinterFeedback(
+          printerId,
+          err instanceof Error ? err.message : `Error eliminando '${filename}'.`,
+        );
+      } finally {
+        setPrinterActionBusy(printerId, null);
+      }
+    };
+
+    const handleDeleteAllStoredFiles = async (printerId: PrinterId) => {
+      setPrinterActionBusy(printerId, 'delete_all');
+      setPrinterFeedback(printerId, null);
+      try {
+        const res = await deleteAllStoredFiles(printerId);
+        setConfirmDeleteAllById((prev) => ({ ...prev, [printerId]: false }));
+        setConfirmDeleteById((prev) => ({ ...prev, [printerId]: null }));
+        setPrinterFeedback(printerId, res.message);
+        await loadFilesForPrinter(printerId);
+      } catch (err: unknown) {
+        setPrinterFeedback(
+          printerId,
+          err instanceof Error ? err.message : 'Error eliminando todos los archivos.',
+        );
+      } finally {
+        setPrinterActionBusy(printerId, null);
+      }
+    };
+
+    const handleDownloadStoredFile = async (printerId: PrinterId, filename: string) => {
+      setPrinterActionBusy(printerId, `download:${filename}`);
+      setPrinterFeedback(printerId, null);
+      try {
+        const url = getPrinterStoredFileDownloadUrl(printerId, filename);
+        const safeName = filename.split('/').pop() || filename;
+        const pywebviewSave = (
+          window as unknown as {
+            pywebview?: {
+              api?: {
+                save_file?: (
+                  fileUrl: string,
+                  suggestedName: string,
+                ) => Promise<{ saved?: boolean; path?: string; cancelled?: boolean; error?: string }>;
+              };
+            };
+          }
+        ).pywebview?.api?.save_file;
+
+        if (pywebviewSave) {
+          const result = await pywebviewSave(url, safeName);
+          if (result?.error) {
+            throw new Error(result.error);
+          }
+          if (result?.saved) {
+            setPrinterFeedback(printerId, `Archivo guardado: ${result.path || safeName}`);
+          }
+          return;
+        }
+
+        const res = await fetch(url);
+        if (!res.ok) {
+          throw new Error(`No se pudo descargar '${safeName}' (HTTP ${res.status}).`);
+        }
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = objectUrl;
+        anchor.download = safeName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+        setPrinterFeedback(printerId, `Archivo descargado: ${safeName}`);
+      } catch (err: unknown) {
+        setPrinterFeedback(
+          printerId,
+          err instanceof Error ? err.message : `Error descargando '${filename}'.`,
+        );
+      } finally {
+        setPrinterActionBusy(printerId, null);
+      }
+    };
+
+    const loadTimelapsesForPrinter = async (printerId: PrinterId) => {
+      setPrinterActionBusy(printerId, 'timelapses');
+      try {
+        const res = await fetchPrinterTimelapses(printerId);
+        setTimelapsesById((prev) => ({
+          ...prev,
+          [printerId]: { videos: res.timelapses, message: res.message },
+        }));
+      } catch (err: unknown) {
+        setPrinterFeedback(
+          printerId,
+          err instanceof Error ? err.message : 'Error consultando timelapses.',
+        );
+      } finally {
+        setPrinterActionBusy(printerId, null);
+      }
+    };
+
+    const handleToggleTimelapsesAccordion = async (printerId: PrinterId) => {
+      const nextOpen = !timelapseOpenById[printerId];
+      setTimelapseOpenById((prev) => ({ ...prev, [printerId]: nextOpen }));
+      if (nextOpen) {
+        await loadTimelapsesForPrinter(printerId);
+      }
+    };
+
+    const handleAIDiagnosis = async (printerId: PrinterId) => {
+      setPrinterActionBusy(printerId, 'ai_telemetry');
+      setPrinterFeedback(printerId, null);
+      try {
+        const res = await requestAITelemetryDiagnosis(printerId);
+        setAiDiagById((prev) => ({ ...prev, [printerId]: res }));
+      } catch (err: unknown) {
+        setPrinterFeedback(
+          printerId,
+          err instanceof Error ? err.message : 'Error analizando telemetría con IA.',
+        );
+      } finally {
+        setPrinterActionBusy(printerId, null);
+      }
+    };
+
+    const handleGenerateCompendium = async (printerId: PrinterId) => {
+      setPrinterActionBusy(printerId, 'ai_compendium');
+      setPrinterFeedback(printerId, null);
+      try {
+        const comp = await generatePrinterCompendium(printerId);
+        setPartialCompendiumById((prev) => ({ ...prev, [printerId]: comp }));
+        const refreshed = await fetchPrinterTelemetrySession(printerId);
+        setTelemetrySessionById((prev) => ({ ...prev, [printerId]: refreshed }));
+      } catch (err: unknown) {
+        setPrinterFeedback(
+          printerId,
+          err instanceof Error ? err.message : 'Error generando compendio acumulado.',
+        );
+      } finally {
+        setPrinterActionBusy(printerId, null);
+      }
+    };
+
+    return (
+      <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-800 bg-slate-900/75 px-4 py-3">
+          <div>
+            <h2 className="text-sm font-bold text-slate-100">
+              Monitor en Vivo · Granja de {statuses.length || 6} Impresoras
+            </h2>
+            <p className="text-[11px] text-slate-400">
+              Control aislado por máquina · Archivos remotos, Luz LED, Timelapse y Telemetría IA (refresco cada 3 s)
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {globalError && (
+              <span className="rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-xs text-rose-200">
+                {globalError}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => void loadStatus()}
+              onClick={() => void loadStatus(true)}
+              className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-500/60"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+              Actualizar
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          {globalError && (
-            <span className="rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-xs text-rose-200">
-              {globalError}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => void loadStatus()}
-            className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-500/60"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-            Actualizar
-          </button>
-        </div>
-      </div>
+        {loading && statuses.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-slate-400">
+            <Loader2 className="h-5 w-5 animate-spin text-cyan-400" />
+            Consultando las máquinas de la granja...
+          </div>
+        ) : statuses.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/50 p-6 text-center">
+            <WifiOff className="h-7 w-7 text-rose-400" />
+            <p className="text-sm font-medium text-slate-200">
+              {globalError || 'No se pudo obtener respuesta de las impresoras.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => void loadStatus(true)}
+              className="flex items-center gap-1.5 rounded-xl border border-cyan-500/50 bg-cyan-500/15 px-3.5 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Reintentar conexión
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {statuses.map((st) => {
+              const pid = st.printer_id;
+              const badge = stateBadge(st.state, st.online);
+              const busyAction = actionLoadingById[pid] ?? null;
+              const cardBusy = busyAction !== null;
+              const cardFeedback = feedbackById[pid];
+              const lowerState = st.state.toLowerCase();
+              const isPaused = st.online && lowerState === 'paused';
+              const isActivePrint =
+                st.online && ['printing', 'heating', 'busy'].includes(lowerState);
+              const isWorking = isActivePrint || isPaused;
+              const isNetworkPrinter = st.protocol !== 'marlin_serial';
+              const filesOpen = Boolean(filesOpenById[pid]);
+              const filesList = filesById[pid] ?? [];
+              const confirmDeleteName = confirmDeleteById[pid] ?? null;
+              const isConfirmingDeleteAll = Boolean(confirmDeleteAllById[pid]);
+              const confirmPrintName = confirmPrintById[pid] ?? null;
+              const timelapseOpen = Boolean(timelapseOpenById[pid]);
+              const timelapseInfo = timelapsesById[pid];
+              const activeVideoUrl = activeVideoById[pid] ?? null;
+              const aiDiag = aiDiagById[pid] ?? null;
 
-      {loading && statuses.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center gap-2 text-sm text-slate-400">
-          <Loader2 className="h-5 w-5 animate-spin text-cyan-400" />
-          Consultando las máquinas de la granja...
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {statuses.map((st) => {
-            const pid = st.printer_id;
-            const badge = stateBadge(st.state, st.online);
-            const busyAction = actionLoadingById[pid] ?? null;
-            const cardBusy = busyAction !== null;
-            const cardFeedback = feedbackById[pid];
-            const lowerState = st.state.toLowerCase();
-            const isPaused = st.online && lowerState === 'paused';
-            const isActivePrint =
-              st.online && ['printing', 'heating', 'busy'].includes(lowerState);
-            const isWorking = isActivePrint || isPaused;
-            const isNetworkPrinter = st.protocol !== 'marlin_serial';
-            const filesOpen = Boolean(filesOpenById[pid]);
-            const filesList = filesById[pid] ?? [];
-            const confirmDeleteName = confirmDeleteById[pid] ?? null;
-            const isConfirmingDeleteAll = Boolean(confirmDeleteAllById[pid]);
-            const confirmPrintName = confirmPrintById[pid] ?? null;
-            const timelapseOpen = Boolean(timelapseOpenById[pid]);
-            const timelapseInfo = timelapsesById[pid];
-            const activeVideoUrl = activeVideoById[pid] ?? null;
-            const aiDiag = aiDiagById[pid] ?? null;
+              const protoLabel =
+                st.protocol === 'moonraker'
+                  ? 'Moonraker API'
+                  : st.protocol === 'flashforge_lan'
+                    ? 'FlashForge LAN'
+                    : 'Marlin USB / SD';
 
-            const protoLabel =
-              st.protocol === 'moonraker'
-                ? 'Moonraker API'
-                : st.protocol === 'flashforge_lan'
-                  ? 'FlashForge LAN'
-                  : 'Marlin USB / SD';
-
-            return (
-              <article
-                key={pid}
-                className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/75 p-4 shadow-lg"
-              >
-                <div className="space-y-2.5">
-                  {/* Cabecera tarjeta */}
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <Cpu className="h-4 w-4 text-cyan-400" />
-                        <h3 className="text-sm font-bold text-slate-100">
-                          {st.display_name}
-                        </h3>
-                      </div>
-                      <p className="mt-0.5 pl-6 text-[11px] text-slate-400">
-                        {protoLabel}
-                        {st.ip ? ` · ${st.ip}${st.port ? `:${st.port}` : ''}` : ''}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      {isNetworkPrinter && (
-                        <button
-                          type="button"
-                          disabled={!st.online || cardBusy}
-                          onClick={() => void handleToggleLight(pid, st.light_on)}
-                          title={st.light_on ? 'Apagar Luz LED' : 'Encender Luz LED'}
-                          className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold transition disabled:opacity-40 ${
-                            st.light_on
-                              ? 'border-amber-400/60 bg-amber-400/20 text-amber-200'
-                              : 'border-slate-700 bg-slate-800/80 text-slate-300 hover:border-amber-500/40'
-                          }`}
-                        >
-                          {busyAction === 'light' ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <Lightbulb
-                              className={`h-3 w-3 ${st.light_on ? 'fill-amber-300 text-amber-300' : ''}`}
-                            />
-                          )}
-                          {st.light_on ? 'Luz ON' : 'Luz OFF'}
-                        </button>
-                      )}
-                      <span
-                        className={`flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${badge.cls}`}
-                      >
-                        {st.online ? (
-                          <Wifi className="h-3 w-3" />
-                        ) : (
-                          <WifiOff className="h-3 w-3" />
-                        )}
-                        {badge.label}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Cámara MJPEG */}
-                  <CameraStreamBox
-                    url={st.camera_url}
-                    name={st.display_name}
-                    printerId={pid}
-                    pausedExternal={
-                      Boolean(expandedCamera) && expandedCamera?.name === st.display_name
-                    }
-                    onExpand={() =>
-                      setExpandedCamera({
-                        url: st.camera_url,
-                        name: st.display_name,
-                        printerId: pid,
-                      })
-                    }
-                  />
-
-                  {/* Temperaturas principales */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
-                      <div className="flex items-center justify-between text-[11px] text-slate-400">
-                        <span className="flex items-center gap-1">
-                          <Flame className="h-3.5 w-3.5 text-orange-400" />
-                          Boquilla
-                        </span>
-                        <span className="font-mono font-semibold text-orange-300">
-                          {st.nozzle_temp !== null ? `${st.nozzle_temp}°` : '—'} /{' '}
-                          {st.nozzle_target !== null ? `${st.nozzle_target}°` : '—'}
-                        </span>
-                      </div>
-                      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-800">
-                        <div
-                          className="h-full bg-orange-500 transition-all"
-                          style={{
-                            width: `${Math.min(100, ((st.nozzle_temp ?? 0) / Math.max(st.nozzle_target || 220, 1)) * 100)}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
-                      <div className="flex items-center justify-between text-[11px] text-slate-400">
-                        <span className="flex items-center gap-1">
-                          <Thermometer className="h-3.5 w-3.5 text-cyan-400" />
-                          Cama
-                        </span>
-                        <span className="font-mono font-semibold text-cyan-300">
-                          {st.bed_temp !== null ? `${st.bed_temp}°` : '—'} /{' '}
-                          {st.bed_target !== null ? `${st.bed_target}°` : '—'}
-                        </span>
-                      </div>
-                      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-800">
-                        <div
-                          className="h-full bg-cyan-500 transition-all"
-                          style={{
-                            width: `${Math.min(100, ((st.bed_temp ?? 0) / Math.max(st.bed_target || 60, 1)) * 100)}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Progreso de impresión */}
-                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-2.5">
-                    <div className="mb-1 flex items-center justify-between text-[11px]">
-                      <span className="truncate font-medium text-slate-300">
-                        {st.current_file || st.message}
-                      </span>
-                      <span className="ml-2 shrink-0 font-mono font-bold text-emerald-300">
-                        {st.progress_percent.toFixed(1)}%
-                        {st.eta_seconds !== null
-                          ? ` · ETA ${formatDuration(st.eta_seconds)}`
-                          : ''}
-                      </span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-                      <div
-                        className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 transition-all"
-                        style={{ width: `${Math.min(100, st.progress_percent)}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Alerta / Código de error reportado por el firmware de la impresora */}
-                  {(st.error_code || st.error_message) && (
-                    <div
-                      className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-xs ${
-                        lowerState === 'error' ||
-                        (st.error_code && st.error_code !== 'PAUSE_REASON')
-                          ? 'border-rose-500/60 bg-rose-950/50 text-rose-200'
-                          : 'border-amber-500/60 bg-amber-950/45 text-amber-200'
-                      }`}
-                    >
-                      <AlertTriangle
-                        className={`mt-0.5 h-4 w-4 shrink-0 ${
-                          lowerState === 'error' ||
-                          (st.error_code && st.error_code !== 'PAUSE_REASON')
-                            ? 'text-rose-400'
-                            : 'text-amber-400'
-                        }`}
-                      />
-                      <div className="min-w-0 flex-1 space-y-0.5">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-semibold uppercase tracking-wide">
-                            Alerta de Impresora
-                          </span>
-                          {st.error_code && (
-                            <span className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[10px] font-bold">
-                              {st.error_code}
-                            </span>
-                          )}
+              return (
+                <article
+                  key={pid}
+                  className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/75 p-4 shadow-lg"
+                >
+                  <div className="space-y-2.5">
+                    {/* Cabecera tarjeta */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Cpu className="h-4 w-4 text-cyan-400" />
+                          <h3 className="text-sm font-bold text-slate-100">
+                            {st.display_name}
+                          </h3>
                         </div>
-                        {st.error_message && (
-                          <p className="text-[11px] leading-snug opacity-95">
-                            {st.error_message}
-                          </p>
-                        )}
+                        <p className="mt-0.5 pl-6 text-[11px] text-slate-400">
+                          {protoLabel}
+                          {st.ip ? ` · ${st.ip}${st.port ? `:${st.port}` : ''}` : ''}
+                        </p>
                       </div>
-                    </div>
-                  )}
-
-                  {/* Telemetría avanzada en vivo */}
-                  {st.online && (
-                    <div className="grid grid-cols-3 gap-1.5 rounded-xl border border-slate-800/80 bg-slate-950/75 p-2 text-[10px]">
-                      <div className="flex flex-col">
-                        <span className="flex items-center gap-1 text-slate-400">
-                          <Layers className="h-3 w-3 text-cyan-400" />
-                          Capa
-                        </span>
-                        <span className="font-mono font-semibold text-slate-200">
-                          {st.total_layers
-                            ? `${st.current_layer ?? 0} / ${st.total_layers}`
-                            : st.current_layer !== null && st.current_layer !== undefined
-                              ? `${st.current_layer}`
-                              : '—'}
-                        </span>
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="flex items-center gap-1 text-slate-400">
-                          <Gauge className="h-3 w-3 text-emerald-400" />
-                          Vel / Flujo
-                        </span>
-                        <span className="font-mono font-semibold text-slate-200">
-                          {st.print_speed_mms ?? 0} mm/s · {Math.round(st.flow_factor_percent ?? 100)}%
-                        </span>
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="flex items-center gap-1 text-slate-400">
-                          <Fan className="h-3 w-3 text-sky-400" />
-                          Fan / Factor
-                        </span>
-                        <span className="font-mono font-semibold text-slate-200">
-                          {Math.round(st.fan_speed_percent ?? 0)}% · {Math.round(st.speed_factor_percent ?? 100)}%
-                        </span>
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="flex items-center gap-1 text-slate-400">
-                          <Clock className="h-3 w-3 text-amber-400" />
-                          Transcurrido
-                        </span>
-                        <span className="font-mono font-semibold text-slate-200">
-                          {formatDuration(st.elapsed_seconds)}
-                        </span>
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="text-slate-400">
-                          {st.chamber_temp !== null && st.chamber_temp !== undefined
-                            ? 'Cabina'
-                            : 'MCU / Placa'}
-                        </span>
-                        <span className="font-mono font-semibold text-slate-200">
-                          {st.chamber_temp !== null && st.chamber_temp !== undefined
-                            ? `Cabina: ${st.chamber_temp}°C${
-                                st.chamber_target !== null && st.chamber_target !== undefined
-                                  ? ` / Obj ${st.chamber_target}°C`
-                                  : ''
-                              }`
-                            : st.mcu_temp !== null && st.mcu_temp !== undefined
-                              ? `${st.mcu_temp}° / ${st.host_temp ?? '—'}°`
-                              : '—'}
-                        </span>
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="text-slate-400">Filamento</span>
-                        <span className="font-mono font-semibold text-slate-200">
-                          {(st.filament_used_g ?? 0).toFixed(1)}g /{' '}
-                          {((st.filament_used_mm ?? 0) / 1000).toFixed(2)}m
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Grabación continua + Diagnóstico IA + Compendio Post-Impresión */}
-                  {st.online && (() => {
-                    const tSession = telemetrySessionById[pid] ?? null;
-                    const activeSess = tSession?.active_session ?? null;
-                    const recMinutes = activeSess
-                      ? Math.max(1, Math.round(activeSess.duration_recorded_seconds / 60))
-                      : 0;
-                    const activeComp = isWorking
-                      ? partialCompendiumById[pid] ?? activeSess?.compendium ?? null
-                      : null;
-                    const finalComp = tSession?.last_compendium ?? null;
-                    const displayComp =
-                      activeComp ??
-                      (finalComp && !archivedCompendiumIds.includes(finalComp.compendium_id)
-                        ? finalComp
-                        : null);
-                    const historyList = tSession?.history ?? [];
-                    const historyOpen = Boolean(historyOpenById[pid]);
-
-                    return (
-                      <div className="space-y-1.5">
-                        {isWorking && (
-                          <>
-                            <div className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/30 bg-emerald-950/25 px-2.5 py-1 text-[10px]">
-                              <span className="flex items-center gap-1.5 font-semibold text-emerald-300">
-                                <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
-                                Grabando telemetría completa
-                              </span>
-                              <span className="font-mono text-emerald-200">
-                                {activeSess ? `${activeSess.samples_count} muestras · ${recMinutes} min` : 'Iniciando...'}
-                              </span>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-1.5">
-                              <button
-                                type="button"
-                                disabled={cardBusy}
-                                onClick={() => void handleAIDiagnosis(pid)}
-                                title="Diagnóstico rápido del instante actual con DeepSeek IA"
-                                className="flex items-center justify-center gap-1 rounded-xl border border-purple-500/40 bg-purple-500/15 py-1.5 text-[10px] font-semibold text-purple-200 transition hover:bg-purple-500/25 disabled:cursor-not-allowed disabled:opacity-40"
-                              >
-                                {busyAction === 'ai_telemetry' ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                  <Sparkles className="h-3 w-3 text-purple-300" />
-                                )}
-                                Analizar Instante Actual
-                              </button>
-                              <button
-                                type="button"
-                                disabled={cardBusy || !activeSess}
-                                onClick={() => void handleGenerateCompendium(pid)}
-                                title="Generar compendio acumulado de toda la sesión hasta ahora"
-                                className="flex items-center justify-center gap-1 rounded-xl border border-cyan-500/40 bg-cyan-500/15 py-1.5 text-[10px] font-semibold text-cyan-200 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40"
-                              >
-                                {busyAction === 'ai_compendium' ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" />
-                                ) : (
-                                  <FileText className="h-3 w-3 text-cyan-300" />
-                                )}
-                                Ver Compendio Acumulado
-                              </button>
-                            </div>
-                          </>
-                        )}
-
-                        {aiDiag && isWorking && (
-                          <div className="space-y-1 rounded-xl border border-purple-500/35 bg-purple-950/30 p-2 text-[10px]">
-                            <div className="flex items-center justify-between gap-1">
-                              <span
-                                className={`rounded-full px-2 py-0.5 font-bold ${
-                                  aiDiag.status_badge === 'OPTIMO'
-                                    ? 'bg-emerald-500/20 text-emerald-300'
-                                    : aiDiag.status_badge === 'ATENCION'
-                                      ? 'bg-amber-500/20 text-amber-300'
-                                      : 'bg-rose-500/20 text-rose-300'
-                                }`}
-                              >
-                                {aiDiag.status_badge}
-                              </span>
-                              <span className="font-mono text-[9px] text-purple-300">
-                                {aiDiag.provider}
-                              </span>
-                            </div>
-                            <p className="font-medium text-slate-200">{aiDiag.summary}</p>
-                            <ul className="list-disc space-y-0.5 pl-4 text-slate-300">
-                              {aiDiag.recommendations.map((rec, rIdx) => (
-                                <li key={rIdx}>{rec}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-
-                        {/* Tarjeta Persistente de Compendio Final / Acumulado */}
-                        {displayComp && (
-                          <div className="space-y-1.5 rounded-xl border border-cyan-500/35 bg-slate-950/85 p-2.5 text-[10px]">
-                            <div className="flex items-center justify-between gap-1.5">
-                              <span className="font-bold text-cyan-200">
-                                {displayComp.is_partial
-                                  ? 'Compendio IA Acumulado (En Curso)'
-                                  : 'Compendio Final IA de la Última Impresión'}
-                              </span>
-                              <div className="flex items-center gap-1">
-                                <span
-                                  className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${
-                                    displayComp.rating === 'EXCELENTE'
-                                      ? 'bg-emerald-500/20 text-emerald-300'
-                                      : displayComp.rating === 'BUENA_CON_MEJORAS'
-                                        ? 'bg-amber-500/20 text-amber-300'
-                                        : 'bg-rose-500/20 text-rose-300'
-                                  }`}
-                                >
-                                  {displayComp.rating}
-                                </span>
-                                <span className="font-mono text-[9px] text-purple-300">
-                                  {displayComp.provider}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="flex flex-wrap items-center justify-between gap-1 text-[9px] text-slate-400">
-                              <span className="truncate font-mono text-slate-200">
-                                {displayComp.filename} ({displayComp.detected_material})
-                              </span>
-                              <span className="font-mono">
-                                {displayComp.stats.samples_count} muestras ·{' '}
-                                {formatDuration(
-                                  displayComp.stats.real_elapsed_seconds ??
-                                    displayComp.stats.duration_recorded_seconds,
-                                )}
-                              </span>
-                            </div>
-
-                            <div className="grid grid-cols-4 gap-1 rounded-lg border border-slate-800 bg-slate-900/70 p-1.5 font-mono text-[9px]">
-                              <div>
-                                <div className="text-slate-500">Boquilla</div>
-                                <div className="text-orange-300">
-                                  {displayComp.stats.overall.nozzle_min ?? '—'}/
-                                  {displayComp.stats.overall.nozzle_avg ?? '—'}/
-                                  {displayComp.stats.overall.nozzle_max ?? '—'}°
-                                </div>
-                              </div>
-                              <div>
-                                <div className="text-slate-500">Cama</div>
-                                <div className="text-amber-300">
-                                  {displayComp.stats.overall.bed_min ?? '—'}/
-                                  {displayComp.stats.overall.bed_avg ?? '—'}/
-                                  {displayComp.stats.overall.bed_max ?? '—'}°
-                                </div>
-                              </div>
-                              <div>
-                                <div className="text-slate-500">MCU</div>
-                                <div className="text-cyan-300">
-                                  {displayComp.stats.overall.mcu_avg ?? '—'}° (máx{' '}
-                                  {displayComp.stats.overall.mcu_max ?? '—'}°)
-                                </div>
-                              </div>
-                              <div>
-                                <div className="text-slate-500">Vel. prom</div>
-                                <div className="text-emerald-300">
-                                  {displayComp.stats.overall.speed_avg ?? '—'} mm/s
-                                </div>
-                              </div>
-                            </div>
-
-                            <p className="leading-snug text-slate-200">
-                              {displayComp.executive_summary}
-                            </p>
-
-                            <ul className="list-disc space-y-0.5 pl-4 text-slate-300">
-                              {displayComp.improvements.map((imp, idx) => (
-                                <li key={idx}>{imp}</li>
-                              ))}
-                            </ul>
-
-                            <div className="flex items-center justify-between gap-2 pt-0.5">
-                              {historyList.length > 0 ? (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setHistoryOpenById((prev) => ({
-                                      ...prev,
-                                      [pid]: !prev[pid],
-                                    }))
-                                  }
-                                  className="inline-flex items-center gap-1 text-[9px] font-semibold text-cyan-300 hover:text-cyan-200"
-                                >
-                                  <History className="h-3 w-3" />
-                                  Historial ({historyList.length})
-                                </button>
-                              ) : (
-                                <span />
-                              )}
-                              {!displayComp.is_partial && (
-                                <button
-                                  type="button"
-                                  onClick={() => archiveCompendium(displayComp.compendium_id)}
-                                  className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-[9px] text-slate-300 hover:bg-slate-800"
-                                >
-                                  <Archive className="h-2.5 w-2.5" />
-                                  Archivar
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                        {!displayComp && historyList.length > 0 && !isWorking && (
+                      <div className="flex items-center gap-1.5">
+                        {isNetworkPrinter && (
                           <button
                             type="button"
-                            onClick={() =>
-                              setHistoryOpenById((prev) => ({
-                                ...prev,
-                                [pid]: !prev[pid],
-                              }))
-                            }
-                            className="flex w-full items-center justify-center gap-1 rounded-lg border border-slate-800 bg-slate-950/60 py-1 text-[10px] text-cyan-300 hover:bg-slate-900"
+                            disabled={!st.online || cardBusy}
+                            onClick={() => void handleToggleLight(pid, st.light_on)}
+                            title={st.light_on ? 'Apagar Luz LED' : 'Encender Luz LED'}
+                            className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold transition disabled:opacity-40 ${st.light_on
+                                ? 'border-amber-400/60 bg-amber-400/20 text-amber-200'
+                                : 'border-slate-700 bg-slate-800/80 text-slate-300 hover:border-amber-500/40'
+                              }`}
                           >
-                            <History className="h-3 w-3" />
-                            Consultar historial de compendios ({historyList.length})
+                            {busyAction === 'light' ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Lightbulb
+                                className={`h-3 w-3 ${st.light_on ? 'fill-amber-300 text-amber-300' : ''}`}
+                              />
+                            )}
+                            {st.light_on ? 'Luz ON' : 'Luz OFF'}
                           </button>
                         )}
+                        <span
+                          className={`flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${badge.cls}`}
+                        >
+                          {st.online ? (
+                            <Wifi className="h-3 w-3" />
+                          ) : (
+                            <WifiOff className="h-3 w-3" />
+                          )}
+                          {badge.label}
+                        </span>
+                      </div>
+                    </div>
 
-                        {historyOpen && historyList.length > 0 && (
-                          <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/80 p-1.5 text-[9px]">
-                            {historyList.map((hc) => (
-                              <div
-                                key={hc.compendium_id}
-                                className="rounded border border-slate-800/80 bg-slate-900/70 p-1.5"
-                              >
-                                <div className="flex items-center justify-between gap-1 font-semibold text-slate-200">
-                                  <span className="truncate">{hc.filename}</span>
-                                  <span className="font-mono text-cyan-300">{hc.rating}</span>
+                    {/* Cámara MJPEG */}
+                    <CameraStreamBox
+                      url={st.camera_url}
+                      name={st.display_name}
+                      printerId={pid}
+                      pausedExternal={
+                        Boolean(expandedCamera) && expandedCamera?.name === st.display_name
+                      }
+                      onExpand={() =>
+                        setExpandedCamera({
+                          url: st.camera_url,
+                          name: st.display_name,
+                          printerId: pid,
+                        })
+                      }
+                    />
+
+                    {/* Temperaturas principales */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
+                        <div className="flex items-center justify-between text-[11px] text-slate-400">
+                          <span className="flex items-center gap-1">
+                            <Flame className="h-3.5 w-3.5 text-orange-400" />
+                            Boquilla
+                          </span>
+                          <span className="font-mono font-semibold text-orange-300">
+                            {st.nozzle_temp !== null ? `${st.nozzle_temp}°` : '—'} /{' '}
+                            {st.nozzle_target !== null ? `${st.nozzle_target}°` : '—'}
+                          </span>
+                        </div>
+                        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                          <div
+                            className="h-full bg-orange-500 transition-all"
+                            style={{
+                              width: `${Math.min(100, ((st.nozzle_temp ?? 0) / Math.max(st.nozzle_target || 220, 1)) * 100)}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5">
+                        <div className="flex items-center justify-between text-[11px] text-slate-400">
+                          <span className="flex items-center gap-1">
+                            <Thermometer className="h-3.5 w-3.5 text-cyan-400" />
+                            Cama
+                          </span>
+                          <span className="font-mono font-semibold text-cyan-300">
+                            {st.bed_temp !== null ? `${st.bed_temp}°` : '—'} /{' '}
+                            {st.bed_target !== null ? `${st.bed_target}°` : '—'}
+                          </span>
+                        </div>
+                        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                          <div
+                            className="h-full bg-cyan-500 transition-all"
+                            style={{
+                              width: `${Math.min(100, ((st.bed_temp ?? 0) / Math.max(st.bed_target || 60, 1)) * 100)}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Progreso de impresión */}
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-2.5">
+                      <div className="mb-1 flex items-center justify-between text-[11px]">
+                        <span className="truncate font-medium text-slate-300">
+                          {st.current_file || st.message}
+                        </span>
+                        <span className="ml-2 shrink-0 font-mono font-bold text-emerald-300">
+                          {st.progress_percent.toFixed(1)}%
+                          {st.eta_seconds !== null
+                            ? ` · ETA ${formatDuration(st.eta_seconds)}`
+                            : ''}
+                        </span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 transition-all"
+                          style={{ width: `${Math.min(100, st.progress_percent)}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Alerta / Código de error reportado por el firmware de la impresora */}
+                    {(st.error_code || st.error_message) && (
+                      <div
+                        className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-xs ${lowerState === 'error' ||
+                            (st.error_code && st.error_code !== 'PAUSE_REASON')
+                            ? 'border-rose-500/60 bg-rose-950/50 text-rose-200'
+                            : 'border-amber-500/60 bg-amber-950/45 text-amber-200'
+                          }`}
+                      >
+                        <AlertTriangle
+                          className={`mt-0.5 h-4 w-4 shrink-0 ${lowerState === 'error' ||
+                              (st.error_code && st.error_code !== 'PAUSE_REASON')
+                              ? 'text-rose-400'
+                              : 'text-amber-400'
+                            }`}
+                        />
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-semibold uppercase tracking-wide">
+                              Alerta de Impresora
+                            </span>
+                            {st.error_code && (
+                              <span className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[10px] font-bold">
+                                {st.error_code}
+                              </span>
+                            )}
+                          </div>
+                          {st.error_message && (
+                            <p className="text-[11px] leading-snug opacity-95">
+                              {st.error_message}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Telemetría avanzada en vivo */}
+                    {st.online && (
+                      <div className="grid grid-cols-3 gap-1.5 rounded-xl border border-slate-800/80 bg-slate-950/75 p-2 text-[10px]">
+                        <div className="flex flex-col">
+                          <span className="flex items-center gap-1 text-slate-400">
+                            <Layers className="h-3 w-3 text-cyan-400" />
+                            Capa
+                          </span>
+                          <span className="font-mono font-semibold text-slate-200">
+                            {st.total_layers
+                              ? `${st.current_layer ?? 0} / ${st.total_layers}`
+                              : st.current_layer !== null && st.current_layer !== undefined
+                                ? `${st.current_layer}`
+                                : '—'}
+                          </span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="flex items-center gap-1 text-slate-400">
+                            <Gauge className="h-3 w-3 text-emerald-400" />
+                            Vel / Flujo
+                          </span>
+                          <span className="font-mono font-semibold text-slate-200">
+                            {st.print_speed_mms ?? 0} mm/s · {Math.round(st.flow_factor_percent ?? 100)}%
+                          </span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="flex items-center gap-1 text-slate-400">
+                            <Fan className="h-3 w-3 text-sky-400" />
+                            Fan / Factor
+                          </span>
+                          <span className="font-mono font-semibold text-slate-200">
+                            {Math.round(st.fan_speed_percent ?? 0)}% · {Math.round(st.speed_factor_percent ?? 100)}%
+                          </span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="flex items-center gap-1 text-slate-400">
+                            <Clock className="h-3 w-3 text-amber-400" />
+                            Transcurrido
+                          </span>
+                          <span className="font-mono font-semibold text-slate-200">
+                            {formatDuration(st.elapsed_seconds)}
+                          </span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-slate-400">
+                            {st.chamber_temp !== null && st.chamber_temp !== undefined
+                              ? 'Cabina'
+                              : 'MCU / Placa'}
+                          </span>
+                          <span className="font-mono font-semibold text-slate-200">
+                            {st.chamber_temp !== null && st.chamber_temp !== undefined
+                              ? `Cabina: ${st.chamber_temp}°C${st.chamber_target !== null && st.chamber_target !== undefined
+                                ? ` / Obj ${st.chamber_target}°C`
+                                : ''
+                              }`
+                              : st.mcu_temp !== null && st.mcu_temp !== undefined
+                                ? `${st.mcu_temp}° / ${st.host_temp ?? '—'}°`
+                                : '—'}
+                          </span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-slate-400">Filamento</span>
+                          <span className="font-mono font-semibold text-slate-200">
+                            {(st.filament_used_g ?? 0).toFixed(1)}g /{' '}
+                            {((st.filament_used_mm ?? 0) / 1000).toFixed(2)}m
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Grabación continua + Diagnóstico IA + Compendio Post-Impresión */}
+                    {st.online && (() => {
+                      const tSession = telemetrySessionById[pid] ?? null;
+                      const activeSess = tSession?.active_session ?? null;
+                      const recMinutes = activeSess
+                        ? Math.max(1, Math.round(activeSess.duration_recorded_seconds / 60))
+                        : 0;
+                      const activeComp = isWorking
+                        ? partialCompendiumById[pid] ?? activeSess?.compendium ?? null
+                        : null;
+                      const finalComp = tSession?.last_compendium ?? null;
+                      const displayComp =
+                        activeComp ??
+                        (finalComp && !archivedCompendiumIds.includes(finalComp.compendium_id)
+                          ? finalComp
+                          : null);
+                      const historyList = tSession?.history ?? [];
+                      const historyOpen = Boolean(historyOpenById[pid]);
+
+                      return (
+                        <div className="space-y-1.5">
+                          {isWorking && (
+                            <>
+                              <div className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/30 bg-emerald-950/25 px-2.5 py-1 text-[10px]">
+                                <span className="flex items-center gap-1.5 font-semibold text-emerald-300">
+                                  <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
+                                  Grabando telemetría completa
+                                </span>
+                                <span className="font-mono text-emerald-200">
+                                  {activeSess ? `${activeSess.samples_count} muestras · ${recMinutes} min` : 'Iniciando...'}
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={cardBusy}
+                                  onClick={() => void handleAIDiagnosis(pid)}
+                                  title="Diagnóstico rápido del instante actual con DeepSeek IA"
+                                  className="flex items-center justify-center gap-1 rounded-xl border border-purple-500/40 bg-purple-500/15 py-1.5 text-[10px] font-semibold text-purple-200 transition hover:bg-purple-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  {busyAction === 'ai_telemetry' ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <Sparkles className="h-3 w-3 text-purple-300" />
+                                  )}
+                                  Analizar Instante Actual
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={cardBusy || !activeSess}
+                                  onClick={() => void handleGenerateCompendium(pid)}
+                                  title="Generar compendio acumulado de toda la sesión hasta ahora"
+                                  className="flex items-center justify-center gap-1 rounded-xl border border-cyan-500/40 bg-cyan-500/15 py-1.5 text-[10px] font-semibold text-cyan-200 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  {busyAction === 'ai_compendium' ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <FileText className="h-3 w-3 text-cyan-300" />
+                                  )}
+                                  Ver Compendio Acumulado
+                                </button>
+                              </div>
+                            </>
+                          )}
+
+                          {aiDiag && isWorking && (
+                            <div className="space-y-1 rounded-xl border border-purple-500/35 bg-purple-950/30 p-2 text-[10px]">
+                              <div className="flex items-center justify-between gap-1">
+                                <span
+                                  className={`rounded-full px-2 py-0.5 font-bold ${aiDiag.status_badge === 'OPTIMO'
+                                      ? 'bg-emerald-500/20 text-emerald-300'
+                                      : aiDiag.status_badge === 'ATENCION'
+                                        ? 'bg-amber-500/20 text-amber-300'
+                                        : 'bg-rose-500/20 text-rose-300'
+                                    }`}
+                                >
+                                  {aiDiag.status_badge}
+                                </span>
+                                <span className="font-mono text-[9px] text-purple-300">
+                                  {aiDiag.provider}
+                                </span>
+                              </div>
+                              <p className="font-medium text-slate-200">{aiDiag.summary}</p>
+                              <ul className="list-disc space-y-0.5 pl-4 text-slate-300">
+                                {aiDiag.recommendations.map((rec, rIdx) => (
+                                  <li key={rIdx}>{rec}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Tarjeta Persistente de Compendio Final / Acumulado */}
+                          {displayComp && (
+                            <div className="space-y-1.5 rounded-xl border border-cyan-500/35 bg-slate-950/85 p-2.5 text-[10px]">
+                              <div className="flex items-center justify-between gap-1.5">
+                                <span className="font-bold text-cyan-200">
+                                  {displayComp.is_partial
+                                    ? 'Compendio IA Acumulado (En Curso)'
+                                    : 'Compendio Final IA de la Última Impresión'}
+                                </span>
+                                <div className="flex items-center gap-1">
+                                  <span
+                                    className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${displayComp.rating === 'EXCELENTE'
+                                        ? 'bg-emerald-500/20 text-emerald-300'
+                                        : displayComp.rating === 'BUENA_CON_MEJORAS'
+                                          ? 'bg-amber-500/20 text-amber-300'
+                                          : 'bg-rose-500/20 text-rose-300'
+                                      }`}
+                                  >
+                                    {displayComp.rating}
+                                  </span>
+                                  <span className="font-mono text-[9px] text-purple-300">
+                                    {displayComp.provider}
+                                  </span>
                                 </div>
-                                <p className="mt-0.5 text-slate-400">{hc.executive_summary}</p>
+                              </div>
+
+                              <div className="flex flex-wrap items-center justify-between gap-1 text-[9px] text-slate-400">
+                                <span className="truncate font-mono text-slate-200">
+                                  {displayComp.filename} ({displayComp.detected_material})
+                                </span>
+                                <span className="font-mono">
+                                  {displayComp.stats.samples_count} muestras ·{' '}
+                                  {formatDuration(
+                                    displayComp.stats.real_elapsed_seconds ??
+                                    displayComp.stats.duration_recorded_seconds,
+                                  )}
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-4 gap-1 rounded-lg border border-slate-800 bg-slate-900/70 p-1.5 font-mono text-[9px]">
+                                <div>
+                                  <div className="text-slate-500">Boquilla</div>
+                                  <div className="text-orange-300">
+                                    {displayComp.stats.overall.nozzle_min ?? '—'}/
+                                    {displayComp.stats.overall.nozzle_avg ?? '—'}/
+                                    {displayComp.stats.overall.nozzle_max ?? '—'}°
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-slate-500">Cama</div>
+                                  <div className="text-amber-300">
+                                    {displayComp.stats.overall.bed_min ?? '—'}/
+                                    {displayComp.stats.overall.bed_avg ?? '—'}/
+                                    {displayComp.stats.overall.bed_max ?? '—'}°
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-slate-500">MCU</div>
+                                  <div className="text-cyan-300">
+                                    {displayComp.stats.overall.mcu_avg ?? '—'}° (máx{' '}
+                                    {displayComp.stats.overall.mcu_max ?? '—'}°)
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-slate-500">Vel. prom</div>
+                                  <div className="text-emerald-300">
+                                    {displayComp.stats.overall.speed_avg ?? '—'} mm/s
+                                  </div>
+                                </div>
+                              </div>
+
+                              <p className="leading-snug text-slate-200">
+                                {displayComp.executive_summary}
+                              </p>
+
+                              <ul className="list-disc space-y-0.5 pl-4 text-slate-300">
+                                {displayComp.improvements.map((imp, idx) => (
+                                  <li key={idx}>{imp}</li>
+                                ))}
+                              </ul>
+
+                              <div className="flex items-center justify-between gap-2 pt-0.5">
+                                {historyList.length > 0 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setHistoryOpenById((prev) => ({
+                                        ...prev,
+                                        [pid]: !prev[pid],
+                                      }))
+                                    }
+                                    className="inline-flex items-center gap-1 text-[9px] font-semibold text-cyan-300 hover:text-cyan-200"
+                                  >
+                                    <History className="h-3 w-3" />
+                                    Historial ({historyList.length})
+                                  </button>
+                                ) : (
+                                  <span />
+                                )}
+                                {!displayComp.is_partial && (
+                                  <button
+                                    type="button"
+                                    onClick={() => archiveCompendium(displayComp.compendium_id)}
+                                    className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-[9px] text-slate-300 hover:bg-slate-800"
+                                  >
+                                    <Archive className="h-2.5 w-2.5" />
+                                    Archivar
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {!displayComp && historyList.length > 0 && !isWorking && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setHistoryOpenById((prev) => ({
+                                  ...prev,
+                                  [pid]: !prev[pid],
+                                }))
+                              }
+                              className="flex w-full items-center justify-center gap-1 rounded-lg border border-slate-800 bg-slate-950/60 py-1 text-[10px] text-cyan-300 hover:bg-slate-900"
+                            >
+                              <History className="h-3 w-3" />
+                              Consultar historial de compendios ({historyList.length})
+                            </button>
+                          )}
+
+                          {historyOpen && historyList.length > 0 && (
+                            <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/80 p-1.5 text-[9px]">
+                              {historyList.map((hc) => (
+                                <div
+                                  key={hc.compendium_id}
+                                  className="rounded border border-slate-800/80 bg-slate-900/70 p-1.5"
+                                >
+                                  <div className="flex items-center justify-between gap-1 font-semibold text-slate-200">
+                                    <span className="truncate">{hc.filename}</span>
+                                    <span className="font-mono text-cyan-300">{hc.rating}</span>
+                                  </div>
+                                  <p className="mt-0.5 text-slate-400">{hc.executive_summary}</p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Acordeón Archivos en Memoria */}
+                    {isNetworkPrinter && (
+                      <div className="rounded-xl border border-slate-800 bg-slate-950/60">
+                        <button
+                          type="button"
+                          disabled={!st.online}
+                          onClick={() => void handleToggleFilesAccordion(pid)}
+                          className="flex w-full items-center justify-between px-3 py-2 text-[11px] font-semibold text-slate-200 disabled:opacity-40"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <FolderOpen className="h-3.5 w-3.5 text-cyan-400" />
+                            Archivos en Memoria ({filesList.length})
+                          </span>
+                          {filesOpen ? (
+                            <ChevronUp className="h-3.5 w-3.5 text-slate-400" />
+                          ) : (
+                            <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+                          )}
+                        </button>
+
+                        {filesOpen && (() => {
+                          const canRemoteDelete = st.protocol === 'moonraker';
+                          const canDownloadStoredFile = st.protocol === 'moonraker';
+                          return (
+                            <div className="space-y-1.5 border-t border-slate-800 px-2.5 py-2">
+                              <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-slate-400">
+                                <span>Almacenamiento de {st.display_name}</span>
+                                <div className="flex items-center gap-2">
+                                  {canRemoteDelete &&
+                                    filesList.length > 0 &&
+                                    (isConfirmingDeleteAll ? (
+                                      <div className="flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          disabled={cardBusy}
+                                          onClick={() => void handleDeleteAllStoredFiles(pid)}
+                                          className="flex items-center gap-1 rounded border border-rose-500 bg-rose-500/30 px-1.5 py-0.5 font-bold text-rose-100 hover:bg-rose-500/45 disabled:opacity-40"
+                                        >
+                                          {busyAction === 'delete_all' ? (
+                                            <Loader2 className="h-3 w-3 animate-spin" />
+                                          ) : null}
+                                          Confirmar borrar ({filesList.length})
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={cardBusy}
+                                          onClick={() =>
+                                            setConfirmDeleteAllById((prev) => ({
+                                              ...prev,
+                                              [pid]: false,
+                                            }))
+                                          }
+                                          className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-slate-300 hover:bg-slate-700"
+                                        >
+                                          No
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        disabled={cardBusy}
+                                        onClick={() =>
+                                          setConfirmDeleteAllById((prev) => ({
+                                            ...prev,
+                                            [pid]: true,
+                                          }))
+                                        }
+                                        className="flex items-center gap-1 rounded border border-rose-500/35 bg-rose-500/10 px-1.5 py-0.5 font-medium text-rose-300 hover:bg-rose-500/25 disabled:opacity-40"
+                                        title="Eliminar todos los G-code de la memoria"
+                                      >
+                                        <Trash2 className="h-3 w-3" />
+                                        Borrar todos
+                                      </button>
+                                    ))}
+                                  {!canRemoteDelete && st.protocol === 'flashforge_lan' && (
+                                    <span
+                                      className="text-[9px] text-slate-500"
+                                      title="Creator 5 Pro no permite borrado remoto por LAN"
+                                    >
+                                      Borrado solo en pantalla táctil
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    disabled={cardBusy}
+                                    onClick={() => void loadFilesForPrinter(pid)}
+                                    className="flex items-center gap-1 text-cyan-300 hover:underline disabled:opacity-40"
+                                  >
+                                    <RefreshCw
+                                      className={`h-3 w-3 ${busyAction === 'files_list' ? 'animate-spin' : ''}`}
+                                    />
+                                    Recargar
+                                  </button>
+                                </div>
+                              </div>
+
+                              {filesList.length === 0 ? (
+                                <p className="py-1 text-center text-[10px] text-slate-500">
+                                  {busyAction === 'files_list'
+                                    ? 'Consultando memoria...'
+                                    : 'Sin archivos en memoria.'}
+                                </p>
+                              ) : (
+                                <div className="max-h-40 space-y-1 overflow-y-auto pr-0.5">
+                                  {filesList.map((f) => {
+                                    const isConfirmingDelete = confirmDeleteName === f.filename;
+                                    const isConfirmingPrint = confirmPrintName === f.filename;
+                                    return (
+                                      <div
+                                        key={f.filename}
+                                        className="space-y-1 rounded-lg border border-slate-800 bg-slate-900/90 px-2 py-1 text-[10px]"
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          {(st.protocol === 'flashforge_lan' || st.protocol === 'moonraker') && (
+                                            <div className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700/80 bg-slate-950">
+                                              <FileText className="h-4 w-4 text-slate-600" />
+                                              <img
+                                                src={`${getPrinterStoredFileThumbUrl(pid, f.filename)}&v=${filesNonceById[pid] ?? 0}`}
+                                                alt={f.filename}
+                                                loading="lazy"
+                                                onError={(e) => {
+                                                  e.currentTarget.style.display = 'none';
+                                                }}
+                                                className="relative z-10 h-full w-full bg-slate-950 object-contain"
+                                              />
+                                            </div>
+                                          )}
+                                          <div className="min-w-0 flex-1">
+                                            <p
+                                              className="truncate font-medium text-slate-200"
+                                              title={f.filename}
+                                            >
+                                              {f.filename}
+                                            </p>
+                                            <p className="font-mono text-[9px] text-slate-400">
+                                              {f.size_mb > 0 ? `${f.size_mb.toFixed(1)} MB` : '3MF/GCode'}
+                                              {f.estimated_time_sec
+                                                ? ` · ${formatDuration(f.estimated_time_sec)}`
+                                                : ''}
+                                              {f.filament_grams ? ` · ${f.filament_grams}g` : ''}
+                                            </p>
+                                          </div>
+                                          <div className="flex shrink-0 items-center gap-1">
+                                            <button
+                                              type="button"
+                                              disabled={cardBusy}
+                                              onClick={() =>
+                                                setConfirmPrintById((prev) => ({
+                                                  ...prev,
+                                                  [pid]: isConfirmingPrint ? null : f.filename,
+                                                }))
+                                              }
+                                              className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 font-semibold text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-40"
+                                              title="Imprimir este archivo"
+                                            >
+                                              {busyAction === `print:${f.filename}` ? (
+                                                <Loader2 className="h-3 w-3 animate-spin" />
+                                              ) : (
+                                                'Imprimir'
+                                              )}
+                                            </button>
+                                            {canDownloadStoredFile && (
+                                              <button
+                                                type="button"
+                                                disabled={cardBusy}
+                                                onClick={() =>
+                                                  void handleDownloadStoredFile(pid, f.filename)
+                                                }
+                                                className="rounded border border-cyan-500/35 bg-cyan-500/10 p-1 text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-40"
+                                                title="Descargar archivo al Mac"
+                                              >
+                                                {busyAction === `download:${f.filename}` ? (
+                                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                                ) : (
+                                                  <Download className="h-3 w-3" />
+                                                )}
+                                              </button>
+                                            )}
+                                            {canRemoteDelete &&
+                                              (isConfirmingDelete ? (
+                                                <>
+                                                  <button
+                                                    type="button"
+                                                    disabled={cardBusy}
+                                                    onClick={() =>
+                                                      void handleDeleteStoredFile(pid, f.filename)
+                                                    }
+                                                    className="rounded border border-rose-500 bg-rose-500/30 px-1.5 py-0.5 font-bold text-rose-100 hover:bg-rose-500/45 disabled:opacity-40"
+                                                  >
+                                                    Confirmar
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      setConfirmDeleteById((prev) => ({
+                                                        ...prev,
+                                                        [pid]: null,
+                                                      }))
+                                                    }
+                                                    className="rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-slate-300"
+                                                  >
+                                                    No
+                                                  </button>
+                                                </>
+                                              ) : (
+                                                <button
+                                                  type="button"
+                                                  disabled={cardBusy}
+                                                  onClick={() =>
+                                                    setConfirmDeleteById((prev) => ({
+                                                      ...prev,
+                                                      [pid]: f.filename,
+                                                    }))
+                                                  }
+                                                  className="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/25 disabled:opacity-40"
+                                                  title="Eliminar archivo de memoria"
+                                                >
+                                                  <Trash2 className="h-3 w-3" />
+                                                </button>
+                                              ))}
+                                          </div>
+                                        </div>
+                                        {isConfirmingPrint && (
+                                          <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-slate-950/90 p-1.5 text-[9px]">
+                                            <p className="font-semibold text-amber-200">
+                                              ¿Ejecutar nivelación/calibración antes de imprimir?
+                                            </p>
+                                            <label className="flex cursor-pointer items-center justify-between rounded border border-slate-800 bg-slate-900/90 px-2 py-1 text-[9px] text-slate-200">
+                                              <span className="flex items-center gap-1 font-medium">
+                                                <Film className="h-3 w-3 text-purple-400" />
+                                                Grabar Timelapse
+                                              </span>
+                                              <input
+                                                type="checkbox"
+                                                checked={enableTimelapseForFile}
+                                                onChange={(e) =>
+                                                  setEnableTimelapseForFile(e.target.checked)
+                                                }
+                                                className="h-3 w-3 accent-purple-500"
+                                              />
+                                            </label>
+                                            <div className="grid grid-cols-2 gap-1">
+                                              <button
+                                                type="button"
+                                                disabled={cardBusy}
+                                                onClick={() =>
+                                                  void handlePrintStoredFile(pid, f.filename, false)
+                                                }
+                                                className="rounded border border-cyan-500/50 bg-cyan-500/20 px-1.5 py-1 font-semibold text-cyan-100 hover:bg-cyan-500/30"
+                                              >
+                                                Imprimir directo (Sin calibrar)
+                                              </button>
+                                              <button
+                                                type="button"
+                                                disabled={cardBusy}
+                                                onClick={() =>
+                                                  void handlePrintStoredFile(pid, f.filename, true)
+                                                }
+                                                className="rounded border border-emerald-500/50 bg-emerald-500/20 px-1.5 py-1 font-semibold text-emerald-100 hover:bg-emerald-500/30"
+                                              >
+                                                Calibrar e Imprimir
+                                              </button>
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+
+                    {/* Acordeón Timelapses (.mp4) */}
+                    {isNetworkPrinter && (
+                      <div className="rounded-xl border border-slate-800 bg-slate-950/60">
+                        <button
+                          type="button"
+                          disabled={!st.online}
+                          onClick={() => void handleToggleTimelapsesAccordion(pid)}
+                          className="flex w-full items-center justify-between px-3 py-2 text-[11px] font-semibold text-slate-200 disabled:opacity-40"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <Film className="h-3.5 w-3.5 text-purple-400" />
+                            Timelapses (.mp4)
+                            {timelapseInfo ? ` (${timelapseInfo.videos.length})` : ''}
+                          </span>
+                          {timelapseOpen ? (
+                            <ChevronUp className="h-3.5 w-3.5 text-slate-400" />
+                          ) : (
+                            <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+                          )}
+                        </button>
+
+                        {timelapseOpen && (
+                          <div className="space-y-1.5 border-t border-slate-800 px-2.5 py-2 text-[10px]">
+                            {timelapseInfo?.message && (
+                              <p className="text-slate-400">{timelapseInfo.message}</p>
+                            )}
+                            {timelapseInfo?.videos.map((v) => (
+                              <div
+                                key={v.filename}
+                                className="space-y-1 rounded-lg border border-slate-800 bg-slate-900/90 p-1.5"
+                              >
+                                <div className="flex items-center justify-between gap-1.5">
+                                  <span className="truncate font-medium text-slate-200">
+                                    {v.filename} ({v.size_mb.toFixed(1)} MB)
+                                  </span>
+                                  <div className="flex shrink-0 items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setActiveVideoById((prev) => ({
+                                          ...prev,
+                                          [pid]:
+                                            prev[pid] === v.download_url ? null : v.download_url,
+                                        }))
+                                      }
+                                      className="rounded border border-purple-500/40 bg-purple-500/15 px-1.5 py-0.5 text-purple-200 hover:bg-purple-500/25"
+                                    >
+                                      {activeVideoUrl === v.download_url ? 'Ocultar' : 'Ver'}
+                                    </button>
+                                    <a
+                                      href={v.download_url}
+                                      download={v.filename}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="rounded border border-cyan-500/40 bg-cyan-500/15 p-1 text-cyan-200 hover:bg-cyan-500/25"
+                                      title="Descargar video MP4"
+                                    >
+                                      <Download className="h-3 w-3" />
+                                    </a>
+                                  </div>
+                                </div>
+                                {activeVideoUrl === v.download_url && (
+                                  <video
+                                    src={v.download_url}
+                                    controls
+                                    className="w-full rounded-lg border border-slate-800 bg-black"
+                                  />
+                                )}
                               </div>
                             ))}
                           </div>
                         )}
                       </div>
-                    );
-                  })()}
+                    )}
 
-                  {/* Acordeón Archivos en Memoria */}
-                  {isNetworkPrinter && (
-                    <div className="rounded-xl border border-slate-800 bg-slate-950/60">
-                      <button
-                        type="button"
-                        disabled={!st.online}
-                        onClick={() => void handleToggleFilesAccordion(pid)}
-                        className="flex w-full items-center justify-between px-3 py-2 text-[11px] font-semibold text-slate-200 disabled:opacity-40"
-                      >
-                        <span className="flex items-center gap-1.5">
-                          <FolderOpen className="h-3.5 w-3.5 text-cyan-400" />
-                          Archivos en Memoria ({filesList.length})
-                        </span>
-                        {filesOpen ? (
-                          <ChevronUp className="h-3.5 w-3.5 text-slate-400" />
-                        ) : (
-                          <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
-                        )}
-                      </button>
+                    {/* Feedback exclusivo de esta tarjeta */}
+                    {cardFeedback && (
+                      <p className="rounded-lg border border-cyan-500/35 bg-cyan-500/10 px-2.5 py-1 text-[10px] text-cyan-200">
+                        {cardFeedback}
+                      </p>
+                    )}
+                  </div>
 
-                      {filesOpen && (() => {
-                        const canRemoteDelete = st.protocol === 'moonraker';
-                        const canDownloadStoredFile = st.protocol === 'moonraker';
-                        return (
-                        <div className="space-y-1.5 border-t border-slate-800 px-2.5 py-2">
-                          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-slate-400">
-                            <span>Almacenamiento de {st.display_name}</span>
-                            <div className="flex items-center gap-2">
-                              {canRemoteDelete &&
-                                filesList.length > 0 &&
-                                (isConfirmingDeleteAll ? (
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      type="button"
-                                      disabled={cardBusy}
-                                      onClick={() => void handleDeleteAllStoredFiles(pid)}
-                                      className="flex items-center gap-1 rounded border border-rose-500 bg-rose-500/30 px-1.5 py-0.5 font-bold text-rose-100 hover:bg-rose-500/45 disabled:opacity-40"
-                                    >
-                                      {busyAction === 'delete_all' ? (
-                                        <Loader2 className="h-3 w-3 animate-spin" />
-                                      ) : null}
-                                      Confirmar borrar ({filesList.length})
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={cardBusy}
-                                      onClick={() =>
-                                        setConfirmDeleteAllById((prev) => ({
-                                          ...prev,
-                                          [pid]: false,
-                                        }))
-                                      }
-                                      className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-slate-300 hover:bg-slate-700"
-                                    >
-                                      No
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    disabled={cardBusy}
-                                    onClick={() =>
-                                      setConfirmDeleteAllById((prev) => ({
-                                        ...prev,
-                                        [pid]: true,
-                                      }))
-                                    }
-                                    className="flex items-center gap-1 rounded border border-rose-500/35 bg-rose-500/10 px-1.5 py-0.5 font-medium text-rose-300 hover:bg-rose-500/25 disabled:opacity-40"
-                                    title="Eliminar todos los G-code de la memoria"
-                                  >
-                                    <Trash2 className="h-3 w-3" />
-                                    Borrar todos
-                                  </button>
-                                ))}
-                              {!canRemoteDelete && st.protocol === 'flashforge_lan' && (
-                                <span
-                                  className="text-[9px] text-slate-500"
-                                  title="Creator 5 Pro no permite borrado remoto por LAN"
-                                >
-                                  Borrado solo en pantalla táctil
-                                </span>
-                              )}
-                              <button
-                                type="button"
-                                disabled={cardBusy}
-                                onClick={() => void loadFilesForPrinter(pid)}
-                                className="flex items-center gap-1 text-cyan-300 hover:underline disabled:opacity-40"
-                              >
-                                <RefreshCw
-                                  className={`h-3 w-3 ${busyAction === 'files_list' ? 'animate-spin' : ''}`}
-                                />
-                                Recargar
-                              </button>
-                            </div>
-                          </div>
-
-                          {filesList.length === 0 ? (
-                            <p className="py-1 text-center text-[10px] text-slate-500">
-                              {busyAction === 'files_list'
-                                ? 'Consultando memoria...'
-                                : 'Sin archivos en memoria.'}
-                            </p>
-                          ) : (
-                            <div className="max-h-40 space-y-1 overflow-y-auto pr-0.5">
-                              {filesList.map((f) => {
-                                const isConfirmingDelete = confirmDeleteName === f.filename;
-                                const isConfirmingPrint = confirmPrintName === f.filename;
-                                return (
-                                  <div
-                                    key={f.filename}
-                                    className="space-y-1 rounded-lg border border-slate-800 bg-slate-900/90 px-2 py-1 text-[10px]"
-                                  >
-                                    <div className="flex items-center justify-between gap-2">
-                                      {(st.protocol === 'flashforge_lan' || st.protocol === 'moonraker') && (
-                                        <div className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700/80 bg-slate-950">
-                                          <FileText className="h-4 w-4 text-slate-600" />
-                                          <img
-                                            src={`${getPrinterStoredFileThumbUrl(pid, f.filename)}&v=${filesNonceById[pid] ?? 0}`}
-                                            alt={f.filename}
-                                            loading="lazy"
-                                            onError={(e) => {
-                                              e.currentTarget.style.display = 'none';
-                                            }}
-                                            className="relative z-10 h-full w-full bg-slate-950 object-contain"
-                                          />
-                                        </div>
-                                      )}
-                                      <div className="min-w-0 flex-1">
-                                        <p
-                                          className="truncate font-medium text-slate-200"
-                                          title={f.filename}
-                                        >
-                                          {f.filename}
-                                        </p>
-                                        <p className="font-mono text-[9px] text-slate-400">
-                                          {f.size_mb > 0 ? `${f.size_mb.toFixed(1)} MB` : '3MF/GCode'}
-                                          {f.estimated_time_sec
-                                            ? ` · ${formatDuration(f.estimated_time_sec)}`
-                                            : ''}
-                                          {f.filament_grams ? ` · ${f.filament_grams}g` : ''}
-                                        </p>
-                                      </div>
-                                      <div className="flex shrink-0 items-center gap-1">
-                                        <button
-                                          type="button"
-                                          disabled={cardBusy}
-                                          onClick={() =>
-                                            setConfirmPrintById((prev) => ({
-                                              ...prev,
-                                              [pid]: isConfirmingPrint ? null : f.filename,
-                                            }))
-                                          }
-                                          className="rounded border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 font-semibold text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-40"
-                                          title="Imprimir este archivo"
-                                        >
-                                          {busyAction === `print:${f.filename}` ? (
-                                            <Loader2 className="h-3 w-3 animate-spin" />
-                                          ) : (
-                                            'Imprimir'
-                                          )}
-                                        </button>
-                                        {canDownloadStoredFile && (
-                                          <button
-                                            type="button"
-                                            disabled={cardBusy}
-                                            onClick={() =>
-                                              void handleDownloadStoredFile(pid, f.filename)
-                                            }
-                                            className="rounded border border-cyan-500/35 bg-cyan-500/10 p-1 text-cyan-300 hover:bg-cyan-500/25 disabled:opacity-40"
-                                            title="Descargar archivo al Mac"
-                                          >
-                                            {busyAction === `download:${f.filename}` ? (
-                                              <Loader2 className="h-3 w-3 animate-spin" />
-                                            ) : (
-                                              <Download className="h-3 w-3" />
-                                            )}
-                                          </button>
-                                        )}
-                                        {canRemoteDelete &&
-                                          (isConfirmingDelete ? (
-                                            <>
-                                              <button
-                                                type="button"
-                                                disabled={cardBusy}
-                                                onClick={() =>
-                                                  void handleDeleteStoredFile(pid, f.filename)
-                                                }
-                                                className="rounded border border-rose-500 bg-rose-500/30 px-1.5 py-0.5 font-bold text-rose-100 hover:bg-rose-500/45 disabled:opacity-40"
-                                              >
-                                                Confirmar
-                                              </button>
-                                              <button
-                                                type="button"
-                                                onClick={() =>
-                                                  setConfirmDeleteById((prev) => ({
-                                                    ...prev,
-                                                    [pid]: null,
-                                                  }))
-                                                }
-                                                className="rounded border border-slate-700 bg-slate-800 px-1 py-0.5 text-slate-300"
-                                              >
-                                                No
-                                              </button>
-                                            </>
-                                          ) : (
-                                            <button
-                                              type="button"
-                                              disabled={cardBusy}
-                                              onClick={() =>
-                                                setConfirmDeleteById((prev) => ({
-                                                  ...prev,
-                                                  [pid]: f.filename,
-                                                }))
-                                              }
-                                              className="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/25 disabled:opacity-40"
-                                              title="Eliminar archivo de memoria"
-                                            >
-                                              <Trash2 className="h-3 w-3" />
-                                            </button>
-                                          ))}
-                                      </div>
-                                    </div>
-                                    {isConfirmingPrint && (
-                                      <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-slate-950/90 p-1.5 text-[9px]">
-                                        <p className="font-semibold text-amber-200">
-                                          ¿Ejecutar nivelación/calibración antes de imprimir?
-                                        </p>
-                                        <label className="flex cursor-pointer items-center justify-between rounded border border-slate-800 bg-slate-900/90 px-2 py-1 text-[9px] text-slate-200">
-                                          <span className="flex items-center gap-1 font-medium">
-                                            <Film className="h-3 w-3 text-purple-400" />
-                                            Grabar Timelapse
-                                          </span>
-                                          <input
-                                            type="checkbox"
-                                            checked={enableTimelapseForFile}
-                                            onChange={(e) =>
-                                              setEnableTimelapseForFile(e.target.checked)
-                                            }
-                                            className="h-3 w-3 accent-purple-500"
-                                          />
-                                        </label>
-                                        <div className="grid grid-cols-2 gap-1">
-                                          <button
-                                            type="button"
-                                            disabled={cardBusy}
-                                            onClick={() =>
-                                              void handlePrintStoredFile(pid, f.filename, false)
-                                            }
-                                            className="rounded border border-cyan-500/50 bg-cyan-500/20 px-1.5 py-1 font-semibold text-cyan-100 hover:bg-cyan-500/30"
-                                          >
-                                            Imprimir directo (Sin calibrar)
-                                          </button>
-                                          <button
-                                            type="button"
-                                            disabled={cardBusy}
-                                            onClick={() =>
-                                              void handlePrintStoredFile(pid, f.filename, true)
-                                            }
-                                            className="rounded border border-emerald-500/50 bg-emerald-500/20 px-1.5 py-1 font-semibold text-emerald-100 hover:bg-emerald-500/30"
-                                          >
-                                            Calibrar e Imprimir
-                                          </button>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                        );
-                      })()}
-                    </div>
-                  )}
-
-                  {/* Acordeón Timelapses (.mp4) */}
-                  {isNetworkPrinter && (
-                    <div className="rounded-xl border border-slate-800 bg-slate-950/60">
-                      <button
-                        type="button"
-                        disabled={!st.online}
-                        onClick={() => void handleToggleTimelapsesAccordion(pid)}
-                        className="flex w-full items-center justify-between px-3 py-2 text-[11px] font-semibold text-slate-200 disabled:opacity-40"
-                      >
-                        <span className="flex items-center gap-1.5">
-                          <Film className="h-3.5 w-3.5 text-purple-400" />
-                          Timelapses (.mp4)
-                          {timelapseInfo ? ` (${timelapseInfo.videos.length})` : ''}
-                        </span>
-                        {timelapseOpen ? (
-                          <ChevronUp className="h-3.5 w-3.5 text-slate-400" />
-                        ) : (
-                          <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
-                        )}
-                      </button>
-
-                      {timelapseOpen && (
-                        <div className="space-y-1.5 border-t border-slate-800 px-2.5 py-2 text-[10px]">
-                          {timelapseInfo?.message && (
-                            <p className="text-slate-400">{timelapseInfo.message}</p>
-                          )}
-                          {timelapseInfo?.videos.map((v) => (
-                            <div
-                              key={v.filename}
-                              className="space-y-1 rounded-lg border border-slate-800 bg-slate-900/90 p-1.5"
-                            >
-                              <div className="flex items-center justify-between gap-1.5">
-                                <span className="truncate font-medium text-slate-200">
-                                  {v.filename} ({v.size_mb.toFixed(1)} MB)
-                                </span>
-                                <div className="flex shrink-0 items-center gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setActiveVideoById((prev) => ({
-                                        ...prev,
-                                        [pid]:
-                                          prev[pid] === v.download_url ? null : v.download_url,
-                                      }))
-                                    }
-                                    className="rounded border border-purple-500/40 bg-purple-500/15 px-1.5 py-0.5 text-purple-200 hover:bg-purple-500/25"
-                                  >
-                                    {activeVideoUrl === v.download_url ? 'Ocultar' : 'Ver'}
-                                  </button>
-                                  <a
-                                    href={v.download_url}
-                                    download={v.filename}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="rounded border border-cyan-500/40 bg-cyan-500/15 p-1 text-cyan-200 hover:bg-cyan-500/25"
-                                    title="Descargar video MP4"
-                                  >
-                                    <Download className="h-3 w-3" />
-                                  </a>
-                                </div>
-                              </div>
-                              {activeVideoUrl === v.download_url && (
-                                <video
-                                  src={v.download_url}
-                                  controls
-                                  className="w-full rounded-lg border border-slate-800 bg-black"
-                                />
-                              )}
-                            </div>
-                          ))}
-                        </div>
+                  {/* Botones de control aislados y condicionados al estado activo */}
+                  <div className="grid grid-cols-3 gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={!isActivePrint || cardBusy}
+                      onClick={() => void handleControl(pid, 'pause')}
+                      className="flex items-center justify-center gap-1 rounded-xl border border-amber-500/40 bg-amber-500/10 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      {busyAction === 'pause' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Pause className="h-3.5 w-3.5" />
                       )}
-                    </div>
-                  )}
+                      Pausar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!isPaused || cardBusy}
+                      onClick={() => void handleControl(pid, 'resume')}
+                      className="flex items-center justify-center gap-1 rounded-xl border border-emerald-500/40 bg-emerald-500/10 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      {busyAction === 'resume' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Play className="h-3.5 w-3.5" />
+                      )}
+                      Reanudar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!isWorking || cardBusy}
+                      onClick={() => void handleControl(pid, 'cancel')}
+                      className="flex items-center justify-center gap-1 rounded-xl border border-rose-500/40 bg-rose-500/10 py-1.5 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      {busyAction === 'cancel' ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Square className="h-3.5 w-3.5" />
+                      )}
+                      Cancelar
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
 
-                  {/* Feedback exclusivo de esta tarjeta */}
-                  {cardFeedback && (
-                    <p className="rounded-lg border border-cyan-500/35 bg-cyan-500/10 px-2.5 py-1 text-[10px] text-cyan-200">
-                      {cardFeedback}
-                    </p>
-                  )}
-                </div>
-
-                {/* Botones de control aislados y condicionados al estado activo */}
-                <div className="grid grid-cols-3 gap-2 pt-1">
-                  <button
-                    type="button"
-                    disabled={!isActivePrint || cardBusy}
-                    onClick={() => void handleControl(pid, 'pause')}
-                    className="flex items-center justify-center gap-1 rounded-xl border border-amber-500/40 bg-amber-500/10 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-35"
-                  >
-                    {busyAction === 'pause' ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Pause className="h-3.5 w-3.5" />
-                    )}
-                    Pausar
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!isPaused || cardBusy}
-                    onClick={() => void handleControl(pid, 'resume')}
-                    className="flex items-center justify-center gap-1 rounded-xl border border-emerald-500/40 bg-emerald-500/10 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-35"
-                  >
-                    {busyAction === 'resume' ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Play className="h-3.5 w-3.5" />
-                    )}
-                    Reanudar
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!isWorking || cardBusy}
-                    onClick={() => void handleControl(pid, 'cancel')}
-                    className="flex items-center justify-center gap-1 rounded-xl border border-rose-500/40 bg-rose-500/10 py-1.5 text-xs font-semibold text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-35"
-                  >
-                    {busyAction === 'cancel' ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Square className="h-3.5 w-3.5" />
-                    )}
-                    Cancelar
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Modal de vista ampliada de cámara */}
-      {expandedCamera && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
-          onClick={() => setExpandedCamera(null)}
-        >
+        {/* Modal de vista ampliada de cámara */}
+        {expandedCamera && (
           <div
-            className="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm"
+            onClick={() => setExpandedCamera(null)}
           >
-            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <Camera className="h-4 w-4 text-emerald-400" />
-                <span className="text-sm font-bold text-slate-100">
-                  Cámara en Vivo · {expandedCamera.name}
-                </span>
+            <div
+              className="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
+                <div className="flex items-center gap-2">
+                  <Camera className="h-4 w-4 text-emerald-400" />
+                  <span className="text-sm font-bold text-slate-100">
+                    Cámara en Vivo · {expandedCamera.name}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExpandedCamera(null)}
+                  aria-label="Cerrar vista ampliada"
+                  className="rounded-lg border border-slate-700 bg-slate-800 p-1.5 text-slate-300 hover:bg-slate-700 hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setExpandedCamera(null)}
-                aria-label="Cerrar vista ampliada"
-                className="rounded-lg border border-slate-700 bg-slate-800 p-1.5 text-slate-300 hover:bg-slate-700 hover:text-white"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="flex items-center justify-center bg-black p-2">
-              <CameraStreamBox
-                url={expandedCamera.url}
-                name={expandedCamera.name}
-                printerId={expandedCamera.printerId}
-              />
+              <div className="flex items-center justify-center bg-black p-2">
+                <CameraStreamBox
+                  url={expandedCamera.url}
+                  name={expandedCamera.name}
+                  printerId={expandedCamera.printerId}
+                />
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
+        )}
+      </div>
+    );
+  }

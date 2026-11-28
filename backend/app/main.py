@@ -1967,8 +1967,30 @@ async def _query_single_printer(
 async def get_printers_status_endpoint() -> list[PrinterLiveStatus]:
     """Consulta en paralelo la telemetría y cámara en vivo de todas las máquinas habilitadas."""
     configs = load_printers_config()
+
+    async def _safe_query(pid: str, cfg: dict[str, Any]) -> PrinterLiveStatus:
+        try:
+            return await asyncio.wait_for(_query_single_printer(pid, cfg, timeout=2.2), timeout=3.8)
+        except asyncio.TimeoutError:
+            profile_id = str(cfg.get("profile_id") or "")
+            base = PRINTER_REGISTRY.get(profile_id)
+            display_name = str(cfg.get("name") or "").strip() or (base.display_name if base else pid)
+            return PrinterLiveStatus(
+                printer_id=pid,
+                profile_id=profile_id or None,
+                display_name=display_name,
+                protocol=str(cfg.get("protocol") or "moonraker"),
+                ip=str(cfg.get("ip") or ""),
+                port=int(cfg.get("port") or 0),
+                enabled=bool(cfg.get("enabled", True)),
+                online=False,
+                state="offline",
+                camera_url=str(cfg.get("camera_url") or ""),
+                message="Tiempo de espera agotado al consultar la impresora.",
+            )
+
     tasks = [
-        _query_single_printer(pid, cfg, timeout=2.2)
+        _safe_query(pid, cfg)
         for pid, cfg in configs.items()
         if cfg.get("enabled", True)
     ]
@@ -2600,6 +2622,33 @@ async def export_flashforge_3mf_endpoint(
         path=str(out_3mf),
         media_type="application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
         filename=out_3mf.name,
+    )
+
+
+@app.get("/api/printers/{printer_id}/camera/frame")
+async def proxy_printer_camera_frame(
+    printer_id: PrinterId,
+) -> Response:
+    """Devuelve un frame JPEG individual desde CameraHub sin mantener sockets HTTP/1.1 abiertos."""
+    try:
+        _resolved_pid, cfg = get_printer_instance(printer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    cam_url = str(cfg.get("camera_url") or "").strip()
+    if not cam_url:
+        raise HTTPException(status_code=404, detail="Impresora sin URL de cámara configurada.")
+    from app.core.camera_hub import camera_hub
+
+    jpg = await camera_hub.get_frame_or_wait(cam_url, wait_timeout=2.5)
+    if not jpg:
+        raise HTTPException(status_code=503, detail="Cámara sin señal JPEG disponible.")
+    return Response(
+        content=jpg,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
     )
 
 

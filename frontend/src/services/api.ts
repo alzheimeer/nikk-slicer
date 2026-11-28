@@ -2,8 +2,8 @@ const isViteDev =
   typeof window !== 'undefined' && window.location.port === '5173';
 const BACKEND_ORIGIN =
   typeof window !== 'undefined' &&
-  !isViteDev &&
-  window.location.origin.startsWith('http')
+    !isViteDev &&
+    window.location.origin.startsWith('http')
     ? window.location.origin
     : 'http://127.0.0.1:8000';
 export const API_BASE_URL = `${BACKEND_ORIGIN}/api`;
@@ -1266,10 +1266,10 @@ export interface AIAnalyzeModelResponse {
   detected_type_summary: string;
   short_spanish_title?: string;
   model_category:
-    | 'lithophane_flat'
-    | 'character_organic'
-    | 'mechanical_functional'
-    | 'large_enclosure';
+  | 'lithophane_flat'
+  | 'character_organic'
+  | 'mechanical_functional'
+  | 'large_enclosure';
   filter_note: string;
   contextual_options: AISubOption[];
   recommended_presets: AIPresetOption[];
@@ -1853,531 +1853,531 @@ export async function updatePrintersConfig(
   return res.json() as Promise<PrintersConfigResponse>;
 }
 
-export async function fetchPrintersStatus(): Promise<PrinterLiveStatus[]> {
-  const res = await fetchWithTimeout(`${API_BASE_URL}/printers/status`, {}, 12000);
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  export async function fetchPrintersStatus(signal?: AbortSignal): Promise<PrinterLiveStatus[]> {
+    const res = await fetchWithTimeout(`${API_BASE_URL}/printers/status`, { signal }, 12000);
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<PrinterLiveStatus[]>;
   }
-  return res.json() as Promise<PrinterLiveStatus[]>;
-}
 
-export async function testPrinterConnection(
-  entry: PrinterNetworkEntry,
-): Promise<PrinterLiveStatus> {
-  const res = await fetch(`${API_BASE_URL}/printers/test`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(entry),
-  });
-  if (!res.ok) {
-    throw new Error(await parseError(res));
-  }
-  return res.json() as Promise<PrinterLiveStatus>;
-}
-
-export interface DiscoveredPrinter {
-  ip: string;
-  port: number;
-  protocol: 'moonraker' | 'flashforge_lan';
-  suggested_profile: ProfileId;
-  hostname: string;
-  camera_url: string;
-}
-
-export async function discoverNetworkPrinters(): Promise<{
-  subnet: string;
-  discovered: DiscoveredPrinter[];
-}> {
-  const res = await fetch(`${API_BASE_URL}/printers/discover`, {
-    method: 'POST',
-  });
-  if (!res.ok) {
-    throw new Error(await parseError(res));
-  }
-  return res.json() as Promise<{ subnet: string; discovered: DiscoveredPrinter[] }>;
-}
-
-export async function sendJobToPrinter(
-  jobId: string,
-  payload: {
-    printer_id: PrinterId;
-    mode: 'network' | 'usb_serial' | 'sd_volume';
-    sd_volume_path?: string;
-    start_immediately?: boolean;
-    start_print?: boolean;
-    enable_timelapse?: boolean;
-    auto_leveling?: boolean;
-    custom_filename?: string;
-  },
-): Promise<SendPrintResponse> {
-  const res = await fetch(`${API_BASE_URL}/print/${jobId}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    throw new Error(await parseError(res));
-  }
-  return res.json() as Promise<SendPrintResponse>;
-}
-
-export async function uploadJobToPrinter(
-  printerId: PrinterId,
-  payload: {
-    job_id: string;
-    start_print: boolean;
-    mode: 'network' | 'usb_serial' | 'sd_volume';
-    sd_volume_path?: string;
-    enable_timelapse?: boolean;
-    auto_leveling?: boolean;
-    custom_filename?: string;
-  },
-): Promise<SendPrintResponse> {
-  const res = await fetch(`${API_BASE_URL}/printers/${printerId}/upload`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    throw new Error(await parseError(res));
-  }
-  return res.json() as Promise<SendPrintResponse>;
-}
-
-export async function controlPrinter(
-  printerId: PrinterId,
-  action: 'pause' | 'resume' | 'cancel' | 'light_on' | 'light_off' | 'light_toggle',
-): Promise<{ status: string; printer_id: string; message: string }> {
-  const res = await fetchWithTimeout(
-    `${API_BASE_URL}/printers/${printerId}/command`,
-    {
+  export async function testPrinterConnection(
+    entry: PrinterNetworkEntry,
+  ): Promise<PrinterLiveStatus> {
+    const res = await fetch(`${API_BASE_URL}/printers/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify(entry),
+    });
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<PrinterLiveStatus>;
+  }
+
+  export interface DiscoveredPrinter {
+    ip: string;
+    port: number;
+    protocol: 'moonraker' | 'flashforge_lan';
+    suggested_profile: ProfileId;
+    hostname: string;
+    camera_url: string;
+  }
+
+  export async function discoverNetworkPrinters(): Promise<{
+    subnet: string;
+    discovered: DiscoveredPrinter[];
+  }> {
+    const res = await fetch(`${API_BASE_URL}/printers/discover`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<{ subnet: string; discovered: DiscoveredPrinter[] }>;
+  }
+
+  export async function sendJobToPrinter(
+    jobId: string,
+    payload: {
+      printer_id: PrinterId;
+      mode: 'network' | 'usb_serial' | 'sd_volume';
+      sd_volume_path?: string;
+      start_immediately?: boolean;
+      start_print?: boolean;
+      enable_timelapse?: boolean;
+      auto_leveling?: boolean;
+      custom_filename?: string;
     },
-    15000,
-  );
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  ): Promise<SendPrintResponse> {
+    const res = await fetch(`${API_BASE_URL}/print/${jobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<SendPrintResponse>;
   }
-  return res.json() as Promise<{ status: string; printer_id: string; message: string }>;
-}
 
-export async function togglePrinterLight(
-  printerId: PrinterId,
-  on?: boolean,
-): Promise<{ status: string; printer_id: string; light_on: boolean; message: string }> {
-  const res = await fetch(`${API_BASE_URL}/printers/${printerId}/light`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(on === undefined ? {} : { on }),
-  });
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  export async function uploadJobToPrinter(
+    printerId: PrinterId,
+    payload: {
+      job_id: string;
+      start_print: boolean;
+      mode: 'network' | 'usb_serial' | 'sd_volume';
+      sd_volume_path?: string;
+      enable_timelapse?: boolean;
+      auto_leveling?: boolean;
+      custom_filename?: string;
+    },
+  ): Promise<SendPrintResponse> {
+    const res = await fetch(`${API_BASE_URL}/printers/${printerId}/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<SendPrintResponse>;
   }
-  return res.json() as Promise<{
-    status: string;
+
+  export async function controlPrinter(
+    printerId: PrinterId,
+    action: 'pause' | 'resume' | 'cancel' | 'light_on' | 'light_off' | 'light_toggle',
+  ): Promise<{ status: string; printer_id: string; message: string }> {
+    const res = await fetchWithTimeout(
+      `${API_BASE_URL}/printers/${printerId}/command`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      },
+      15000,
+    );
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<{ status: string; printer_id: string; message: string }>;
+  }
+
+  export async function togglePrinterLight(
+    printerId: PrinterId,
+    on?: boolean,
+  ): Promise<{ status: string; printer_id: string; light_on: boolean; message: string }> {
+    const res = await fetch(`${API_BASE_URL}/printers/${printerId}/light`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(on === undefined ? {} : { on }),
+    });
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<{
+      status: string;
+      printer_id: string;
+      light_on: boolean;
+      message: string;
+    }>;
+  }
+
+  export async function fetchPrinterFiles(
+    printerId: PrinterId,
+  ): Promise<PrinterFilesResponse> {
+    const res = await fetch(`${API_BASE_URL}/printers/${printerId}/files`);
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<PrinterFilesResponse>;
+  }
+
+  export async function armLocalTimelapse(
+    printerId: PrinterId,
+    armed: boolean,
+  ): Promise<{ printer_id: string; armed: boolean; armed_printers: string[] }> {
+    const res = await fetch(
+      `${API_BASE_URL}/timelapses/arm/${encodeURIComponent(printerId)}?armed=${armed ? 'true' : 'false'}`,
+      { method: 'POST' },
+    );
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<{ printer_id: string; armed: boolean; armed_printers: string[] }>;
+  }
+
+  export interface LocalTimelapseActiveSession {
+    session_id: string;
     printer_id: string;
-    light_on: boolean;
-    message: string;
-  }>;
-}
-
-export async function fetchPrinterFiles(
-  printerId: PrinterId,
-): Promise<PrinterFilesResponse> {
-  const res = await fetch(`${API_BASE_URL}/printers/${printerId}/files`);
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+    printer_name?: string;
+    filename?: string;
+    camera_url?: string;
+    started_at?: number;
+    started_iso?: string;
+    last_capture_ts?: number;
+    last_layer?: number;
+    frame_count?: number;
+    status?: string;
   }
-  return res.json() as Promise<PrinterFilesResponse>;
-}
 
-export async function armLocalTimelapse(
-  printerId: PrinterId,
-  armed: boolean,
-): Promise<{ printer_id: string; armed: boolean; armed_printers: string[] }> {
-  const res = await fetch(
-    `${API_BASE_URL}/timelapses/arm/${encodeURIComponent(printerId)}?armed=${armed ? 'true' : 'false'}`,
-    { method: 'POST' },
-  );
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  export interface LocalTimelapseCompleted {
+    session_id: string;
+    printer_id: string;
+    printer_name?: string;
+    filename?: string;
+    started_iso?: string;
+    completed_iso?: string;
+    duration_seconds?: number;
+    frame_count?: number;
+    has_mp4?: boolean;
+    has_avi?: boolean;
+    has_webp?: boolean;
   }
-  return res.json() as Promise<{ printer_id: string; armed: boolean; armed_printers: string[] }>;
-}
 
-export interface LocalTimelapseActiveSession {
-  session_id: string;
-  printer_id: string;
-  printer_name?: string;
-  filename?: string;
-  camera_url?: string;
-  started_at?: number;
-  started_iso?: string;
-  last_capture_ts?: number;
-  last_layer?: number;
-  frame_count?: number;
-  status?: string;
-}
-
-export interface LocalTimelapseCompleted {
-  session_id: string;
-  printer_id: string;
-  printer_name?: string;
-  filename?: string;
-  started_iso?: string;
-  completed_iso?: string;
-  duration_seconds?: number;
-  frame_count?: number;
-  has_mp4?: boolean;
-  has_avi?: boolean;
-  has_webp?: boolean;
-}
-
-export interface LocalTimelapsesResponse {
-  armed_printers: string[];
-  active: LocalTimelapseActiveSession[];
-  completed: LocalTimelapseCompleted[];
-  storage_dir?: string;
-}
-
-export async function fetchLocalTimelapses(
-  printerId?: string,
-): Promise<LocalTimelapsesResponse> {
-  const qs = printerId ? `?printer_id=${encodeURIComponent(printerId)}` : '';
-  const res = await fetch(`${API_BASE_URL}/timelapses${qs}`);
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  export interface LocalTimelapsesResponse {
+    armed_printers: string[];
+    active: LocalTimelapseActiveSession[];
+    completed: LocalTimelapseCompleted[];
+    storage_dir?: string;
   }
-  return res.json() as Promise<LocalTimelapsesResponse>;
-}
 
-export async function deleteLocalTimelapse(sessionId: string): Promise<void> {
-  const res = await fetch(
-    `${API_BASE_URL}/timelapses/${encodeURIComponent(sessionId)}`,
-    { method: 'DELETE' },
-  );
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  export async function fetchLocalTimelapses(
+    printerId?: string,
+  ): Promise<LocalTimelapsesResponse> {
+    const qs = printerId ? `?printer_id=${encodeURIComponent(printerId)}` : '';
+    const res = await fetch(`${API_BASE_URL}/timelapses${qs}`);
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<LocalTimelapsesResponse>;
   }
-}
 
-export function getLocalTimelapseMediaUrl(
-  sessionId: string,
-  fmt: 'webp' | 'avi' | 'mp4' | 'thumb',
-): string {
-  return `${API_BASE_URL}/timelapses/${encodeURIComponent(sessionId)}/media?fmt=${fmt}`;
-}
-
-export async function printStoredFile(
-  printerId: PrinterId,
-  filename: string,
-  enableTimelapse = false,
-  autoLeveling = false,
-): Promise<{ status: string; printer_id: string; message: string }> {
-  const res = await fetch(`${API_BASE_URL}/printers/${printerId}/files/print`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      filename,
-      enable_timelapse: enableTimelapse,
-      auto_leveling: autoLeveling,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  export async function deleteLocalTimelapse(sessionId: string): Promise<void> {
+    const res = await fetch(
+      `${API_BASE_URL}/timelapses/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    );
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
   }
-  return res.json() as Promise<{ status: string; printer_id: string; message: string }>;
-}
 
-export function getPrinterStoredFileDownloadUrl(
-  printerId: PrinterId,
-  filename: string,
-): string {
-  return `${API_BASE_URL}/printers/${printerId}/files/download?filename=${encodeURIComponent(filename)}`;
-}
-
-export function getPrinterStoredFileThumbUrl(
-  printerId: PrinterId,
-  filename: string,
-): string {
-  return `${API_BASE_URL}/printers/${printerId}/files/thumb?filename=${encodeURIComponent(filename)}`;
-}
-
-export async function deleteStoredFile(
-  printerId: PrinterId,
-  filename: string,
-): Promise<{ status: string; printer_id: string; message: string }> {
-  const res = await fetch(
-    `${API_BASE_URL}/printers/${printerId}/files?filename=${encodeURIComponent(filename)}`,
-    { method: 'DELETE' },
-  );
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  export function getLocalTimelapseMediaUrl(
+    sessionId: string,
+    fmt: 'webp' | 'avi' | 'mp4' | 'thumb',
+  ): string {
+    return `${API_BASE_URL}/timelapses/${encodeURIComponent(sessionId)}/media?fmt=${fmt}`;
   }
-  return res.json() as Promise<{ status: string; printer_id: string; message: string }>;
-}
 
-export async function deleteAllStoredFiles(
-  printerId: PrinterId,
-): Promise<{
-  status: string;
-  printer_id: string;
-  deleted_count: number;
-  failed_count: number;
-  message: string;
-}> {
-  const res = await fetch(`${API_BASE_URL}/printers/${printerId}/files/all`, {
-    method: 'DELETE',
-  });
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  export async function printStoredFile(
+    printerId: PrinterId,
+    filename: string,
+    enableTimelapse = false,
+    autoLeveling = false,
+  ): Promise<{ status: string; printer_id: string; message: string }> {
+    const res = await fetch(`${API_BASE_URL}/printers/${printerId}/files/print`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename,
+        enable_timelapse: enableTimelapse,
+        auto_leveling: autoLeveling,
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<{ status: string; printer_id: string; message: string }>;
   }
-  return res.json() as Promise<{
+
+  export function getPrinterStoredFileDownloadUrl(
+    printerId: PrinterId,
+    filename: string,
+  ): string {
+    return `${API_BASE_URL}/printers/${printerId}/files/download?filename=${encodeURIComponent(filename)}`;
+  }
+
+  export function getPrinterStoredFileThumbUrl(
+    printerId: PrinterId,
+    filename: string,
+  ): string {
+    return `${API_BASE_URL}/printers/${printerId}/files/thumb?filename=${encodeURIComponent(filename)}`;
+  }
+
+  export async function deleteStoredFile(
+    printerId: PrinterId,
+    filename: string,
+  ): Promise<{ status: string; printer_id: string; message: string }> {
+    const res = await fetch(
+      `${API_BASE_URL}/printers/${printerId}/files?filename=${encodeURIComponent(filename)}`,
+      { method: 'DELETE' },
+    );
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<{ status: string; printer_id: string; message: string }>;
+  }
+
+  export async function deleteAllStoredFiles(
+    printerId: PrinterId,
+  ): Promise<{
     status: string;
     printer_id: string;
     deleted_count: number;
     failed_count: number;
     message: string;
-  }>;
-}
-
-export async function fetchPrinterTimelapses(
-  printerId: PrinterId,
-): Promise<PrinterTimelapsesResponse> {
-  const res = await fetch(`${API_BASE_URL}/printers/${printerId}/timelapses`);
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  }> {
+    const res = await fetch(`${API_BASE_URL}/printers/${printerId}/files/all`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<{
+      status: string;
+      printer_id: string;
+      deleted_count: number;
+      failed_count: number;
+      message: string;
+    }>;
   }
-  return res.json() as Promise<PrinterTimelapsesResponse>;
-}
 
-export async function requestAITelemetryDiagnosis(
-  printerId: PrinterId,
-): Promise<AITelemetryDiagnosisResponse> {
-  const res = await fetch(`${API_BASE_URL}/printers/${printerId}/ai-telemetry`, {
-    method: 'POST',
-  });
-  if (!res.ok) {
-    throw new Error(await parseError(res));
+  export async function fetchPrinterTimelapses(
+    printerId: PrinterId,
+  ): Promise<PrinterTimelapsesResponse> {
+    const res = await fetch(`${API_BASE_URL}/printers/${printerId}/timelapses`);
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<PrinterTimelapsesResponse>;
   }
-  return res.json() as Promise<AITelemetryDiagnosisResponse>;
-}
 
-export async function fetchPrinterTelemetrySession(
-  printerId: PrinterId,
-): Promise<PrinterTelemetrySessionResponse> {
-  const res = await fetch(`${API_BASE_URL}/printers/${printerId}/telemetry-session`);
-  if (!res.ok) {
-    throw new Error(await parseError(res));
-  }
-  return res.json() as Promise<PrinterTelemetrySessionResponse>;
-}
-
-export async function generatePrinterCompendium(
-  printerId: PrinterId,
-): Promise<PostPrintCompendium> {
-  const res = await fetch(
-    `${API_BASE_URL}/printers/${printerId}/telemetry-session/compendium`,
-    { method: 'POST' },
-  );
-  if (!res.ok) {
-    throw new Error(await parseError(res));
-  }
-  return res.json() as Promise<PostPrintCompendium>;
-}
-
-export async function fetchTelemetryLearnings(
-  printerId: PrinterId,
-  material: string,
-  limit = 3,
-): Promise<MachineMaterialLearningsResponse> {
-  const qs = new URLSearchParams({
-    printer_id: printerId,
-    material,
-    limit: String(limit),
-  });
-  const res = await fetch(`${API_BASE_URL}/telemetry/learnings?${qs.toString()}`);
-  if (!res.ok) {
-    throw new Error(await parseError(res));
-  }
-  return res.json() as Promise<MachineMaterialLearningsResponse>;
-}
-
-export interface ErrorJournalEntry {
-  timestamp: string;
-  source: string;
-  printer_id?: string;
-  message: string;
-  detail?: string;
-  context?: Record<string, unknown>;
-}
-
-export interface ErrorJournalResponse {
-  log_path: string;
-  count: number;
-  entries: ErrorJournalEntry[];
-}
-
-export async function fetchErrorJournal(limit = 60): Promise<ErrorJournalResponse> {
-  const res = await fetch(`${API_BASE_URL}/logs/errors?limit=${limit}`);
-  if (!res.ok) {
-    throw new Error(await parseError(res));
-  }
-  return res.json() as Promise<ErrorJournalResponse>;
-}
-
-export async function clearErrorJournal(): Promise<{ status: string; message: string }> {
-  const res = await fetch(`${API_BASE_URL}/logs/errors`, { method: 'DELETE' });
-  if (!res.ok) {
-    throw new Error(await parseError(res));
-  }
-  return res.json() as Promise<{ status: string; message: string }>;
-}
-
-export async function fetchUserPrefs(): Promise<Record<string, unknown>> {
-  const res = await fetchWithTimeout(`${API_BASE_URL}/prefs`, {}, 6000);
-  if (!res.ok) {
-    throw new Error(await parseError(res));
-  }
-  const data = (await res.json()) as { prefs?: Record<string, unknown> };
-  return data.prefs ?? {};
-}
-
-export async function saveUserPrefs(payload: Record<string, unknown>): Promise<void> {
-  await fetchWithTimeout(
-    `${API_BASE_URL}/prefs`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    },
-    6000,
-  );
-}
-
-export async function clearLastSession(): Promise<void> {
-  await fetchWithTimeout(`${API_BASE_URL}/prefs/last-session`, { method: 'DELETE' }, 6000);
-}
-
-export interface OrcaCatalogCapabilities {
-  is_multicolor: boolean;
-  tool_count: number;
-  has_heated_chamber: boolean;
-  is_high_speed: boolean;
-}
-
-export interface OrcaCatalogPrinter {
-  catalog_id: string;
-  vendor: string;
-  vendor_key: string;
-  model_name: string;
-  nozzle_diameters: number[];
-  profile_sub_path: string;
-  bed_shape: 'rectangular' | 'circular';
-  bed_width_mm: number;
-  bed_depth_mm: number;
-  bed_diameter_mm: number | null;
-  max_height_mm: number;
-  kinematics: string;
-  gcode_flavor: string;
-  max_speed_mm_s: number;
-  max_accel_mm_s2: number;
-  estimated_q_max: number;
-  capabilities: OrcaCatalogCapabilities;
-}
-
-export interface OrcaCatalogSearchResponse {
-  printers: OrcaCatalogPrinter[];
-  total: number;
-  catalog_total: number;
-  vendors: string[];
-}
-
-export interface AddPrinterPayload {
-  catalog_id: string;
-  display_name?: string;
-  nozzle_diameter?: number;
-  connection_mode?: 'lan' | 'usb_sd';
-  ip?: string;
-  port?: number;
-  protocol?: 'moonraker' | 'flashforge_lan' | 'marlin_serial';
-  is_multicolor?: boolean;
-  tool_count?: number;
-}
-
-export async function fetchPrinterCatalog(params: {
-  q?: string;
-  vendor?: string;
-  multicolor_only?: boolean;
-  limit?: number;
-}): Promise<OrcaCatalogSearchResponse> {
-  const qs = new URLSearchParams();
-  if (params.q) qs.set('q', params.q);
-  if (params.vendor) qs.set('vendor', params.vendor);
-  if (params.multicolor_only) qs.set('multicolor_only', 'true');
-  if (params.limit) qs.set('limit', String(params.limit));
-  const res = await fetchWithTimeout(`${API_BASE_URL}/printers/catalog?${qs.toString()}`, {}, 10000);
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json() as Promise<OrcaCatalogSearchResponse>;
-}
-
-export async function syncPrinterCatalog(): Promise<{ synced_count: number; vendors: number }> {
-  const res = await fetchWithTimeout(`${API_BASE_URL}/printers/catalog/sync`, { method: 'POST' }, 45000);
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json() as Promise<{ synced_count: number; vendors: number }>;
-}
-
-export async function addCustomPrinter(payload: AddPrinterPayload): Promise<{ ok: boolean; printer: { id: string } & Record<string, unknown> }> {
-  const res = await fetchWithTimeout(
-    `${API_BASE_URL}/printers/add`,
-    {
+  export async function requestAITelemetryDiagnosis(
+    printerId: PrinterId,
+  ): Promise<AITelemetryDiagnosisResponse> {
+    const res = await fetch(`${API_BASE_URL}/printers/${printerId}/ai-telemetry`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    },
-    10000,
-  );
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json() as Promise<{ ok: boolean; printer: { id: string } & Record<string, unknown> }>;
-}
+    });
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<AITelemetryDiagnosisResponse>;
+  }
 
-export async function deleteUserPrinter(printerId: string): Promise<void> {
-  const res = await fetchWithTimeout(
-    `${API_BASE_URL}/printers/${encodeURIComponent(printerId)}`,
-    { method: 'DELETE' },
-    8000,
-  );
-  if (!res.ok) throw new Error(await parseError(res));
-}
+  export async function fetchPrinterTelemetrySession(
+    printerId: PrinterId,
+  ): Promise<PrinterTelemetrySessionResponse> {
+    const res = await fetch(`${API_BASE_URL}/printers/${printerId}/telemetry-session`);
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<PrinterTelemetrySessionResponse>;
+  }
 
-export async function exportSelection(payload: {
-  mesh_id: string;
-  printer_id: PrinterId;
-  format: 'stl' | '3mf' | 'obj';
-  apply_transforms: boolean;
-  center_on_bed: boolean;
-  export_all_plate?: boolean;
-  scene_objects?: SceneObjectTransform[];
-  instances?: ModelInstanceTransform[];
-  part_extruder_map?: Record<string, number>;
-  filename_base?: string;
-}): Promise<{ blob: Blob; filename: string }> {
-  const res = await fetchWithTimeout(
-    `${API_BASE_URL}/export-selection`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    },
-    60000,
-  );
-  if (!res.ok) throw new Error(await parseError(res));
-  const cd = res.headers.get('content-disposition') || '';
-  const m = cd.match(/filename="?([^"]+)"?/i);
-  const ext = payload.format;
-  const filename = m ? m[1] : `${payload.filename_base || 'export'}.${ext}`;
-  const blob = await res.blob();
-  return { blob, filename };
-}
+  export async function generatePrinterCompendium(
+    printerId: PrinterId,
+  ): Promise<PostPrintCompendium> {
+    const res = await fetch(
+      `${API_BASE_URL}/printers/${printerId}/telemetry-session/compendium`,
+      { method: 'POST' },
+    );
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<PostPrintCompendium>;
+  }
+
+  export async function fetchTelemetryLearnings(
+    printerId: PrinterId,
+    material: string,
+    limit = 3,
+  ): Promise<MachineMaterialLearningsResponse> {
+    const qs = new URLSearchParams({
+      printer_id: printerId,
+      material,
+      limit: String(limit),
+    });
+    const res = await fetch(`${API_BASE_URL}/telemetry/learnings?${qs.toString()}`);
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<MachineMaterialLearningsResponse>;
+  }
+
+  export interface ErrorJournalEntry {
+    timestamp: string;
+    source: string;
+    printer_id?: string;
+    message: string;
+    detail?: string;
+    context?: Record<string, unknown>;
+  }
+
+  export interface ErrorJournalResponse {
+    log_path: string;
+    count: number;
+    entries: ErrorJournalEntry[];
+  }
+
+  export async function fetchErrorJournal(limit = 60): Promise<ErrorJournalResponse> {
+    const res = await fetch(`${API_BASE_URL}/logs/errors?limit=${limit}`);
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<ErrorJournalResponse>;
+  }
+
+  export async function clearErrorJournal(): Promise<{ status: string; message: string }> {
+    const res = await fetch(`${API_BASE_URL}/logs/errors`, { method: 'DELETE' });
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    return res.json() as Promise<{ status: string; message: string }>;
+  }
+
+  export async function fetchUserPrefs(): Promise<Record<string, unknown>> {
+    const res = await fetchWithTimeout(`${API_BASE_URL}/prefs`, {}, 6000);
+    if (!res.ok) {
+      throw new Error(await parseError(res));
+    }
+    const data = (await res.json()) as { prefs?: Record<string, unknown> };
+    return data.prefs ?? {};
+  }
+
+  export async function saveUserPrefs(payload: Record<string, unknown>): Promise<void> {
+    await fetchWithTimeout(
+      `${API_BASE_URL}/prefs`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+      6000,
+    );
+  }
+
+  export async function clearLastSession(): Promise<void> {
+    await fetchWithTimeout(`${API_BASE_URL}/prefs/last-session`, { method: 'DELETE' }, 6000);
+  }
+
+  export interface OrcaCatalogCapabilities {
+    is_multicolor: boolean;
+    tool_count: number;
+    has_heated_chamber: boolean;
+    is_high_speed: boolean;
+  }
+
+  export interface OrcaCatalogPrinter {
+    catalog_id: string;
+    vendor: string;
+    vendor_key: string;
+    model_name: string;
+    nozzle_diameters: number[];
+    profile_sub_path: string;
+    bed_shape: 'rectangular' | 'circular';
+    bed_width_mm: number;
+    bed_depth_mm: number;
+    bed_diameter_mm: number | null;
+    max_height_mm: number;
+    kinematics: string;
+    gcode_flavor: string;
+    max_speed_mm_s: number;
+    max_accel_mm_s2: number;
+    estimated_q_max: number;
+    capabilities: OrcaCatalogCapabilities;
+  }
+
+  export interface OrcaCatalogSearchResponse {
+    printers: OrcaCatalogPrinter[];
+    total: number;
+    catalog_total: number;
+    vendors: string[];
+  }
+
+  export interface AddPrinterPayload {
+    catalog_id: string;
+    display_name?: string;
+    nozzle_diameter?: number;
+    connection_mode?: 'lan' | 'usb_sd';
+    ip?: string;
+    port?: number;
+    protocol?: 'moonraker' | 'flashforge_lan' | 'marlin_serial';
+    is_multicolor?: boolean;
+    tool_count?: number;
+  }
+
+  export async function fetchPrinterCatalog(params: {
+    q?: string;
+    vendor?: string;
+    multicolor_only?: boolean;
+    limit?: number;
+  }): Promise<OrcaCatalogSearchResponse> {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set('q', params.q);
+    if (params.vendor) qs.set('vendor', params.vendor);
+    if (params.multicolor_only) qs.set('multicolor_only', 'true');
+    if (params.limit) qs.set('limit', String(params.limit));
+    const res = await fetchWithTimeout(`${API_BASE_URL}/printers/catalog?${qs.toString()}`, {}, 10000);
+    if (!res.ok) throw new Error(await parseError(res));
+    return res.json() as Promise<OrcaCatalogSearchResponse>;
+  }
+
+  export async function syncPrinterCatalog(): Promise<{ synced_count: number; vendors: number }> {
+    const res = await fetchWithTimeout(`${API_BASE_URL}/printers/catalog/sync`, { method: 'POST' }, 45000);
+    if (!res.ok) throw new Error(await parseError(res));
+    return res.json() as Promise<{ synced_count: number; vendors: number }>;
+  }
+
+  export async function addCustomPrinter(payload: AddPrinterPayload): Promise<{ ok: boolean; printer: { id: string } & Record<string, unknown> }> {
+    const res = await fetchWithTimeout(
+      `${API_BASE_URL}/printers/add`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+      10000,
+    );
+    if (!res.ok) throw new Error(await parseError(res));
+    return res.json() as Promise<{ ok: boolean; printer: { id: string } & Record<string, unknown> }>;
+  }
+
+  export async function deleteUserPrinter(printerId: string): Promise<void> {
+    const res = await fetchWithTimeout(
+      `${API_BASE_URL}/printers/${encodeURIComponent(printerId)}`,
+      { method: 'DELETE' },
+      8000,
+    );
+    if (!res.ok) throw new Error(await parseError(res));
+  }
+
+  export async function exportSelection(payload: {
+    mesh_id: string;
+    printer_id: PrinterId;
+    format: 'stl' | '3mf' | 'obj';
+    apply_transforms: boolean;
+    center_on_bed: boolean;
+    export_all_plate?: boolean;
+    scene_objects?: SceneObjectTransform[];
+    instances?: ModelInstanceTransform[];
+    part_extruder_map?: Record<string, number>;
+    filename_base?: string;
+  }): Promise<{ blob: Blob; filename: string }> {
+    const res = await fetchWithTimeout(
+      `${API_BASE_URL}/export-selection`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+      60000,
+    );
+    if (!res.ok) throw new Error(await parseError(res));
+    const cd = res.headers.get('content-disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/i);
+    const ext = payload.format;
+    const filename = m ? m[1] : `${payload.filename_base || 'export'}.${ext}`;
+    const blob = await res.blob();
+    return { blob, filename };
+  }
